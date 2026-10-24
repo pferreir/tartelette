@@ -1,0 +1,11 @@
+[package]
+name = "cpu-difftest"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Differential tests of armv6m's CPU against Unicorn (QEMU's Cortex-M0).
+[dev-dependencies]
+armv6m = { path = "../armv6m" }
+unicorn-engine = "2.1.5"
+fastrand = "2"

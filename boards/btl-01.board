@@ -1,0 +1,45 @@
+# BTL-01 sequencer / MIDI-to-CV (../btl_01). Pin map from its README, checked
+# against software/os-embedded/src/main.rs.
+# Every part on the board now has a model.
+board BTL-01
+
+i2c1 sda=2 scl=3
+spi0 sck=18 mosi=19
+spi1 sck=10 mosi=11 miso=12
+
+# 2.4" ST7789 TFT on SPI0 (the "OLED" header); chip select, D/C and reset are plain GPIOs.
+st7789 screen bus=spi0 cs=9 dc=13 rst=17
+
+# Port expander; INT is active low (open drain) into GPIO16. GP0..3 are the
+# gate outputs A..D, GP4..7 the four soft-key buttons (pull-ups, active low).
+mcp23008 expander bus=i2c1 addr=0x20 int=16
+
+# Encoder push switch, and the clock output (observed as an LED).
+button enc_sw gpio=0
+led clk_out gpio=15
+
+# CV outputs: DAC8165 driven by PIO1 SM0 (bit-banged SPI: data 4, CS 5, CLK 6, reset 7).
+# It runs on its internal 2.5 V reference (VREFH/VREFOUT -> C4 470n, and the
+# R3/R4 150k/100k divider making VREF_1V), so the codes span 0..2.5 V.
+dac8165 dac sdi=4 cs=5 clk=6 rst=7 vref_mv=2500
+
+# Eight SK6812 mini LEDs on PIO1 SM1.
+ws2812 rgb gpio=14 count=8
+
+# Rotary encoder on PIO0 SM0 (DT = GPIO21, CLK = GPIO22 = DT + 1).
+encoder knob clk=22 dt=21
+
+# Micro SD card, SPI mode on SPI1 (chip select is a plain GPIO). Load a disk
+# image with `--sd sd=card.img` (the default blank card is 16 MiB).
+sdcard sd bus=spi1 cs=8
+
+# Front panel for rp2040-app: cells on a grid, `at=COL,ROW [span=W,H]`.
+# Arrange to taste; parts left out are not shown.
+panel screen   at=0,0 span=4,3 rotate=90
+panel rgb      at=0,4 span=4,1 label=LEDs
+panel knob     at=4,0 span=2,2 keys=Left,Right
+panel enc_sw   at=4,2 label=Push key=Space
+panel clk_out  at=5,2 label=Clock color=yellow
+panel expander at=0,3 span=4,1 label=Soft_keys_(GP4-7)_and_gates_(GP0-3)
+panel dac      at=6,0 span=2,2 label=CV_out
+panel sd       at=6,2 span=2,1 label=SD_card

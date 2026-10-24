@@ -1,0 +1,12 @@
+[package]
+name = "pcb-devices"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pcb = { path = "../pcb" }
+
+[dev-dependencies]
+embedded-hal = "1.0.0"
+embedded-sdmmc = "0.10.0"
+sha2 = "0.11.1"

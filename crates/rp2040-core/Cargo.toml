@@ -1,0 +1,11 @@
+[package]
+name = "rp2040-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+armv6m = { path = "../armv6m" }
+pcb = { path = "../pcb" }
+
+[dev-dependencies]
+pcb-devices = { path = "../pcb-devices" }
