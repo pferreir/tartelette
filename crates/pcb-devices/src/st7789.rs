@@ -161,21 +161,30 @@ impl St7789 {
     /// the display is off or asleep, with inversion and R/B order applied.
     pub fn rgba(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.ram.len() * 4);
-        let showing = self.is_showing();
-        for &w in &self.ram {
-            if !showing {
-                out.extend_from_slice(&[0, 0, 0, 255]);
-                continue;
+        self.for_each_pixel(|_, p| out.extend_from_slice(&p));
+        out
+    }
+
+    /// Calls `f(index, [r, g, b, 255])` for every pixel in row-major order,
+    /// as [`rgba`](Self::rgba) would report it.
+    pub fn for_each_pixel(&self, mut f: impl FnMut(usize, [u8; 4])) {
+        if !self.is_showing() {
+            for i in 0..self.ram.len() {
+                f(i, [0, 0, 0, 255]);
             }
-            let w = if self.inverted { !w } else { w };
+            return;
+        }
+        let flip = if self.inverted { 0xFFFF } else { 0 };
+        let bgr = self.madctl & BGR != 0;
+        for (i, &w) in self.ram.iter().enumerate() {
+            let w = w ^ flip;
             let (mut r, g, mut b) = ((w >> 11) as u8 & 0x1F, (w >> 5) as u8 & 0x3F, w as u8 & 0x1F);
-            if self.madctl & BGR != 0 {
+            if bgr {
                 core::mem::swap(&mut r, &mut b);
             }
             // Expand to 8 bits by replicating the top bits.
-            out.extend_from_slice(&[r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2, 255]);
+            f(i, [r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2, 255]);
         }
-        out
     }
 
     fn command(&mut self, cmd: u8) {

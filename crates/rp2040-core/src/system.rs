@@ -1010,8 +1010,21 @@ impl System {
                     cpu.step(&mut self.bus);
                 }
             }
-            cpu.vtor = self.bus.vtor[core];
             self.bus.ppb[core].ipsr = cpu.ipsr;
+            let c = cpu.cycles;
+            // Everything below the hot path starts from a register access
+            // (`lines_dirty` is set by every MMIO access, and pin and PSM
+            // changes only come from those) or from the core itself.
+            let rare = cpu.sleeping | cpu.bkpt.is_some() | cpu.sev_sent | self.bus.touched | self.bus.lines_dirty;
+            if !rare {
+                let o = &self.cores[other];
+                let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
+                if c >= limit || c >= end || other_first {
+                    break;
+                }
+                continue;
+            }
+            cpu.vtor = self.bus.vtor[core];
             let mut stop = cpu.sleeping || cpu.bkpt.is_some();
             if core::mem::take(&mut cpu.sev_sent) {
                 self.cores[other].event = true;
@@ -1024,7 +1037,6 @@ impl System {
                 stop = o.sleeping && !self.held[other] && (self.bus.ppb[other].wakes_core() || (o.wfe && o.event));
                 limit = self.batch_limit();
             }
-            let c = self.cores[core].cycles;
             let o = &self.cores[other];
             let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
             if stop || c >= limit || c >= end || other_first {

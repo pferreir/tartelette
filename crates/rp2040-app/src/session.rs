@@ -225,7 +225,21 @@ pub struct Run {
 
 pub type Shared = Arc<Mutex<Run>>;
 
+/// How many UI callers are waiting for the lock; the emulator thread backs
+/// off while any are, and otherwise keeps stepping without a pause.
+#[cfg(not(target_arch = "wasm32"))]
+static UI_WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub fn lock(r: &Shared) -> MutexGuard<'_, Run> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::sync::atomic::Ordering::SeqCst;
+        UI_WAITING.fetch_add(1, SeqCst);
+        let g = r.lock().unwrap_or_else(|e| e.into_inner());
+        UI_WAITING.fetch_sub(1, SeqCst);
+        g
+    }
+    #[cfg(target_arch = "wasm32")]
     r.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -241,13 +255,17 @@ pub fn start(session: Session, running: bool, speed: f64) -> Shared {
         std::thread::spawn(move || {
             while let Some(run) = weak.upgrade() {
                 let done = {
-                    let mut g = lock(&run);
+                    let mut g = run.lock().unwrap_or_else(|e| e.into_inner());
                     let Run { session, clock } = &mut *g;
                     clock.tick(session, THREAD_SLICE)
                 };
                 drop(run);
-                // Leave the UI a window to take the lock.
-                std::thread::sleep(Duration::from_micros(if done == 0 { 1000 } else { 100 }));
+                // Leave the UI a window to take the lock, only when it wants it.
+                if done == 0 {
+                    std::thread::sleep(Duration::from_micros(1000));
+                } else if UI_WAITING.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                    std::thread::sleep(Duration::from_micros(100));
+                }
             }
         });
     }

@@ -286,21 +286,23 @@ fn screen(c: Ctx, st: &mut PanelState, rotate: u16) {
     let stamp = (lcd.total_pixels, lcd.is_showing());
     let (tw, th) = if rotate % 180 == 0 { (w, h) } else { (h, w) };
     let make = || {
-        let src = lcd.rgba();
-        let mut dst = vec![0u8; src.len()];
-        for y in 0..h {
-            for x in 0..w {
-                let (dx, dy) = match rotate {
-                    90 => (h - 1 - y, x),
-                    180 => (w - 1 - x, h - 1 - y),
-                    270 => (y, w - 1 - x),
-                    _ => (x, y),
-                };
-                let (s, d) = ((y * w + x) * 4, (dy * tw + dx) * 4);
-                dst[d..d + 4].copy_from_slice(&src[s..s + 4]);
+        let mut dst = vec![Color32::BLACK; w * h];
+        let (mut x, mut y) = (0, 0);
+        lcd.for_each_pixel(|_, p| {
+            let (dx, dy) = match rotate {
+                90 => (h - 1 - y, x),
+                180 => (w - 1 - x, h - 1 - y),
+                270 => (y, w - 1 - x),
+                _ => (x, y),
+            };
+            dst[dy * tw + dx] = Color32::from_rgb(p[0], p[1], p[2]);
+            x += 1;
+            if x == w {
+                x = 0;
+                y += 1;
             }
-        }
-        egui::ColorImage::from_rgba_unmultiplied([tw, th], &dst)
+        });
+        egui::ColorImage { size: [tw, th], source_size: vec2(tw as f32, th as f32), pixels: dst }
     };
     let tex = match st.screens.get_mut(&c.it.part) {
         Some((tex, seen)) => {

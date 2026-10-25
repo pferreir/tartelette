@@ -5,20 +5,46 @@ use super::*;
 type R = Result<u32, Fault>;
 type Handler<B> = fn(&mut Cpu, &mut B, u32, u32) -> R;
 
-/// Handler per top-five-bits of the opcode.
+/// Handler per opcode bits 15..6 (1024 entries). Most classes depend on the
+/// top five bits only; the data-processing ALU ops and the register-offset
+/// loads and stores get one handler per operation, so each runs without a
+/// second dispatch.
 struct Table<B: ?Sized>(core::marker::PhantomData<B>);
 
 impl<B: Bus + ?Sized> Table<B> {
-    const H: [Handler<B>; 32] = [
+    const CLASS: [Handler<B>; 32] = [
         Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_add_sub,
         Cpu::op_mov_imm, Cpu::op_cmp_imm, Cpu::op_add_imm, Cpu::op_sub_imm,
-        Cpu::op_alu_or_special, Cpu::op_ldr_literal, Cpu::op_ldst_reg, Cpu::op_ldst_reg,
+        Cpu::op_special, Cpu::op_ldr_literal, Cpu::op_undefined, Cpu::op_undefined,
         Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm,
         Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_str_sp, Cpu::op_ldr_sp,
         Cpu::op_adr, Cpu::op_add_sp_imm, Cpu::op_misc, Cpu::op_misc,
         Cpu::op_stm, Cpu::op_ldm, Cpu::op_cond_branch, Cpu::op_cond_branch,
         Cpu::op_branch, Cpu::op_undefined, Cpu::op_wide, Cpu::op_undefined,
     ];
+    const ALU: [Handler<B>; 16] = [
+        Cpu::op_alu::<B, 0>, Cpu::op_alu::<B, 1>, Cpu::op_alu::<B, 2>, Cpu::op_alu::<B, 3>,
+        Cpu::op_alu::<B, 4>, Cpu::op_alu::<B, 5>, Cpu::op_alu::<B, 6>, Cpu::op_alu::<B, 7>,
+        Cpu::op_alu::<B, 8>, Cpu::op_alu::<B, 9>, Cpu::op_alu::<B, 10>, Cpu::op_alu::<B, 11>,
+        Cpu::op_alu::<B, 12>, Cpu::op_alu::<B, 13>, Cpu::op_alu::<B, 14>, Cpu::op_alu::<B, 15>,
+    ];
+    const LDST: [Handler<B>; 8] = [
+        Cpu::op_ldst_reg::<B, 0>, Cpu::op_ldst_reg::<B, 1>, Cpu::op_ldst_reg::<B, 2>, Cpu::op_ldst_reg::<B, 3>,
+        Cpu::op_ldst_reg::<B, 4>, Cpu::op_ldst_reg::<B, 5>, Cpu::op_ldst_reg::<B, 6>, Cpu::op_ldst_reg::<B, 7>,
+    ];
+    const H: [Handler<B>; 1024] = {
+        let mut t = [Cpu::op_undefined as Handler<B>; 1024];
+        let mut i = 0;
+        while i < 1024 {
+            t[i] = match i >> 5 {
+                8 if i & 16 == 0 => Self::ALU[i & 15],
+                10 | 11 => Self::LDST[(i >> 3) & 7],
+                top => Self::CLASS[top],
+            };
+            i += 1;
+        }
+        t
+    };
 }
 
 impl Cpu {
@@ -29,7 +55,7 @@ impl Cpu {
     pub(super) fn exec16<B: Bus + ?Sized>(&mut self, bus: &mut B) -> Result<u32, Fault> {
         let pc = self.pc;
         let hw = bus.fetch16(pc) as u32;
-        Table::<B>::H[(hw >> 11) as usize](self, bus, hw, pc)
+        Table::<B>::H[(hw >> 6) as usize](self, bus, hw, pc)
     }
 
     fn op_shift_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
@@ -97,12 +123,7 @@ impl Cpu {
         Ok(1)
     }
 
-    fn op_alu_or_special<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
-        if hw & (1 << 10) == 0 {
-            self.exec_alu(hw);
-            self.pc = pc.wrapping_add(2);
-            return Ok(1);
-        }
+    fn op_special<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         // special data / branch exchange
         let mut next = pc.wrapping_add(2);
         let mut cycles = 1;
@@ -151,12 +172,12 @@ impl Cpu {
         Ok(2)
     }
 
-    fn op_ldst_reg<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+    fn op_ldst_reg<B: Bus + ?Sized, const OP: u32>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
         let rm6 = ((hw >> 6) & 7) as usize;
         let addr = self.r[rn].wrapping_add(self.r[rm6]);
-        match (hw >> 9) & 7 {
+        match OP {
             0 => self.st32(bus, addr, self.r[rd])?,
             1 => self.st16(bus, addr, self.r[rd] as u16)?,
             2 => bus.write8(addr, self.r[rd] as u8),
@@ -292,13 +313,13 @@ impl Cpu {
         Err(Fault)
     }
 
-    fn exec_alu(&mut self, hw: u32) {
+    fn op_alu<B: Bus + ?Sized, const OP: u32>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rm = ((hw >> 3) & 7) as usize;
         let a = self.r[rd];
         let b = self.r[rm];
         let c = self.c;
-        match (hw >> 6) & 0xF {
+        match OP {
             0x0 => { let r = a & b; self.r[rd] = r; self.set_nz(r) }
             0x1 => { let r = a ^ b; self.r[rd] = r; self.set_nz(r) }
             0x2 => { let (r, c) = lsl(a, b & 0xFF, c); self.r[rd] = r; self.set_nzc(r, c) }
@@ -316,6 +337,8 @@ impl Cpu {
             0xE => { let r = a & !b; self.r[rd] = r; self.set_nz(r) }
             _ => { let r = !b; self.r[rd] = r; self.set_nz(r) }
         }
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
     }
 
     fn exec_misc<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, next: &mut u32) -> Result<u32, Fault> {
