@@ -188,17 +188,27 @@ impl Dma {
     /// round-robin within a priority. Spends a pacing token if the channel
     /// uses one.
     pub fn pick(&mut self, dreq: u64) -> Option<Transfer> {
-        let last = self.last;
-        let order = (1..=NUM_CHANNELS).map(|i| (last + i) % NUM_CHANNELS);
-        let ready = |n: &usize| {
-            let c = &self.ch[*n];
-            self.running(c) && self.treq_ok(c, dreq)
-        };
-        let n = order
-            .clone()
-            .filter(ready)
-            .find(|n| self.ch[*n].ctrl & CTRL_HIGH_PRIORITY != 0)
-            .or_else(|| order.into_iter().find(ready))?;
+        // One round-robin pass from the channel after `last`: remember the
+        // first ready channel and stop early at a high-priority one.
+        let mut n = NUM_CHANNELS;
+        let mut idx = self.last;
+        for _ in 0..NUM_CHANNELS {
+            idx = if idx + 1 == NUM_CHANNELS { 0 } else { idx + 1 };
+            let c = &self.ch[idx];
+            if !(self.running(c) && self.treq_ok(c, dreq)) {
+                continue;
+            }
+            if c.ctrl & CTRL_HIGH_PRIORITY != 0 {
+                n = idx;
+                break;
+            }
+            if n == NUM_CHANNELS {
+                n = idx;
+            }
+        }
+        if n == NUM_CHANNELS {
+            return None;
+        }
         self.last = n;
         let c = &self.ch[n];
         if let t @ TREQ_TIMER0..=0x3E = c.treq() {

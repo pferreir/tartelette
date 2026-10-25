@@ -794,11 +794,12 @@ impl System {
 
     /// Could the DMA controller move something right now?
     fn dma_runnable(&self) -> bool {
-        !self.bus.resets.in_reset(RESET_DMA)
-            && self
-                .bus
-                .dma
-                .can_run(self.bus.dreq_mask(self.bus.dma.needed_dreqs()))
+        if self.bus.resets.in_reset(RESET_DMA) {
+            return false;
+        }
+        // No running channel means no request bits at all.
+        let needed = self.bus.dma.needed_dreqs();
+        needed != 0 && self.bus.dma.can_run(self.bus.dreq_mask(needed))
     }
 
     /// Is a PIO machine running a program (not parked waiting on the outside)?
