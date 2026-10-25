@@ -19,7 +19,7 @@
 //! machine-visible only), and exact behaviour of simultaneous cross-machine
 //! reads (a machine sees the effects of lower-numbered ones in the same cycle).
 use super::Peripheral;
-use sm::{Outcome, Shared, Sm};
+use sm::{Shared, Sm};
 
 mod sm;
 #[cfg(test)]
