@@ -175,10 +175,18 @@ impl Cpu {
         if a & 1 != 0 { Err(Fault) } else { Ok(bus.read16(a)) }
     }
     fn st32<B: Bus + ?Sized>(&self, bus: &mut B, a: u32, v: u32) -> Result<(), Fault> {
-        if a & 3 != 0 { Err(Fault) } else { Ok(bus.write32(a, v)) }
+        if a & 3 != 0 {
+            return Err(Fault);
+        }
+        bus.write32(a, v);
+        Ok(())
     }
     fn st16<B: Bus + ?Sized>(&self, bus: &mut B, a: u32, v: u16) -> Result<(), Fault> {
-        if a & 1 != 0 { Err(Fault) } else { Ok(bus.write16(a, v)) }
+        if a & 1 != 0 {
+            return Err(Fault);
+        }
+        bus.write16(a, v);
+        Ok(())
     }
 
     // ---- execution -------------------------------------------------------

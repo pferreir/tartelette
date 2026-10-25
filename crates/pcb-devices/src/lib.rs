@@ -28,6 +28,7 @@ pub mod st7789;
 pub mod ws2812;
 pub mod dac8165;
 pub mod encoder;
+pub mod fat;
 pub mod sdcard;
 
 pub use led::is_lit;

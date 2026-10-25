@@ -1,10 +1,14 @@
 //! The window: a toolbar, the front panel, and a UART console.
 use crate::files::{self, Inbox, Slot};
+use crate::midi::Midi;
 use crate::panel::{self, Layout, PanelState, Request};
 use crate::session::{self, Run, Session, Shared, Source, lock};
 use egui::{Color32, RichText};
 
 const SPEEDS: &[(f64, &str)] = &[(0.01, "0.01×"), (0.1, "0.1×"), (0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (f64::INFINITY, "max")];
+/// The UART whose receiver is the firmware's MIDI in (GPIO1 on the BTL-01).
+const MIDI_UART: usize = 0;
+const LOG_TAB: usize = 2;
 const LINE_ENDINGS: &[(&str, &str)] = &[("\n", "LF"), ("\r", "CR"), ("\r\n", "CRLF"), ("", "none")];
 
 pub struct App {
@@ -16,7 +20,10 @@ pub struct App {
     /// Problems to show: a run that could not start, ignored panel options.
     errors: Vec<String>,
     inbox: Inbox,
-    uart_tab: usize,
+    midi: Midi,
+    /// 0 and 1: a UART; `LOG_TAB`: the firmware's log.
+    console_tab: usize,
+    log_min: rtt::Level,
     uart_line: String,
     line_ending: usize,
     #[cfg(not(target_arch = "wasm32"))]
@@ -33,7 +40,9 @@ impl App {
             panel: PanelState::default(),
             errors: Vec::new(),
             inbox: Inbox::default(),
-            uart_tab: 0,
+            midi: Midi::new(),
+            console_tab: 0,
+            log_min: rtt::Level::Trace,
             uart_line: String::new(),
             line_ending: 0,
             #[cfg(not(target_arch = "wasm32"))]
@@ -130,10 +139,10 @@ impl App {
             }
             ui.separator();
             let label = if run.as_deref().is_some_and(|r| r.clock.running) { "Pause" } else { "Run" };
-            if ui.add_enabled(run.is_some(), egui::Button::new(label)).clicked() {
-                if let Some(r) = run.as_deref_mut() {
-                    r.clock.running = !r.clock.running;
-                }
+            if ui.add_enabled(run.is_some(), egui::Button::new(label)).clicked()
+                && let Some(r) = run.as_deref_mut()
+            {
+                r.clock.running = !r.clock.running;
             }
             if ui.add_enabled(self.firmware.is_some(), egui::Button::new("Reset")).clicked() {
                 reset = true;
@@ -146,6 +155,8 @@ impl App {
                     }
                 });
             }
+            ui.separator();
+            self.midi.ui(ui);
             ui.separator();
             let names: Vec<&str> = [&self.firmware, &self.board].into_iter().flatten().map(|s| s.name.as_str()).collect();
             ui.label(RichText::new(names.join(" + ")).weak());
@@ -167,13 +178,28 @@ impl App {
     fn console(&mut self, ui: &mut egui::Ui, s: &mut Session) {
         ui.horizontal(|ui| {
             for n in 0..2 {
-                ui.selectable_value(&mut self.uart_tab, n, format!("UART{n}"));
+                ui.selectable_value(&mut self.console_tab, n, format!("UART{n}"));
             }
+            ui.selectable_value(&mut self.console_tab, LOG_TAB, "Log");
             if ui.small_button("Clear").clicked() {
-                s.uart[self.uart_tab].clear();
+                match self.console_tab {
+                    LOG_TAB => s.log.clear(),
+                    n => s.uart[n].clear(),
+                }
+            }
+            if self.console_tab == LOG_TAB {
+                egui::ComboBox::from_id_salt("log-level").selected_text(format!("≥ {}", self.log_min.name())).width(80.0).show_ui(ui, |ui| {
+                    for l in [rtt::Level::Trace, rtt::Level::Debug, rtt::Level::Info, rtt::Level::Warn, rtt::Level::Error] {
+                        ui.selectable_value(&mut self.log_min, l, l.name());
+                    }
+                });
             }
         });
-        let n = self.uart_tab;
+        if self.console_tab == LOG_TAB {
+            self.log_view(ui, s);
+            return;
+        }
+        let n = self.console_tab;
         ui.horizontal(|ui| {
             let send = ui.add(egui::TextEdit::singleline(&mut self.uart_line).hint_text("send to the firmware…").desired_width(ui.available_width() - 90.0));
             egui::ComboBox::from_id_salt("eol").selected_text(LINE_ENDINGS[self.line_ending].1).width(60.0).show_ui(ui, |ui| {
@@ -189,6 +215,23 @@ impl App {
         });
         egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show(ui, |ui| {
             ui.add(egui::Label::new(RichText::new(&s.uart[n]).monospace()).wrap());
+        });
+    }
+
+    /// The firmware's defmt log: one truncated line per message (the whole
+    /// message on hover), at least as severe as `log_min`.
+    fn log_view(&self, ui: &mut egui::Ui, s: &Session) {
+        let shown: Vec<&session::LogEntry> = s.log.iter().filter(|e| e.line.level.is_none_or(|l| l >= self.log_min)).collect();
+        if shown.is_empty() {
+            let note = s.log_note.as_deref().unwrap_or("nothing logged yet");
+            ui.label(RichText::new(note).weak());
+            return;
+        }
+        let row = ui.text_style_height(&egui::TextStyle::Monospace);
+        egui::ScrollArea::vertical().stick_to_bottom(true).auto_shrink(false).show_rows(ui, row, shown.len(), |ui, rows| {
+            for e in &shown[rows] {
+                ui.add(egui::Label::new(log_job(ui, e)).truncate()).on_hover_text(&e.line.text);
+            }
         });
     }
 
@@ -226,8 +269,13 @@ impl eframe::App for App {
         if let Some(Run { session, clock }) = guard.as_deref_mut() {
             clock.tick(session, session::FRAME_BUDGET);
         }
+        // Real MIDI goes to the firmware only while it runs; otherwise it is dropped.
+        let midi = self.midi.take();
+        if let Some(r) = guard.as_deref_mut().filter(|r| r.clock.running && !midi.is_empty()) {
+            r.session.send(MIDI_UART, &midi);
+        }
         if let Some(r) = guard.as_deref_mut() {
-            self.panel.absorb(&r.session.events);
+            self.panel.absorb(&r.session.events, ctx.input(|i| i.time));
             r.session.events.clear();
         }
 
@@ -268,4 +316,25 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+}
+
+/// `time  LEVEL  message`, the level in its colour.
+fn log_job(ui: &egui::Ui, e: &session::LogEntry) -> egui::text::LayoutJob {
+    use egui::{FontId, TextFormat, text::LayoutJob};
+    let v = ui.visuals();
+    let font = FontId::monospace(12.0);
+    let fmt = |color| TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let (name, color) = match e.line.level {
+        Some(rtt::Level::Error) => ("ERROR", v.error_fg_color),
+        Some(rtt::Level::Warn) => ("WARN ", v.warn_fg_color),
+        Some(rtt::Level::Info) => ("INFO ", Color32::from_rgb(40, 200, 90)),
+        Some(rtt::Level::Debug) => ("DEBUG", Color32::from_rgb(90, 160, 255)),
+        Some(rtt::Level::Trace) => ("TRACE", v.weak_text_color()),
+        None => ("     ", v.text_color()),
+    };
+    let mut job = LayoutJob::default();
+    job.append(&format!("{:9.3} ", e.at), 0.0, fmt(v.weak_text_color()));
+    job.append(&format!("{name} "), 0.0, fmt(color));
+    job.append(&e.line.text, 0.0, fmt(v.text_color()));
+    job
 }

@@ -6,6 +6,7 @@
 //! `trunk` (see `index.html`); files are opened or dropped onto the page.
 mod app;
 mod files;
+mod midi;
 mod panel;
 mod session;
 #[cfg(not(target_arch = "wasm32"))]

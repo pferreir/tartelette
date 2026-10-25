@@ -63,7 +63,9 @@ impl Bench {
     }
 }
 
-/// An `SpiDevice` over the bench: CS goes low for the transaction.
+/// An `SpiDevice` over the bench, like `embedded_hal_bus::spi::ExclusiveDevice`
+/// (which the BTL-01 OS uses): CS goes low for each transaction and high
+/// again after it, so the driver's single-byte reads each pulse CS.
 #[derive(Clone)]
 struct SdSpi(Rc<RefCell<Bench>>);
 
@@ -74,6 +76,7 @@ impl ErrorType for SdSpi {
 impl SpiDevice<u8> for SdSpi {
     fn transaction(&mut self, operations: &mut [Operation<'_, u8>]) -> Result<(), Infallible> {
         let mut b = self.0.borrow_mut();
+        b.set_cs(false);
         for op in operations {
             match op {
                 Operation::Read(buf) => buf.iter_mut().for_each(|x| *x = b.byte(0xFF)),
@@ -92,6 +95,7 @@ impl SpiDevice<u8> for SdSpi {
                 Operation::DelayNs(_) => {}
             }
         }
+        b.set_cs(true);
         Ok(())
     }
 }
@@ -118,9 +122,7 @@ fn bench_with_image(image: Vec<u8>) -> Rc<RefCell<Bench>> {
     board.attach(&mut pins);
     pins.take_changes();
     board.device_mut::<SdModel>("sd").unwrap().load_image(image);
-    let mut bench = Bench { board, pins };
-    bench.set_cs(false); // chip select wired low
-    Rc::new(RefCell::new(bench))
+    Rc::new(RefCell::new(Bench { board, pins }))
 }
 
 fn new_card(bench: &Rc<RefCell<Bench>>, use_crc: bool) -> SdCard<SdSpi, NoDelay> {
@@ -128,61 +130,9 @@ fn new_card(bench: &Rc<RefCell<Bench>>, use_crc: bool) -> SdCard<SdSpi, NoDelay>
     SdCard::new_with_options(SdSpi(bench.clone()), NoDelay, opts)
 }
 
-fn le16(v: &mut [u8], at: usize, x: u16) {
-    v[at..at + 2].copy_from_slice(&x.to_le_bytes());
-}
-fn le32(v: &mut [u8], at: usize, x: u32) {
-    v[at..at + 4].copy_from_slice(&x.to_le_bytes());
-}
-
-/// An MBR with one FAT16 partition at LBA 2048 and a freshly formatted,
-/// empty FAT16 file system in it.
+/// An MBR with one FAT16 partition and a freshly formatted, empty file system in it.
 fn formatted_image(megabytes: usize) -> Vec<u8> {
-    let total = megabytes * 1024 * 1024 / BLOCK;
-    let start = 2048usize;
-    let sectors = total - start;
-    let (spc, reserved, fats, root_entries, fat_size) = (4usize, 1usize, 2usize, 512usize, 38usize);
-    let mut image = vec![0u8; total * BLOCK];
-
-    // MBR: partition 0, bootable, type 0x06 (FAT16), CHS fields unused.
-    let mbr = &mut image[..BLOCK];
-    mbr[446] = 0x80;
-    mbr[450] = 0x06;
-    mbr[447..450].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
-    mbr[451..454].copy_from_slice(&[0xFE, 0xFF, 0xFF]);
-    le32(mbr, 454, start as u32);
-    le32(mbr, 458, sectors as u32);
-    mbr[510..512].copy_from_slice(&[0x55, 0xAA]);
-
-    // FAT16 boot sector.
-    let boot = &mut image[start * BLOCK..(start + 1) * BLOCK];
-    boot[..3].copy_from_slice(&[0xEB, 0x3C, 0x90]);
-    boot[3..11].copy_from_slice(b"MSDOS5.0");
-    le16(boot, 11, BLOCK as u16);
-    boot[13] = spc as u8;
-    le16(boot, 14, reserved as u16);
-    boot[16] = fats as u8;
-    le16(boot, 17, root_entries as u16);
-    le16(boot, 19, sectors as u16);
-    boot[21] = 0xF8;
-    le16(boot, 22, fat_size as u16);
-    le16(boot, 24, 63);
-    le16(boot, 26, 255);
-    le32(boot, 28, start as u32);
-    boot[36] = 0x80;
-    boot[38] = 0x29;
-    le32(boot, 39, 0x1234_5678);
-    boot[43..54].copy_from_slice(b"BTL01      ");
-    boot[54..62].copy_from_slice(b"FAT16   ");
-    boot[510..512].copy_from_slice(&[0x55, 0xAA]);
-
-    // Both FATs start with the media descriptor and the end-of-chain marker.
-    for f in 0..fats {
-        let at = (start + reserved + f * fat_size) * BLOCK;
-        image[at..at + 4].copy_from_slice(&[0xF8, 0xFF, 0xFF, 0xFF]);
-    }
-    assert!(root_entries * 32 / BLOCK == 32 && sectors - reserved - 32 - fats * fat_size > 4085 * spc);
-    image
+    pcb_devices::fat::blank_fat16_image(megabytes, "", &[]).unwrap()
 }
 
 /// A pattern that makes misplaced bytes obvious.
@@ -242,6 +192,79 @@ fn files_round_trip_through_a_fat_filesystem() {
     };
     assert_eq!(read_all("HELLO.TXT"), small);
     assert_eq!(read_all("BIG.BIN"), big);
+}
+
+#[test]
+fn a_volume_label_shows_up_as_an_empty_directory_entry() {
+    let bench = bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
+    let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
+    let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
+    let root = volume.open_root_dir().unwrap();
+    let mut names = Vec::new();
+    root.iterate_dir(|entry| {
+        names.push((entry.name.to_string(), entry.size));
+        std::ops::ControlFlow::Continue(())
+    })
+    .unwrap();
+    assert_eq!(names, [("BTL01".to_string(), 0)]);
+}
+
+#[test]
+fn a_formatted_directory_can_be_entered_and_written_to() {
+    let bench = bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "", &["data", "songs"]).unwrap());
+    let payload = pattern(3000, 3);
+    {
+        let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
+        let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
+        let root = volume.open_root_dir().unwrap();
+        let data = root.open_dir("data").expect("the data directory exists");
+        let file = data.open_file_in_dir("PATCH.BIN", Mode::ReadWriteCreate).unwrap();
+        file.write(&payload).unwrap();
+    }
+    let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
+    let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
+    let root = volume.open_root_dir().unwrap();
+    let list = |dir: &embedded_sdmmc::Directory<'_, _, _, 4, 4, 1>| {
+        let mut names = Vec::new();
+        dir.iterate_dir(|e| {
+            names.push(e.name.to_string());
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+        names.sort();
+        names
+    };
+    assert_eq!(list(&root), ["DATA", "SONGS"]);
+    let data = root.open_dir("data").unwrap();
+    assert_eq!(list(&data), [".", "..", "PATCH.BIN"]);
+    let file = data.open_file_in_dir("PATCH.BIN", Mode::ReadOnly).unwrap();
+    let mut back = vec![0u8; file.length() as usize];
+    file.read(&mut back).unwrap();
+    assert_eq!(back, payload);
+    assert!(root.open_dir("songs").is_ok());
+}
+
+#[test]
+fn every_formatted_size_mounts_and_keeps_a_file() {
+    // Different sizes get different cluster and FAT sizes.
+    for mb in [pcb_devices::fat::MIN_MB, 33, 100] {
+        let bench = bench_with_image(formatted_image(mb));
+        let data = pattern(70_000, mb as u8);
+        {
+            let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
+            let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap_or_else(|e| panic!("{mb} MiB: open volume: {e:?}"));
+            let root = volume.open_root_dir().unwrap();
+            let file = root.open_file_in_dir("DATA.BIN", Mode::ReadWriteCreate).unwrap();
+            file.write(&data).unwrap();
+        }
+        let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
+        let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
+        let root = volume.open_root_dir().unwrap();
+        let file = root.open_file_in_dir("DATA.BIN", Mode::ReadOnly).unwrap();
+        let mut back = vec![0u8; file.length() as usize];
+        assert_eq!(file.read(&mut back).unwrap(), data.len(), "{mb} MiB");
+        assert_eq!(back, data, "{mb} MiB");
+    }
 }
 
 #[test]

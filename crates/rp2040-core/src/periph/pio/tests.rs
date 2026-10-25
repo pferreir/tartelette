@@ -1057,7 +1057,7 @@ fn spi_tx_program_clocks_out_a_24_bit_frame() {
     for &(_, out, _) in &r.env.edges {
         let (clk, cs, dt) = (out >> 6 & 1, out >> 5 & 1, out >> 4 & 1);
         if prev.0 == 1 && clk == 0 && prev.1 == 0 {
-            bits.push(prev.0 * 0 + dt);
+            bits.push(dt);
         }
         if prev.1 == 0 && cs == 1 {
             cs_rises += 1;

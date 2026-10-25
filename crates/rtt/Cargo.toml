@@ -1,0 +1,13 @@
+[package]
+name = "rtt"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+defmt-decoder = "1.2.0"
+object = "0.36.7"
+rp2040-core = { path = "../rp2040-core" }
+
+[dev-dependencies]
+pcb = { path = "../pcb" }
+pcb-devices = { path = "../pcb-devices" }

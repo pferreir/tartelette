@@ -40,6 +40,11 @@ pub fn guess(name: &str) -> Slot {
 
 fn dialog(slot: &Slot) -> rfd::AsyncFileDialog {
     let d = rfd::AsyncFileDialog::new();
+    // On the web rfd merges every filter into one `accept` list; browsers drop
+    // the "" and "*" entries and keep ".elf", which hides extensionless ELFs.
+    if cfg!(target_arch = "wasm32") {
+        return d;
+    }
     match slot {
         Slot::Firmware => d.set_title("Open firmware ELF").add_filter("ELF", &["elf", ""]).add_filter("Any", &["*"]),
         Slot::Board => d.set_title("Open board file").add_filter("Board", &["board"]).add_filter("Any", &["*"]),

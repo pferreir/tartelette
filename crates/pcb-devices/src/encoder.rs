@@ -1,4 +1,4 @@
-//! `encoder <name> clk=N dt=N [step_us=300] [mhz=125]`: a rotary encoder's
+//! `encoder <name> clk=N dt=N [cw=clk|dt] [step_us=300] [mhz=125]`: a rotary encoder's
 //! two quadrature contacts (A = CLK, B = DT) on two pins. Each contact pulls
 //! its pin to ground when closed and leaves it floating when open, so the
 //! firmware needs pull-ups, as with the real part.
@@ -13,7 +13,11 @@
 //! counter-clockwise: DT leads     (CLK,DT) 11 -> 10 -> 00 -> 01 -> 11
 //! ```
 //!
-//! A `detent` event (value +1 / -1) is emitted as each cycle completes.
+//! Parts differ in which contact leads clockwise: `cw=dt` swaps the two.
+//!
+//! A `detent` event (value +1 / -1) is emitted as each cycle completes and
+//! reaches a different detent. A turn the other way first cancels queued
+//! steps of the one in progress.
 //! (`mhz` is the core clock, to turn microseconds into cycles.)
 use alloc::{boxed::Box, collections::VecDeque, string::String};
 use pcb::{Device, Io, Params};
@@ -24,10 +28,15 @@ const CLOSED: [(bool, bool); 4] = [(false, false), (true, false), (true, true), 
 pub struct Encoder {
     clk: usize,
     dt: usize,
+    /// DT, not CLK, leads when turning clockwise.
+    dt_leads: bool,
     step_cycles: u64,
     /// Current phase 0..4 and the phase steps still to make (+1 / -1 each).
     phase: usize,
     queue: VecDeque<i8>,
+    /// Phase steps made in all (net), and the detent last reported.
+    steps: i64,
+    detent: i64,
     /// A wake-up is pending.
     scheduled: bool,
 }
@@ -35,14 +44,22 @@ pub struct Encoder {
 pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
     let clk = p.pin("clk")?;
     let dt = p.pin("dt")?;
+    let dt_leads = match p.opt_str("cw") {
+        None | Some("clk") => false,
+        Some("dt") => true,
+        Some(v) => return Err(alloc::format!("cw must be clk or dt, not {v:?}")),
+    };
     let step_us = p.opt_int("step_us", 1, 1_000_000)?.unwrap_or(300) as u64;
     let mhz = p.opt_int("mhz", 1, 1000)?.unwrap_or(125) as u64;
-    Ok(Box::new(Encoder { clk, dt, step_cycles: step_us * mhz, phase: 0, queue: VecDeque::new(), scheduled: false }))
+    Ok(Box::new(Encoder { clk, dt, dt_leads, step_cycles: step_us * mhz, phase: 0, queue: VecDeque::new(), steps: 0, detent: 0, scheduled: false }))
 }
 
 impl Encoder {
     fn drive(&self, io: &mut Io) {
-        let (a, b) = CLOSED[self.phase];
+        let (mut a, mut b) = CLOSED[self.phase];
+        if self.dt_leads {
+            (a, b) = (b, a);
+        }
         io.drive(self.clk, a.then_some(false));
         io.drive(self.dt, b.then_some(false));
     }
@@ -59,7 +76,13 @@ impl Device for Encoder {
         }
         let dir = if value >= 0 { 1 } else { -1 };
         for _ in 0..value.unsigned_abs() * 4 {
-            self.queue.push_back(dir);
+            // Turning back first takes back steps not made yet, so the
+            // contacts reverse at once instead of finishing the old turn.
+            if self.queue.back() == Some(&-dir) {
+                self.queue.pop_back();
+            } else {
+                self.queue.push_back(dir);
+            }
         }
         if !self.scheduled && !self.queue.is_empty() {
             self.scheduled = true;
@@ -73,10 +96,13 @@ impl Device for Encoder {
             self.scheduled = false;
             return;
         };
-        self.phase = (self.phase as i64 + step as i64).rem_euclid(4) as usize;
+        self.steps += step as i64;
+        self.phase = self.steps.rem_euclid(4) as usize;
         self.drive(io);
-        if self.phase == 0 {
-            io.emit("detent", step as i64);
+        // Back at the detent it started from is no detent.
+        if self.phase == 0 && self.steps / 4 != self.detent {
+            io.emit("detent", self.steps / 4 - self.detent);
+            self.detent = self.steps / 4;
         }
         if self.queue.is_empty() {
             self.scheduled = false;
@@ -160,6 +186,15 @@ mod tests {
     }
 
     #[test]
+    fn cw_dt_makes_dt_lead_clockwise() {
+        let mut r = Rig::new("cw=dt step_us=10 mhz=1");
+        r.turn(1);
+        let steps = r.run_to(1000);
+        assert_eq!(steps.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>(), [(true, false), (false, false), (false, true), (true, true)]);
+        assert_eq!(r.board.events[0].value, 1);
+    }
+
+    #[test]
     fn several_detents_queue_up_and_turns_can_be_extended() {
         let mut r = Rig::new("step_us=10 mhz=1");
         r.turn(2);
@@ -181,11 +216,26 @@ mod tests {
     }
 
     #[test]
+    fn turning_back_cancels_queued_steps() {
+        let mut r = Rig::new("step_us=10 mhz=1");
+        r.turn(3);
+        r.run_to(15); // one step in
+        r.turn(-4);
+        let steps = r.run_to(10_000);
+        // One step back to the start detent, then one detent the other way.
+        assert_eq!(steps.len(), 1 + 4);
+        assert_eq!(r.levels(), (true, true));
+        let detents: Vec<i64> = r.board.events.iter().map(|e| e.value).collect();
+        assert_eq!(detents, [-1]);
+    }
+
+    #[test]
     fn unknown_actions_are_refused_and_params_validated() {
         let mut r = Rig::new("");
         assert_eq!(r.board.input(&mut r.pins, "knob", "spin", 1, 0), pcb::InputResult::Unsupported);
         let reg = crate::registry();
         assert!(Board::parse_with("encoder e clk=1", &reg).is_err());
         assert!(Board::parse_with("encoder e clk=1 dt=2 step_us=0", &reg).is_err());
+        assert!(Board::parse_with("encoder e clk=1 dt=2 cw=a", &reg).is_err());
     }
 }

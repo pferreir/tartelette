@@ -50,11 +50,7 @@ impl Cpu {
             8 => self.msp = v & !3,
             9 => self.psp = v & !3,
             16 => self.primask = v & 1 != 0,
-            20 => {
-                if self.ipsr == 0 {
-                    self.spsel = v & 2 != 0;
-                }
-            }
+            20 if self.ipsr == 0 => self.spsel = v & 2 != 0,
             _ => {}
         }
     }

@@ -381,13 +381,13 @@ impl Device for SdCard {
 
 impl SpiDevice for SdCard {
     fn select(&mut self, _io: &mut Io, active: bool) {
-        if !active {
-            // Releasing CS drops a half-received command and whatever the
-            // card was about to send; busy time and card state survive.
+        if !active && matches!(self.rx, Rx::Command) {
+            // Releasing CS drops a half-received command. Everything else
+            // just waits for CS to come back: the response, a data block
+            // being read or written, the busy time. Hosts like
+            // `embedded_hal_bus::spi::ExclusiveDevice` pulse CS around every
+            // single byte they read, and real cards cope with that.
             self.cmd_len = 0;
-            self.out.clear();
-            self.streaming = false;
-            self.rx = Rx::Command;
         }
     }
 
@@ -706,12 +706,81 @@ mod tests {
         h.cs(false);
         // The next command starts fresh and the card is still initialised.
         assert_eq!(h.command(13, 0), 0);
-        h.byte(0xFF);
-        // Dropping CS mid-read stops the transfer.
-        assert_eq!(h.command(18, 0), 0);
-        h.cs(true);
+    }
+
+    /// One byte read in its own CS-low transaction, like `ExclusiveDevice`.
+    fn pulsed(h: &mut Host, out: u8) -> u8 {
         h.cs(false);
-        assert_eq!(h.command(13, 0), 0, "no leftover block bytes on the line");
+        let r = h.byte(out);
+        h.cs(true);
+        r
+    }
+
+    /// Send a command in one transaction, then poll for R1 a byte at a time.
+    fn command_pulsed(h: &mut Host, cmd: u8, arg: u32) -> u8 {
+        let mut frame = [0x40 | cmd, (arg >> 24) as u8, (arg >> 16) as u8, (arg >> 8) as u8, arg as u8, 0];
+        frame[5] = crc7(&frame[..5]) << 1 | 1;
+        h.cs(false);
+        for b in frame {
+            h.byte(b);
+        }
+        h.cs(true);
+        for _ in 0..10 {
+            let r = pulsed(h, 0xFF);
+            if r & 0x80 == 0 {
+                return r;
+            }
+        }
+        panic!("no response to CMD{cmd}");
+    }
+
+    #[test]
+    fn a_response_and_read_data_survive_cs_pulsing_around_every_byte() {
+        let mut h = Host::new();
+        let mut image = vec![0u8; 1024 * BLOCK];
+        for blk in 0..3 {
+            for (i, b) in image[blk * BLOCK..(blk + 1) * BLOCK].iter_mut().enumerate() {
+                *b = i as u8 ^ (0x30 + blk as u8);
+            }
+        }
+        h.card_mut().load_image(image.clone());
+        h.init();
+        // A single block.
+        assert_eq!(command_pulsed(&mut h, 17, 1), 0);
+        while pulsed(&mut h, 0xFF) != TOKEN_SINGLE {}
+        let data: Vec<u8> = (0..BLOCK).map(|_| pulsed(&mut h, 0xFF)).collect();
+        assert_eq!(data, image[BLOCK..2 * BLOCK]);
+        let crc = u16::from_be_bytes([pulsed(&mut h, 0xFF), pulsed(&mut h, 0xFF)]);
+        assert_eq!(crc, crc16(&data));
+        // A multiple block read keeps streaming until CMD12.
+        assert_eq!(command_pulsed(&mut h, 18, 0), 0);
+        for blk in 0..2 {
+            while pulsed(&mut h, 0xFF) != TOKEN_SINGLE {}
+            let data: Vec<u8> = (0..BLOCK).map(|_| pulsed(&mut h, 0xFF)).collect();
+            assert_eq!(data, image[blk * BLOCK..(blk + 1) * BLOCK], "block {blk}");
+            pulsed(&mut h, 0xFF);
+            pulsed(&mut h, 0xFF);
+        }
+        assert_eq!(h.card().blocks_read, 3);
+    }
+
+    #[test]
+    fn a_block_write_survives_cs_pulsing_around_every_byte() {
+        let mut h = Host::new();
+        h.init();
+        assert_eq!(command_pulsed(&mut h, 24, 7), 0);
+        let data: Vec<u8> = (0..BLOCK).map(|i| (i * 7) as u8).collect();
+        pulsed(&mut h, TOKEN_SINGLE);
+        for &b in &data {
+            pulsed(&mut h, b);
+        }
+        for b in crc16(&data).to_be_bytes() {
+            pulsed(&mut h, b);
+        }
+        assert_eq!(pulsed(&mut h, 0xFF) & 0x1F, RESP_ACCEPTED);
+        while pulsed(&mut h, 0xFF) != 0xFF {}
+        assert_eq!(h.card().image()[7 * BLOCK..8 * BLOCK], data[..]);
+        assert_eq!(h.card().blocks_written, 1);
     }
 
     #[test]

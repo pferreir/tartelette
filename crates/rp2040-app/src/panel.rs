@@ -20,10 +20,12 @@ use pcb::{Board, BoardEvent};
 use pcb_devices::{button::Button, dac8165::Dac8165, led::Led, mcp23008::Mcp23008, sdcard::SdCard, st7789::St7789, ws2812::Ws2812};
 use std::collections::HashMap;
 
-/// Detents per knob revolution, for drawing the encoder's pointer.
+/// Detents per knob revolution, for turning by dragging around the knob.
 const DETENTS_PER_REV: f32 = 20.0;
-/// Pointer travel (points) per encoder detent, dragging and scrolling.
-const DRAG_PER_DETENT: f32 = 16.0;
+/// How long (seconds) the knob shows the direction of its last detent.
+const TURN_SHOWN: f64 = 0.5;
+/// Smooth (touchpad) scroll travel in points per encoder detent; a mouse
+/// wheel notch is one detent.
 const SCROLL_PER_DETENT: f32 = 40.0;
 
 pub struct Layout {
@@ -195,20 +197,20 @@ fn parse_color(v: &str) -> Option<Color32> {
 pub struct PanelState {
     /// Screen textures and the (pixels written, showing) they were made from.
     screens: HashMap<usize, (TextureHandle, (u64, bool))>,
-    /// Encoder position in detents (from its `detent` events), and the
-    /// pointer travel not yet turned into a detent.
-    detents: HashMap<usize, i64>,
+    /// Direction of each encoder's last detent (+1 clockwise) and when it
+    /// came (UI time), and the pointer travel not yet turned into a detent.
+    turned: HashMap<usize, (i64, f64)>,
     travel: HashMap<usize, f32>,
     /// Expander pins the panel is driving.
     driven: HashMap<usize, u8>,
 }
 
 impl PanelState {
-    /// Follow what happened on the board.
-    pub fn absorb(&mut self, events: &[BoardEvent]) {
+    /// Follow what happened on the board, at UI time `now` (seconds).
+    pub fn absorb(&mut self, events: &[BoardEvent], now: f64) {
         for e in events {
             if e.label == "detent" {
-                *self.detents.entry(e.part).or_default() += e.value;
+                self.turned.insert(e.part, (e.value.signum(), now));
             }
         }
     }
@@ -274,17 +276,21 @@ impl Ctx<'_> {
     }
 }
 
-/// `inner` scaled to fit inside `outer`, centred.
-fn fit(outer: Rect, inner: Vec2) -> Rect {
-    let k = (outer.width() / inner.x).min(outer.height() / inner.y);
-    Rect::from_center_size(outer.center(), inner * k)
+/// An image of `px` texels fitted inside `outer`, centred: a whole number of
+/// physical pixels per texel when it fits at all, on the pixel grid.
+fn fit_pixels(outer: Rect, px: Vec2, pixels_per_point: f32) -> Rect {
+    let k = (outer.width() / px.x).min(outer.height() / px.y) * pixels_per_point;
+    let k = if k >= 1.0 { k.floor() } else { k };
+    let size = px * k / pixels_per_point;
+    let min = ((outer.center() - size / 2.0) * pixels_per_point).round() / pixels_per_point;
+    Rect::from_min_size(min, size)
 }
 
 fn screen(c: Ctx, st: &mut PanelState, rotate: u16) {
     let Some(lcd) = c.device::<St7789>() else { return };
     let (w, h) = lcd.size();
     let stamp = (lcd.total_pixels, lcd.is_showing());
-    let (tw, th) = if rotate % 180 == 0 { (w, h) } else { (h, w) };
+    let (tw, th) = if rotate.is_multiple_of(180) { (w, h) } else { (h, w) };
     let make = || {
         let mut dst = vec![Color32::BLACK; w * h];
         let (mut x, mut y) = (0, 0);
@@ -319,7 +325,7 @@ fn screen(c: Ctx, st: &mut PanelState, rotate: u16) {
             id
         }
     };
-    let r = fit(c.body, vec2(tw as f32, th as f32));
+    let r = fit_pixels(c.body, vec2(tw as f32, th as f32), c.ui.ctx().pixels_per_point());
     let p = c.ui.painter_at(c.body);
     p.image(tex, r, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     p.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_gray(60)), StrokeKind::Outside);
@@ -393,16 +399,43 @@ fn button(c: Ctx, key: Option<Key>, out: &mut Vec<Request>) {
 fn encoder(c: Ctx, st: &mut PanelState, keys: Option<(Key, Key)>, out: &mut Vec<Request>) {
     let side = c.body.width().min(c.body.height()) * 0.9;
     let rect = Rect::from_center_size(c.body.center(), Vec2::splat(side));
-    let resp = c.ui.interact(rect, c.id("knob"), Sense::drag()).on_hover_text("drag or scroll to turn");
+    let resp = c.ui.interact(rect, c.id("knob"), Sense::drag()).on_hover_text("drag around or scroll to turn");
+    let center = rect.center();
     let travel = st.travel.entry(c.it.part).or_default();
-    if resp.dragged() {
-        let d = resp.drag_delta();
-        *travel += (d.x - d.y) / DRAG_PER_DETENT;
+    if resp.drag_started() {
+        *travel = 0.0;
+    }
+    // Dragging turns the knob by the pointer's angle around its centre, like
+    // a finger on the real one (ignored right at the centre, where it jumps).
+    if resp.dragged()
+        && let Some(now) = resp.interact_pointer_pos()
+    {
+        // The first drag frame counts from the press, not the last move.
+        let was = if resp.drag_started() { c.ui.input(|i| i.pointer.press_origin()) } else { None };
+        let (a, b) = (was.unwrap_or(now - resp.drag_delta()) - center, now - center);
+        if a.length() > side * 0.1 && b.length() > side * 0.1 {
+            let turned = (a.x * b.y - a.y * b.x).atan2(a.dot(b));
+            *travel += turned / std::f32::consts::TAU * DETENTS_PER_REV;
+        }
     }
     if resp.hovered() {
-        *travel += c.ui.input(|i| i.smooth_scroll_delta.y) / SCROLL_PER_DETENT;
+        // Raw wheel events, so one notch is one detent; and swallow the
+        // scroll so the panel's scroll area doesn't move under the knob.
+        c.ui.input_mut(|i| {
+            for e in &i.events {
+                if let egui::Event::MouseWheel { unit, delta, .. } = e {
+                    *travel += match unit {
+                        egui::MouseWheelUnit::Point => delta.y / SCROLL_PER_DETENT,
+                        _ => delta.y.signum(),
+                    };
+                }
+            }
+            i.smooth_scroll_delta = Vec2::ZERO;
+        });
     }
-    let mut turn = travel.trunc() as i64;
+    // Detents sit at whole travel values and click over half way between,
+    // so turning back undoes a detent as readily as it made it.
+    let mut turn = travel.round() as i64;
     *travel -= turn as f32;
     if let Some((ccw, cw)) = keys.filter(|_| c.keys_free) {
         turn += c.ui.input(|i| i.key_pressed(cw) as i64 - i.key_pressed(ccw) as i64);
@@ -412,14 +445,30 @@ fn encoder(c: Ctx, st: &mut PanelState, keys: Option<(Key, Key)>, out: &mut Vec<
     }
     let v = c.ui.visuals();
     let p = c.ui.painter();
-    let center = rect.center();
     let fill = if resp.dragged() { v.widgets.active.bg_fill } else if resp.hovered() { v.widgets.hovered.bg_fill } else { v.widgets.inactive.bg_fill };
     p.circle_filled(center, side / 2.0, fill);
     p.circle_stroke(center, side / 2.0, v.widgets.inactive.fg_stroke);
-    let pos = st.detents.get(&c.it.part).copied().unwrap_or(0);
-    let a = pos as f32 / DETENTS_PER_REV * std::f32::consts::TAU;
-    let dir = vec2(a.sin(), -a.cos());
-    p.line_segment([center + dir * side * 0.12, center + dir * side * 0.42], Stroke::new(3.0, v.strong_text_color()));
+    // An encoder has no position, only steps: show which way the last one
+    // went, fading out.
+    if let Some(&(dir, at)) = st.turned.get(&c.it.part) {
+        let fade = 1.0 - ((c.ui.input(|i| i.time) - at) / TURN_SHOWN) as f32;
+        if fade > 0.0 {
+            turn_arrow(p, center, side * 0.3, dir as f32, v.strong_text_color().gamma_multiply(fade));
+        }
+    }
+}
+
+/// A curved arrow over the top of a knob, pointing clockwise when `dir` > 0.
+fn turn_arrow(p: &egui::Painter, center: Pos2, radius: f32, dir: f32, color: Color32) {
+    let at = |a: f32, r: f32| center + vec2(a.sin(), -a.cos()) * r;
+    let (from, to) = (-dir, dir); // one radian either side of the top
+    let arc: Vec<Pos2> = (0..=16).map(|i| at(from + (to - from) * i as f32 / 16.0, radius)).collect();
+    let width = radius * 0.16;
+    p.add(egui::Shape::line(arc, Stroke::new(width, color)));
+    let head = width * 2.2;
+    let tip = at(to + dir * head / radius, radius);
+    let back = to - dir * 0.15;
+    p.add(egui::Shape::convex_polygon(vec![tip, at(back, radius + head * 0.7), at(back, radius - head * 0.7)], color, Stroke::NONE));
 }
 
 fn expander(c: Ctx, st: &mut PanelState, toggle: bool, active_high: bool, out: &mut Vec<Request>) {
@@ -534,6 +583,20 @@ mod tests {
         assert!(w("led", &[("color", "12345")]).is_err());
         assert!(w("led", &[("color", "pink")]).is_err());
         assert!(matches!(w("custom-thing", &[]), Ok(Widget::Other)));
+    }
+
+    #[test]
+    fn screens_scale_by_whole_physical_pixels_on_the_grid() {
+        let outer = Rect::from_min_size(pos2(10.3, 20.0), vec2(500.0, 400.0));
+        let r = fit_pixels(outer, vec2(240.0, 135.0), 1.0);
+        assert_eq!(r.size(), vec2(480.0, 270.0));
+        assert_eq!(r.min, pos2(20.0, 85.0));
+        // 1.5 points per pixel: 750 x 600 pixels hold 3x, 720 x 405 pixels.
+        let r = fit_pixels(outer, vec2(240.0, 135.0), 1.5);
+        assert_eq!(r.size() * 1.5, vec2(720.0, 405.0));
+        assert_eq!(r.min * 1.5, (r.min * 1.5).round());
+        // Too small for 1:1: shrink to fit instead.
+        assert_eq!(fit_pixels(outer, vec2(1000.0, 100.0), 1.0).width(), 500.0);
     }
 
     #[test]

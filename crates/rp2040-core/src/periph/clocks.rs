@@ -50,7 +50,7 @@ mod tests {
         let mut c = Clocks::new();
         assert_eq!((c.read(CLK_REF_SELECTED), c.read(CLK_SYS_SELECTED)), (1, 1));
         c.write(CLK_REF_CTRL, 2); // XOSC
-        c.write(CLK_SYS_CTRL, 1 | 0 << 5); // aux source
+        c.write(CLK_SYS_CTRL, 1); // aux source (AUXSRC = 0)
         assert_eq!((c.read(CLK_REF_SELECTED), c.read(CLK_SYS_SELECTED)), (4, 2));
         assert_eq!(c.read(0x50), 1);
         c.write(0x48, 0x800); // CLK_PERI_CTRL.ENABLE reads back

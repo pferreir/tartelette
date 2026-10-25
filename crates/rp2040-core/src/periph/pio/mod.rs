@@ -154,7 +154,12 @@ impl Pio {
                 }
             }
             // Two flip-flops: the pad level from two cycles ago, unless bypassed.
-            self.shared.inputs = self.bypass & pads | !self.bypass & self.pipe[1];
+            let inputs = self.bypass & pads | !self.bypass & self.pipe[1];
+            if inputs != self.shared.inputs {
+                // A parked machine has to look again at what it waits on.
+                self.settled = 0;
+            }
+            self.shared.inputs = inputs;
             self.pipe = [pads, self.pipe[0]];
             let (old_out, old_oe) = (self.shared.out, self.shared.oe);
             let mut changed_any = false;

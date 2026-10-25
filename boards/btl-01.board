@@ -26,8 +26,9 @@ dac8165 dac sdi=4 cs=5 clk=6 rst=7 vref_mv=2500
 # Eight SK6812 mini LEDs on PIO1 SM1.
 ws2812 rgb gpio=14 count=8
 
-# Rotary encoder on PIO0 SM0 (DT = GPIO21, CLK = GPIO22 = DT + 1).
-encoder knob clk=22 dt=21
+# Rotary encoder on PIO0 SM0 (DT = GPIO21, CLK = GPIO22 = DT + 1). DT leads
+# clockwise: the OS reads DT low at CLK's falling edge as Turn(+1), "down".
+encoder knob clk=22 dt=21 cw=dt
 
 # Micro SD card, SPI mode on SPI1 (chip select is a plain GPIO). Load a disk
 # image with `--sd sd=card.img` (the default blank card is 16 MiB).

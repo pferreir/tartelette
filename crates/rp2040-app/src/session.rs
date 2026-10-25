@@ -17,6 +17,8 @@ const CHUNK: u64 = 250_000;
 const RX_CHUNK: u64 = 11_000;
 /// Never keep more than this much UART text per port.
 const UART_KEEP: usize = 256 * 1024;
+/// Never keep more than this many log messages.
+const LOG_KEEP: usize = 5000;
 
 /// A file the run was built from.
 #[derive(Clone)]
@@ -39,6 +41,12 @@ impl Source {
     }
 }
 
+/// A message of the firmware's defmt log and the emulated time it was read at.
+pub struct LogEntry {
+    pub at: f64,
+    pub line: rtt::Line,
+}
+
 pub struct Session {
     pub sys: System,
     /// Why the firmware stopped for good (breakpoint), if it did.
@@ -49,6 +57,11 @@ pub struct Session {
     rx: [VecDeque<u8>; 2],
     /// Board events since the UI last took them.
     pub events: Vec<BoardEvent>,
+    /// The firmware's defmt-over-RTT log, oldest first, and why there is
+    /// none when the firmware has no log or it cannot be decoded.
+    pub log: VecDeque<LogEntry>,
+    pub log_note: Option<String>,
+    rtt: Option<rtt::Rtt>,
 }
 
 impl Session {
@@ -59,7 +72,12 @@ impl Session {
         if let Some(b) = board {
             sys.set_board(parse_board(b)?);
         }
-        Ok(Self { sys, halted: None, uart: Default::default(), rx: Default::default(), events: Vec::new() })
+        let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
+            Ok(Some(r)) => (Some(r), None),
+            Ok(None) => (None, Some("this firmware has no defmt-over-RTT log".to_string())),
+            Err(e) => (None, Some(e)),
+        };
+        Ok(Self { sys, halted: None, uart: Default::default(), rx: Default::default(), events: Vec::new(), log: VecDeque::new(), log_note, rtt })
     }
 
     /// Emulated seconds since power-up.
@@ -124,6 +142,14 @@ impl Session {
             }
         }
         self.events.append(&mut self.sys.board.events);
+        if let Some(rtt) = self.rtt.as_mut() {
+            let mut lines = Vec::new();
+            rtt.poll(&mut self.sys, &mut lines);
+            let at = self.sys.cycles() as f64 / CYCLES_PER_SEC;
+            self.log.extend(lines.into_iter().map(|line| LogEntry { at, line }));
+            let extra = self.log.len().saturating_sub(LOG_KEEP);
+            self.log.drain(..extra);
+        }
     }
 
     /// SD card contents by part name, to carry over into a fresh run (a reset
@@ -169,6 +195,7 @@ pub struct Clock {
 }
 
 /// Host time the emulator may take per UI frame, so the UI stays smooth.
+#[cfg(target_arch = "wasm32")]
 pub const FRAME_BUDGET: Duration = Duration::from_millis(14);
 /// Host time per slice on the emulator thread: short, so the UI can take the
 /// lock between slices.
@@ -353,6 +380,27 @@ mod tests {
         s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
         s.drain();
         assert!(s.uart[0].len() <= UART_KEEP);
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    /// The BTL-01 OS logs over defmt-rtt; set `BTL_FIRMWARE` to its ELF.
+    #[test]
+    fn session_collects_the_firmware_log() {
+        let Ok(path) = std::env::var("BTL_FIRMWARE") else {
+            eprintln!("BTL_FIRMWARE not set: skipped");
+            return;
+        };
+        let board = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.board")).unwrap();
+        let mut s = Session::new(&Source::new("fw", std::fs::read(path).unwrap()), Some(&Source::new("board", board))).unwrap();
+        assert_eq!(s.log_note, None);
+        s.step(125_000_000, Instant::now() + Duration::from_secs(60));
+        assert!(s.log.iter().any(|e| e.line.text.contains("Entering main loop")), "{:?}", s.log.iter().map(|e| &e.line.text).collect::<Vec<_>>());
+        let first = s.log.front().unwrap();
+        assert!(first.at > 0.0 && first.at < 1.0);
     }
 }
 

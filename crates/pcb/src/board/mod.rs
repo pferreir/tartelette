@@ -639,9 +639,9 @@ cell sensor bus=i2c0
         b.service(&mut pins, 1 << 5, 10);
         assert_eq!(b.spi_bus(0, &mut pins, 0).transfer(0x34, 8), 0x00);
         assert_eq!(b.spi_bus(0, &mut pins, 0).transfer(0x56, 8), 0x34);
-        // `b` selected too (a wiring mistake): replies AND together.
+        // `b` selected too (a wiring mistake): replies AND together, 0x56 & 0x00.
         pins.chip &= !(1 << 6);
-        assert_eq!(b.spi_bus(0, &mut pins, 0).transfer(0x78, 8), 0x56 & 0x00);
+        assert_eq!(b.spi_bus(0, &mut pins, 0).transfer(0x78, 8), 0x00);
         // No CS pin at all means permanently selected; other controller unaffected.
         assert_eq!(b.spi_bus(1, &mut pins, 0).transfer(0x9A, 8), 0x00);
         assert_eq!(b.spi_bus(1, &mut pins, 0).transfer(0xBC, 8), 0x9A);

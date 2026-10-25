@@ -1,6 +1,6 @@
 //! Native runner: `rp2040-cli firmware.elf [--max-cycles N] [--board FILE]
 //! [--press NAME@US[+HOLD_US]]... [--input NAME:ACTION[=VALUE]@US]...
-//! [--dump-screen NAME=FILE.ppm]... [--sd NAME=FILE.img]...`
+//! [--dump-screen NAME=FILE.ppm]... [--sd NAME=FILE.img]... [--log]`
 //!
 //! UART0 output goes to stdout, UART1 output to stderr. With a board file,
 //! events from its devices (LEDs, buttons, ...) are logged to stderr with
@@ -11,6 +11,18 @@
 //! run ends. `--sd` loads a disk image into an SD card part and, if the
 //! firmware wrote to the card, saves the image back to the same file at the
 //! end (the card needs at least 512 KiB, so a smaller image file grows).
+//! `--log` prints the firmware's defmt-over-RTT log to stderr, stamped with
+//! the emulated time at which it was read out (to within one chunk of
+//! about a millisecond).
+//!
+//! `rp2040-cli mkdisk FILE.img [--size-mb N] [--dir NAME]... [--label NAME]
+//! [--force]` makes a blank SD card image for `--sd`: an MBR with one empty
+//! FAT16 partition, as the BTL-01 OS mounts it (16 MiB by default, 4 to 2000;
+//! the file is sparse), with an empty top-level directory for each `--dir`
+//! (the OS lists `data`, so its Load menu needs `--dir data`). It will not
+//! replace an existing file without `--force`. A
+//! `--label` shows up in the OS's file list as an empty file, so it is best
+//! left off unless the disk is also meant for a PC.
 use pcb::Board;
 use pcb_devices::sdcard::SdCard;
 use pcb_devices::st7789::St7789;
@@ -24,12 +36,16 @@ const CHUNK: u64 = 100_000;
 type Input = (u64, String, String, i64);
 
 fn main() -> ExitCode {
+    if std::env::args().nth(1).as_deref() == Some("mkdisk") {
+        return mkdisk(std::env::args().skip(2));
+    }
     let mut path = None;
     let mut max_cycles = u64::MAX;
     let mut board_path = None;
     let mut inputs: Vec<Input> = Vec::new();
     let mut dumps: Vec<(String, String)> = Vec::new();
     let mut sd_images: Vec<(String, String)> = Vec::new();
+    let mut log = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -57,6 +73,7 @@ fn main() -> ExitCode {
                 Some((name, file)) => sd_images.push((name.into(), file.into())),
                 None => return usage(),
             },
+            "--log" => log = true,
             _ if path.is_none() && !a.starts_with("--") => path = Some(a),
             _ => return usage(),
         }
@@ -117,6 +134,14 @@ fn main() -> ExitCode {
         }
     }
 
+    let mut rtt = None;
+    if log {
+        match rtt::Rtt::new(&bytes) {
+            Ok(Some(r)) => rtt = Some(r),
+            Ok(None) => eprintln!("--log: the firmware has no defmt-over-RTT log"),
+            Err(e) => eprintln!("--log: {e}"),
+        }
+    }
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let end = max_cycles; // the core starts at cycle 0
     let mut pending = inputs.into_iter().peekable();
@@ -143,6 +168,15 @@ fn main() -> ExitCode {
                 "on" | "off" | "pressed" | "released" => writeln!(err, "[{t:>10.1} us] {name} {}", e.label),
                 _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
             };
+        }
+        if let Some(r) = rtt.as_mut() {
+            let mut lines = Vec::new();
+            r.poll(&mut sys, &mut lines);
+            let t = sys.cycles() as f64 / CYCLES_PER_US as f64;
+            for l in lines {
+                let level = l.level.map_or("", rtt::Level::name);
+                let _ = writeln!(err, "[{t:>10.1} us] {level:<5} {}", l.text);
+            }
         }
         let _ = out.flush();
 
@@ -214,7 +248,65 @@ fn parse_input(spec: &str) -> Option<Input> {
     Some((us_to_cycles(when)?, name.to_string(), action.to_string(), value))
 }
 
+/// `mkdisk FILE [--size-mb N] [--dir NAME]... [--label NAME] [--force]`.
+fn mkdisk(mut args: impl Iterator<Item = String>) -> ExitCode {
+    use std::io::{Seek, SeekFrom};
+    let (mut file, mut size_mb, mut label, mut force) = (None, 16, "NO NAME".to_string(), false);
+    let mut dirs: Vec<String> = Vec::new();
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--size-mb" => match args.next().and_then(|v| v.parse().ok()) {
+                Some(n) => size_mb = n,
+                None => return usage(),
+            },
+            "--dir" => match args.next() {
+                Some(d) => dirs.push(d),
+                None => return usage(),
+            },
+            "--label" => match args.next() {
+                Some(l) => label = l,
+                None => return usage(),
+            },
+            "--force" => force = true,
+            _ if file.is_none() && !a.starts_with("--") => file = Some(a),
+            _ => return usage(),
+        }
+    }
+    let Some(file) = file else { return usage() };
+    let regions = match pcb_devices::fat::format_fat16(size_mb, &label, &dirs.iter().map(String::as_str).collect::<Vec<_>>()) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("mkdisk: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let write = || -> std::io::Result<()> {
+        let mut f = if force { std::fs::File::create(&file)? } else { std::fs::File::create_new(&file)? };
+        f.set_len(size_mb as u64 * 1024 * 1024)?;
+        for (at, bytes) in regions {
+            f.seek(SeekFrom::Start(at as u64))?;
+            f.write_all(&bytes)?;
+        }
+        Ok(())
+    };
+    match write() {
+        Ok(()) => {
+            eprintln!("{file}: {size_mb} MiB, FAT16 \"{label}\"{}", dirs.iter().map(|d| format!(", {d}/")).collect::<String>());
+            ExitCode::SUCCESS
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!("{file}: already exists (use --force to replace it)");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("{file}: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn usage() -> ExitCode {
-    eprintln!("usage: rp2040-cli <firmware.elf> [--max-cycles N] [--board FILE] [--press NAME@US[+HOLD_US]]... [--input NAME:ACTION[=VALUE]@US]... [--dump-screen NAME=FILE.ppm]... [--sd NAME=FILE.img]...");
+    eprintln!("usage: rp2040-cli <firmware.elf> [--max-cycles N] [--board FILE] [--press NAME@US[+HOLD_US]]... [--input NAME:ACTION[=VALUE]@US]... [--dump-screen NAME=FILE.ppm]... [--sd NAME=FILE.img]... [--log]");
+    eprintln!("       rp2040-cli mkdisk <FILE.img> [--size-mb N] [--dir NAME]... [--label NAME] [--force]");
     ExitCode::from(2)
 }

@@ -7,3 +7,4 @@ edition.workspace = true
 rp2040-core = { path = "../rp2040-core" }
 pcb = { path = "../pcb" }
 pcb-devices = { path = "../pcb-devices" }
+rtt = { path = "../rtt" }
