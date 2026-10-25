@@ -2,208 +2,294 @@
 
 use super::*;
 
+type R = Result<u32, Fault>;
+type Handler<B> = fn(&mut Cpu, &mut B, u32, u32) -> R;
+
+/// Handler per top-five-bits of the opcode.
+struct Table<B: ?Sized>(core::marker::PhantomData<B>);
+
+impl<B: Bus + ?Sized> Table<B> {
+    const H: [Handler<B>; 32] = [
+        Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_add_sub,
+        Cpu::op_mov_imm, Cpu::op_cmp_imm, Cpu::op_add_imm, Cpu::op_sub_imm,
+        Cpu::op_alu_or_special, Cpu::op_ldr_literal, Cpu::op_ldst_reg, Cpu::op_ldst_reg,
+        Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_str_sp, Cpu::op_ldr_sp,
+        Cpu::op_adr, Cpu::op_add_sp_imm, Cpu::op_misc, Cpu::op_misc,
+        Cpu::op_stm, Cpu::op_ldm, Cpu::op_cond_branch, Cpu::op_cond_branch,
+        Cpu::op_branch, Cpu::op_undefined, Cpu::op_wide, Cpu::op_undefined,
+    ];
+}
+
 impl Cpu {
-    /// Fetch, decode and execute one instruction.
+    /// Fetch, decode and execute one instruction. The top five bits pick a
+    /// handler from a table, so each instruction class runs in its own small
+    /// function instead of one large one.
+    #[inline]
     pub(super) fn exec16<B: Bus + ?Sized>(&mut self, bus: &mut B) -> Result<u32, Fault> {
         let pc = self.pc;
         let hw = bus.fetch16(pc) as u32;
-        let mut next = pc.wrapping_add(2);
-        let mut cycles = 1;
+        Table::<B>::H[(hw >> 11) as usize](self, bus, hw, pc)
+    }
 
+    fn op_shift_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let rd = (hw & 7) as usize;
+        let rn = ((hw >> 3) & 7) as usize;
+        let imm = (hw >> 6) & 0x1F;
+        let val = self.r[rn];
+        let (res, c) = match hw >> 11 {
+            0 => lsl(val, imm, self.c),
+            1 => lsr(val, if imm == 0 { 32 } else { imm }, self.c),
+            _ => asr(val, if imm == 0 { 32 } else { imm }, self.c),
+        };
+        self.r[rd] = res;
+        self.set_nzc(res, c);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_add_sub<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
         let rm6 = ((hw >> 6) & 7) as usize;
-        let rd8 = ((hw >> 8) & 7) as usize;
-        let imm8 = hw & 0xFF;
-        let pc_aligned = pc.wrapping_add(4) & !3;
+        let b = if hw & (1 << 10) != 0 { rm6 as u32 } else { self.r[rm6] };
+        let (res, c, v) = if hw & (1 << 9) != 0 {
+            add_with_carry(self.r[rn], !b, true)
+        } else {
+            add_with_carry(self.r[rn], b, false)
+        };
+        self.r[rd] = res;
+        self.set_nzcv(res, c, v);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
 
-        match hw >> 11 {
-            // LSL / LSR / ASR (immediate)
-            op @ 0..=2 => {
-                let imm = (hw >> 6) & 0x1F;
-                let val = self.r[rn];
-                let (res, c) = match op {
-                    0 => lsl(val, imm, self.c),
-                    1 => lsr(val, if imm == 0 { 32 } else { imm }, self.c),
-                    _ => asr(val, if imm == 0 { 32 } else { imm }, self.c),
-                };
-                self.r[rd] = res;
-                self.set_nzc(res, c);
-            }
-            // ADD / SUB register or imm3
-            3 => {
-                let b = if hw & (1 << 10) != 0 { rm6 as u32 } else { self.r[rm6] };
-                let (res, c, v) = if hw & (1 << 9) != 0 {
-                    add_with_carry(self.r[rn], !b, true)
+    fn op_mov_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let imm8 = hw & 0xFF;
+        self.r[((hw >> 8) & 7) as usize] = imm8;
+        self.set_nz(imm8);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_cmp_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let (res, c, v) = add_with_carry(self.r[((hw >> 8) & 7) as usize], !(hw & 0xFF), true);
+        self.set_nzcv(res, c, v);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_add_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let rd8 = ((hw >> 8) & 7) as usize;
+        let (res, c, v) = add_with_carry(self.r[rd8], hw & 0xFF, false);
+        self.r[rd8] = res;
+        self.set_nzcv(res, c, v);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_sub_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let rd8 = ((hw >> 8) & 7) as usize;
+        let (res, c, v) = add_with_carry(self.r[rd8], !(hw & 0xFF), true);
+        self.r[rd8] = res;
+        self.set_nzcv(res, c, v);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_alu_or_special<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        if hw & (1 << 10) == 0 {
+            self.exec_alu(hw);
+            self.pc = pc.wrapping_add(2);
+            return Ok(1);
+        }
+        // special data / branch exchange
+        let mut next = pc.wrapping_add(2);
+        let mut cycles = 1;
+        let rm = ((hw >> 3) & 0xF) as usize;
+        let rdn = ((hw >> 4) & 8 | hw & 7) as usize;
+        match (hw >> 8) & 3 {
+            0 => {
+                let res = self.reg(rdn).wrapping_add(self.reg(rm));
+                if rdn == 15 {
+                    next = res & !1;
+                    cycles = 2;
                 } else {
-                    add_with_carry(self.r[rn], b, false)
-                };
-                self.r[rd] = res;
+                    self.write_reg(rdn, res);
+                }
+            }
+            1 => {
+                let (res, c, v) = add_with_carry(self.reg(rdn), !self.reg(rm), true);
                 self.set_nzcv(res, c, v);
             }
-            4 => {
-                self.r[rd8] = imm8;
-                self.set_nz(imm8);
-            }
-            5 => {
-                let (res, c, v) = add_with_carry(self.r[rd8], !imm8, true);
-                self.set_nzcv(res, c, v);
-            }
-            6 => {
-                let (res, c, v) = add_with_carry(self.r[rd8], imm8, false);
-                self.r[rd8] = res;
-                self.set_nzcv(res, c, v);
-            }
-            7 => {
-                let (res, c, v) = add_with_carry(self.r[rd8], !imm8, true);
-                self.r[rd8] = res;
-                self.set_nzcv(res, c, v);
-            }
-            8 if hw & (1 << 10) == 0 => self.exec_alu(hw),
-            8 => {
-                // special data / branch exchange
-                let rm = ((hw >> 3) & 0xF) as usize;
-                let rdn = ((hw >> 4) & 8 | hw & 7) as usize;
-                match (hw >> 8) & 3 {
-                    0 => {
-                        let res = self.reg(rdn).wrapping_add(self.reg(rm));
-                        if rdn == 15 {
-                            next = res & !1;
-                            cycles = 2;
-                        } else {
-                            self.write_reg(rdn, res);
-                        }
-                    }
-                    1 => {
-                        let (res, c, v) = add_with_carry(self.reg(rdn), !self.reg(rm), true);
-                        self.set_nzcv(res, c, v);
-                    }
-                    2 => {
-                        let val = self.reg(rm);
-                        if rdn == 15 {
-                            next = val & !1;
-                            cycles = 2;
-                        } else {
-                            self.write_reg(rdn, val);
-                        }
-                    }
-                    _ => {
-                        let target = self.reg(rm);
-                        if hw & 0x80 != 0 {
-                            self.lr = next | 1;
-                        }
-                        next = self.bx_write(bus, target)?;
-                        cycles = 2;
-                    }
+            2 => {
+                let val = self.reg(rm);
+                if rdn == 15 {
+                    next = val & !1;
+                    cycles = 2;
+                } else {
+                    self.write_reg(rdn, val);
                 }
             }
-            // LDR (literal)
-            9 => {
-                self.r[rd8] = self.ld32(bus, pc_aligned + imm8 * 4)?;
+            _ => {
+                let target = self.reg(rm);
+                if hw & 0x80 != 0 {
+                    self.lr = next | 1;
+                }
+                next = self.bx_write(bus, target)?;
                 cycles = 2;
             }
-            // load/store register offset
-            10 | 11 => {
-                let addr = self.r[rn].wrapping_add(self.r[rm6]);
-                cycles = 2;
-                match (hw >> 9) & 7 {
-                    0 => self.st32(bus, addr, self.r[rd])?,
-                    1 => self.st16(bus, addr, self.r[rd] as u16)?,
-                    2 => bus.write8(addr, self.r[rd] as u8),
-                    3 => self.r[rd] = bus.read8(addr) as i8 as u32,
-                    4 => self.r[rd] = self.ld32(bus, addr)?,
-                    5 => self.r[rd] = self.ld16(bus, addr)? as u32,
-                    6 => self.r[rd] = bus.read8(addr) as u32,
-                    _ => self.r[rd] = self.ld16(bus, addr)? as i16 as u32,
-                }
-            }
-            // load/store immediate offset
-            op @ 12..=17 => {
-                let imm5 = (hw >> 6) & 0x1F;
-                let base = self.r[rn];
-                cycles = 2;
-                match op {
-                    12 => self.st32(bus, base.wrapping_add(imm5 * 4), self.r[rd])?,
-                    13 => self.r[rd] = self.ld32(bus, base.wrapping_add(imm5 * 4))?,
-                    14 => bus.write8(base.wrapping_add(imm5), self.r[rd] as u8),
-                    15 => self.r[rd] = bus.read8(base.wrapping_add(imm5)) as u32,
-                    16 => self.st16(bus, base.wrapping_add(imm5 * 2), self.r[rd] as u16)?,
-                    _ => self.r[rd] = self.ld16(bus, base.wrapping_add(imm5 * 2))? as u32,
-                }
-            }
-            // STR / LDR sp-relative
-            18 => {
-                self.st32(bus, self.sp().wrapping_add(imm8 * 4), self.r[rd8])?;
-                cycles = 2;
-            }
-            19 => {
-                self.r[rd8] = self.ld32(bus, self.sp().wrapping_add(imm8 * 4))?;
-                cycles = 2;
-            }
-            // ADR / ADD rd, sp, #imm
-            20 => self.r[rd8] = pc_aligned + imm8 * 4,
-            21 => self.r[rd8] = self.sp().wrapping_add(imm8 * 4),
-            22 | 23 => cycles = self.exec_misc(bus, hw, &mut next)?,
-            // STM / LDM
-            24 => {
-                let mut addr = self.r[rd8];
-                for i in 0..8 {
-                    if hw & (1 << i) != 0 {
-                        self.st32(bus, addr, self.r[i])?;
-                        addr += 4;
-                        cycles += 1;
-                    }
-                }
-                self.r[rd8] = addr;
-            }
-            25 => {
-                let mut addr = self.r[rd8];
-                for i in 0..8 {
-                    if hw & (1 << i) != 0 {
-                        self.r[i] = self.ld32(bus, addr)?;
-                        addr += 4;
-                        cycles += 1;
-                    }
-                }
-                if hw & (1 << rd8) == 0 {
-                    self.r[rd8] = addr;
-                }
-            }
-            // conditional branch / SVC / UDF
-            26 | 27 => {
-                let cond = (hw >> 8) & 0xF;
-                match cond {
-                    0xE => return Err(Fault),
-                    0xF => {
-                        self.pc = next;
-                        self.take_exception(bus, EXC_SVCALL);
-                        return Ok(1);
-                    }
-                    _ => {
-                        if self.cond(cond) {
-                            let off = (imm8 as u8 as i8 as i32) << 1;
-                            next = pc.wrapping_add(4).wrapping_add(off as u32);
-                            cycles = 2;
-                        }
-                    }
-                }
-            }
-            // unconditional branch
-            28 => {
-                let off = (((hw & 0x7FF) << 21) as i32) >> 20;
-                next = pc.wrapping_add(4).wrapping_add(off as u32);
-                cycles = 2;
-            }
-            // 32-bit encodings
-            30 => {
-                let hw2 = bus.fetch16(pc.wrapping_add(2)) as u32;
-                next = pc.wrapping_add(4);
-                cycles = self.exec_wide(hw, hw2, pc, &mut next)?;
-            }
-            _ => return Err(Fault),
         }
         self.pc = next;
         Ok(cycles)
+    }
+
+    fn op_ldr_literal<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let pc_aligned = pc.wrapping_add(4) & !3;
+        self.r[((hw >> 8) & 7) as usize] = self.ld32(bus, pc_aligned + (hw & 0xFF) * 4)?;
+        self.pc = pc.wrapping_add(2);
+        Ok(2)
+    }
+
+    fn op_ldst_reg<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let rd = (hw & 7) as usize;
+        let rn = ((hw >> 3) & 7) as usize;
+        let rm6 = ((hw >> 6) & 7) as usize;
+        let addr = self.r[rn].wrapping_add(self.r[rm6]);
+        match (hw >> 9) & 7 {
+            0 => self.st32(bus, addr, self.r[rd])?,
+            1 => self.st16(bus, addr, self.r[rd] as u16)?,
+            2 => bus.write8(addr, self.r[rd] as u8),
+            3 => self.r[rd] = bus.read8(addr) as i8 as u32,
+            4 => self.r[rd] = self.ld32(bus, addr)?,
+            5 => self.r[rd] = self.ld16(bus, addr)? as u32,
+            6 => self.r[rd] = bus.read8(addr) as u32,
+            _ => self.r[rd] = self.ld16(bus, addr)? as i16 as u32,
+        }
+        self.pc = pc.wrapping_add(2);
+        Ok(2)
+    }
+
+    fn op_ldst_imm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let rd = (hw & 7) as usize;
+        let rn = ((hw >> 3) & 7) as usize;
+        let imm5 = (hw >> 6) & 0x1F;
+        let base = self.r[rn];
+        match hw >> 11 {
+            12 => self.st32(bus, base.wrapping_add(imm5 * 4), self.r[rd])?,
+            13 => self.r[rd] = self.ld32(bus, base.wrapping_add(imm5 * 4))?,
+            14 => bus.write8(base.wrapping_add(imm5), self.r[rd] as u8),
+            15 => self.r[rd] = bus.read8(base.wrapping_add(imm5)) as u32,
+            16 => self.st16(bus, base.wrapping_add(imm5 * 2), self.r[rd] as u16)?,
+            _ => self.r[rd] = self.ld16(bus, base.wrapping_add(imm5 * 2))? as u32,
+        }
+        self.pc = pc.wrapping_add(2);
+        Ok(2)
+    }
+
+    fn op_str_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        self.st32(bus, self.sp().wrapping_add((hw & 0xFF) * 4), self.r[((hw >> 8) & 7) as usize])?;
+        self.pc = pc.wrapping_add(2);
+        Ok(2)
+    }
+
+    fn op_ldr_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        self.r[((hw >> 8) & 7) as usize] = self.ld32(bus, self.sp().wrapping_add((hw & 0xFF) * 4))?;
+        self.pc = pc.wrapping_add(2);
+        Ok(2)
+    }
+
+    fn op_adr<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        self.r[((hw >> 8) & 7) as usize] = (pc.wrapping_add(4) & !3) + (hw & 0xFF) * 4;
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_add_sp_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        self.r[((hw >> 8) & 7) as usize] = self.sp().wrapping_add((hw & 0xFF) * 4);
+        self.pc = pc.wrapping_add(2);
+        Ok(1)
+    }
+
+    fn op_misc<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let mut next = pc.wrapping_add(2);
+        let cycles = self.exec_misc(bus, hw, &mut next)?;
+        self.pc = next;
+        Ok(cycles)
+    }
+
+    fn op_stm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let rd8 = ((hw >> 8) & 7) as usize;
+        let mut cycles = 1;
+        let mut addr = self.r[rd8];
+        for i in 0..8 {
+            if hw & (1 << i) != 0 {
+                self.st32(bus, addr, self.r[i])?;
+                addr += 4;
+                cycles += 1;
+            }
+        }
+        self.r[rd8] = addr;
+        self.pc = pc.wrapping_add(2);
+        Ok(cycles)
+    }
+
+    fn op_ldm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let rd8 = ((hw >> 8) & 7) as usize;
+        let mut cycles = 1;
+        let mut addr = self.r[rd8];
+        for i in 0..8 {
+            if hw & (1 << i) != 0 {
+                self.r[i] = self.ld32(bus, addr)?;
+                addr += 4;
+                cycles += 1;
+            }
+        }
+        if hw & (1 << rd8) == 0 {
+            self.r[rd8] = addr;
+        }
+        self.pc = pc.wrapping_add(2);
+        Ok(cycles)
+    }
+
+    fn op_cond_branch<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let next = pc.wrapping_add(2);
+        let cond = (hw >> 8) & 0xF;
+        match cond {
+            0xE => Err(Fault),
+            0xF => {
+                self.pc = next;
+                self.take_exception(bus, EXC_SVCALL);
+                Ok(1)
+            }
+            _ if self.cond(cond) => {
+                let off = ((hw & 0xFF) as u8 as i8 as i32) << 1;
+                self.pc = pc.wrapping_add(4).wrapping_add(off as u32);
+                Ok(2)
+            }
+            _ => {
+                self.pc = next;
+                Ok(1)
+            }
+        }
+    }
+
+    fn op_branch<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
+        let off = (((hw & 0x7FF) << 21) as i32) >> 20;
+        self.pc = pc.wrapping_add(4).wrapping_add(off as u32);
+        Ok(2)
+    }
+
+    fn op_wide<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
+        let hw2 = bus.fetch16(pc.wrapping_add(2)) as u32;
+        let mut next = pc.wrapping_add(4);
+        let cycles = self.exec_wide(hw, hw2, pc, &mut next)?;
+        self.pc = next;
+        Ok(cycles)
+    }
+
+    fn op_undefined<B: Bus + ?Sized>(&mut self, _: &mut B, _: u32, _: u32) -> R {
+        Err(Fault)
     }
 
     fn exec_alu(&mut self, hw: u32) {
