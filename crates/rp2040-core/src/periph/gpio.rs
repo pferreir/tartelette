@@ -261,6 +261,9 @@ impl Gpio {
     }
 
     fn ints(&self, set: usize, n: usize) -> u32 {
+        if self.inte[set][n] == 0 {
+            return 0;
+        }
         (self.intr(n) | self.intf[set][n]) & self.inte[set][n]
     }
 

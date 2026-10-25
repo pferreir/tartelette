@@ -139,6 +139,11 @@ pub struct SystemBus {
     /// The core whose access is being serviced: it picks which PPB and which
     /// view of SIO the access sees. [`System`] sets it around each core step.
     pub core: usize,
+    /// Some device state that feeds the NVIC inputs may have changed since
+    /// they were last computed.
+    pub(crate) lines_dirty: bool,
+    /// A peripheral register was accessed since the last full device sync.
+    pub(crate) touched: bool,
 }
 
 impl SystemBus {
@@ -175,6 +180,8 @@ impl SystemBus {
             stubs,
             vtor: [0; 2],
             core: 0,
+            lines_dirty: true,
+            touched: true,
         }
     }
 
@@ -203,6 +210,8 @@ impl SystemBus {
     // ---- 32-bit word access; sub-word accesses are derived from these ----
 
     fn mmio_read(&mut self, addr: u32) -> u32 {
+        self.lines_dirty = true;
+        self.touched = true;
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr - SIO_BASE) => self.gpio.sio_read(addr - SIO_BASE),
             0xD if Sio::handles(addr - SIO_BASE) => self.sio.read(self.core, addr - SIO_BASE),
@@ -220,6 +229,8 @@ impl SystemBus {
     }
 
     fn mmio_write(&mut self, addr: u32, val: u32) {
+        self.lines_dirty = true;
+        self.touched = true;
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE)) => {
                 self.gpio.sio_write(addr - SIO_BASE, val)
@@ -308,9 +319,16 @@ impl SystemBus {
             35 => self.i2c[1].dreq_rx(),
             _ => false,
         };
-        (0..64u32)
-            .filter(|n| needed >> n & 1 != 0 && level(*n))
-            .fold(0, |m, n| m | 1 << n)
+        let mut mask = 0;
+        let mut rest = needed;
+        while rest != 0 {
+            let n = rest.trailing_zeros();
+            rest &= rest - 1;
+            if level(n) {
+                mask |= 1 << n;
+            }
+        }
+        mask
     }
 
     /// Core cycles until a device will next change state on its own.
@@ -489,6 +507,10 @@ pub struct System {
     time: u64,
     /// Cores held in reset (see [`Psm`]).
     held: [bool; 2],
+    /// Nothing but the timer and SysTick can change on their own until a
+    /// register is touched or a pin changes: no DMA transfer, PIO program,
+    /// or bus transaction is pending. Lets a step skip the full device sync.
+    quiet: bool,
 }
 
 impl System {
@@ -499,6 +521,7 @@ impl System {
             board: Board::new(),
             time: 0,
             held: [false; 2],
+            quiet: false,
         };
         sys.reset_core1();
         sys
@@ -574,6 +597,7 @@ impl System {
         board.attach(&mut self.bus.gpio);
         self.bus.gpio.take_changes();
         self.board = board;
+        self.quiet = false;
     }
 
     /// Do something to a board device from the host side (see each device's
@@ -594,6 +618,8 @@ impl System {
     /// A host action may have moved pins and raised an interrupt while the
     /// cores sleep: let devices react, then refresh the NVIC inputs.
     fn settle_inputs(&mut self) {
+        self.bus.lines_dirty = true;
+        self.quiet = false;
         self.sync_board();
         self.refresh_core_views();
     }
@@ -602,6 +628,8 @@ impl System {
     /// the next scheduled input). Does nothing if `cycle` is not in the future.
     pub fn idle_until(&mut self, cycle: u64) {
         if cycle > self.time {
+            self.bus.lines_dirty = true;
+            self.bus.touched = true;
             self.advance_to(cycle);
         }
     }
@@ -614,6 +642,8 @@ impl System {
                 break;
             }
             let changed = self.bus.gpio.take_changes();
+            self.bus.lines_dirty = true;
+            self.quiet = false;
             self.board.service(&mut self.bus.gpio, changed, self.time);
         }
     }
@@ -623,10 +653,12 @@ impl System {
     fn service_buses(&mut self) {
         for n in 0..2 {
             if self.bus.i2c[n].has_work() {
+                self.bus.lines_dirty = true;
                 let mut wire = self.board.i2c_bus(n, &mut self.bus.gpio, self.time);
                 self.bus.i2c[n].pump(&mut wire);
             }
             if self.bus.spi[n].has_work() {
+                self.bus.lines_dirty = true;
                 let mut wire = self.board.spi_bus(n, &mut self.bus.gpio, self.time);
                 self.bus.spi[n].pump(&mut wire);
             }
@@ -637,6 +669,9 @@ impl System {
     /// Returns how many it moved.
     fn run_dma(&mut self, budget: u64) -> u64 {
         if self.bus.resets.in_reset(RESET_DMA) {
+            return 0;
+        }
+        if !self.bus.dma.active() {
             return 0;
         }
         self.bus.dma.sync_timers(self.time);
@@ -664,6 +699,7 @@ impl System {
                 _ => self.bus.write32(t.write, v),
             }
             self.bus.dma.complete(&t);
+            self.bus.lines_dirty = true;
             // The write may have queued a frame for a board device.
             self.service_buses();
             moved += 1;
@@ -687,8 +723,11 @@ impl System {
 
     /// Give each core's NVIC the current IRQ inputs and its core's IPSR.
     fn refresh_core_views(&mut self) {
+        let dirty = core::mem::take(&mut self.bus.lines_dirty);
         for i in 0..2 {
-            self.bus.ppb[i].lines = self.bus.irq_lines(i);
+            if dirty {
+                self.bus.ppb[i].lines = self.bus.irq_lines(i);
+            }
             self.bus.ppb[i].ipsr = self.cores[i].ipsr;
         }
     }
@@ -702,6 +741,7 @@ impl System {
             self.advance_segment(due.map_or(to, |t| t.max(self.time)));
             let Some(t) = due else { break };
             self.board.fire_timers(&mut self.bus.gpio, t.max(self.time));
+            self.quiet = false;
             self.sync_board();
         }
     }
@@ -712,6 +752,20 @@ impl System {
     /// interrupt lines and let board devices react.
     fn advance_segment(&mut self, to: u64) {
         let from = self.time;
+        if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() {
+            if to > from {
+                self.time = to;
+                for block in 0..2 {
+                    if !self.bus.resets.in_reset(RESET_PIO[block]) {
+                        self.bus.pio[block].idle(to - from);
+                    }
+                }
+                self.advance_clocks(from, to);
+            }
+            self.refresh_core_views();
+            return;
+        }
+        self.bus.touched = false;
         self.service_buses();
         if to > from {
             self.time = to;
@@ -724,21 +778,47 @@ impl System {
                         block,
                     };
                     self.bus.pio[block].advance(from, to - from, &mut env);
+                    if core::mem::take(&mut self.bus.pio[block].ticked) {
+                        self.bus.lines_dirty = true;
+                    }
                 }
             }
-            self.bus.timer.update(to);
-            for ppb in &mut self.bus.ppb {
-                ppb.advance(to - from);
-            }
-            // A sleeping core's clock keeps pace with real time.
-            for (cpu, held) in self.cores.iter_mut().zip(self.held) {
-                if cpu.sleeping && !held {
-                    cpu.cycles = cpu.cycles.max(to);
-                }
-            }
+            self.advance_clocks(from, to);
         }
         self.refresh_core_views();
         self.sync_board();
+        self.quiet = self.is_quiet();
+    }
+
+    /// The part of a device sync that never goes idle: timer, SysTick, and
+    /// the clocks of sleeping cores.
+    fn advance_clocks(&mut self, from: u64, to: u64) {
+        let timer_lines = self.bus.timer.irq_lines();
+        self.bus.timer.update(to);
+        if self.bus.timer.irq_lines() != timer_lines {
+            self.bus.lines_dirty = true;
+        }
+        for ppb in &mut self.bus.ppb {
+            ppb.advance(to - from);
+        }
+        // A sleeping core's clock keeps pace with real time.
+        for (cpu, held) in self.cores.iter_mut().zip(self.held) {
+            if cpu.sleeping && !held {
+                cpu.cycles = cpu.cycles.max(to);
+            }
+        }
+    }
+
+    /// Is every device other than the timer and SysTick at rest, so that
+    /// only a register access or a pin change can disturb it?
+    fn is_quiet(&self) -> bool {
+        !self.bus.gpio.has_changes()
+            && !self.dma_runnable()
+            && (0..2).all(|b| {
+                self.bus.resets.in_reset(RESET_PIO[b])
+                    || self.bus.pio[b].parked(self.bus.gpio.pad_inputs())
+            })
+            && (0..2).all(|n| !self.bus.i2c[n].has_work() && !self.bus.spi[n].has_work())
     }
 
     /// Apply a PSM reset request for core 1, if there was one.
@@ -815,6 +895,8 @@ impl System {
     /// by one idle cycle if every core is asleep. Returns the cycles that
     /// instruction took.
     pub fn step(&mut self) -> u32 {
+        self.bus.lines_dirty = true;
+        self.bus.touched = true;
         match self.next_core() {
             Some(core) => self.step_core(core),
             None => {
@@ -827,6 +909,8 @@ impl System {
     /// Run for about `max_cycles` cycles (stops early on `bkpt`, or when
     /// every core sleeps with nothing that could ever wake it).
     pub fn run(&mut self, max_cycles: u64) -> StopReason {
+        self.bus.lines_dirty = true;
+        self.bus.touched = true;
         let end = self.time.saturating_add(max_cycles);
         while self.time < end {
             let Some(core) = self.next_core() else {

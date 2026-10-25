@@ -61,6 +61,8 @@ pub struct Pio {
     imem: [u16; IMEM_WORDS],
     sm: [Sm; NUM_SM],
     shared: Shared,
+    /// Set whenever a machine executed a cycle; the host clears it.
+    pub ticked: bool,
     inte: [u32; 2],
     intf: [u32; 2],
     /// Pads whose input skips the synchronizer.
@@ -74,6 +76,7 @@ pub struct Pio {
 impl Pio {
     pub fn new() -> Self {
         Self {
+            ticked: false,
             imem: [0; IMEM_WORDS],
             sm: core::array::from_fn(|_| Sm::new()),
             shared: Shared::default(),
@@ -92,6 +95,14 @@ impl Pio {
 
     fn runs(&self, n: usize) -> bool {
         self.sm[n].enabled || self.sm[n].forced.is_some()
+    }
+
+    /// Nothing can happen here until the outside acts: every running machine
+    /// is parked and has already seen the current pad levels.
+    pub fn parked(&self, pads: u32) -> bool {
+        (0..NUM_SM).all(|n| !self.runs(n) || self.settled >> n & 1 != 0)
+            && (!(0..NUM_SM).any(|n| self.runs(n))
+                || (self.pipe == [pads, pads] && self.shared.inputs == pads))
     }
 
     /// Some machine is running and not parked on an external condition.
@@ -120,6 +131,28 @@ impl Pio {
                 self.skip(cycles - done);
                 return;
             }
+            // The synchronizer has caught up: cycles before the next divider
+            // tick change nothing, so jump to just before it.
+            if self.pipe == [pads, pads] && self.shared.inputs == pads {
+                let wait = (0..NUM_SM)
+                    .filter(|&n| self.runs(n))
+                    .map(|n| {
+                        let sm = &self.sm[n];
+                        (sm.div256().saturating_sub(sm.acc) as u64).div_ceil(256).max(1)
+                    })
+                    .min()
+                    .unwrap_or(1);
+                let idle = (wait - 1).min(cycles - done);
+                if idle > 0 {
+                    for n in 0..NUM_SM {
+                        if self.runs(n) {
+                            self.sm[n].acc += 256 * idle as u32;
+                        }
+                    }
+                    done += idle;
+                    continue;
+                }
+            }
             // Two flip-flops: the pad level from two cycles ago, unless bypassed.
             self.shared.inputs = self.bypass & pads | !self.bypass & self.pipe[1];
             self.pipe = [pads, self.pipe[0]];
@@ -135,6 +168,7 @@ impl Pio {
                     continue;
                 }
                 self.sm[n].acc -= div;
+                self.ticked = true;
                 let progressed = self.sm[n].tick(n, &self.imem, &mut self.shared);
                 if progressed {
                     changed_any = true;
@@ -152,11 +186,20 @@ impl Pio {
         }
     }
 
+    /// Let `cycles` pass with nothing for the machines to do: if any is
+    /// running, its divider moves; a stopped block doesn't move at all.
+    pub fn idle(&mut self, cycles: u64) {
+        if (0..NUM_SM).any(|n| self.runs(n)) {
+            self.skip(cycles);
+        }
+    }
+
     /// Let `cycles` pass with every machine parked: only the dividers move.
     fn skip(&mut self, cycles: u64) {
         for sm in &mut self.sm {
             let div = sm.div256() as u64;
-            sm.acc = ((sm.acc as u64 + 256 * cycles) % div) as u32;
+            let acc = sm.acc as u64 + 256 * cycles;
+            sm.acc = if acc < div { acc } else { acc % div } as u32;
         }
     }
 
@@ -173,6 +216,9 @@ impl Pio {
 
     /// Level of PIO interrupt line `line` (0 or 1).
     pub fn irq(&self, line: usize) -> bool {
+        if self.inte[line] == 0 {
+            return false;
+        }
         (self.intr() | self.intf[line]) & self.inte[line] != 0
     }
 
