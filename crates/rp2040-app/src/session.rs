@@ -4,6 +4,7 @@ use pcb::{Board, BoardEvent};
 use pcb_devices::sdcard::SdCard;
 use rp2040_core::system::{CYCLES_PER_US, StopReason, System};
 use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, MutexGuard};
 use web_time::{Duration, Instant};
 
 pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
@@ -168,7 +169,11 @@ pub struct Clock {
 }
 
 /// Host time the emulator may take per UI frame, so the UI stays smooth.
-const FRAME_BUDGET: Duration = Duration::from_millis(14);
+pub const FRAME_BUDGET: Duration = Duration::from_millis(14);
+/// Host time per slice on the emulator thread: short, so the UI can take the
+/// lock between slices.
+#[cfg(not(target_arch = "wasm32"))]
+const THREAD_SLICE: Duration = Duration::from_millis(2);
 /// Don't try to catch up more than this after a stall (window dragged, tab hidden).
 const MAX_OWED_SECS: f64 = 0.1;
 
@@ -179,7 +184,7 @@ impl Clock {
     }
 
     /// Advance `s` by the wall time since the last tick.
-    pub fn tick(&mut self, s: &mut Session) {
+    pub fn tick(&mut self, s: &mut Session, budget: Duration) -> u64 {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f64();
         self.last = now;
@@ -191,7 +196,7 @@ impl Clock {
             } else {
                 u64::MAX / 2
             };
-            done = s.step(want, now + FRAME_BUDGET);
+            done = s.step(want, now + budget);
             self.owed = (self.owed - done as f64).max(0.0);
         } else {
             self.owed = 0.0;
@@ -202,12 +207,51 @@ impl Clock {
             self.measured = self.window.1 as f64 / CYCLES_PER_SEC / span;
             self.window = (now, 0);
         }
+        done
     }
 
     /// Emulated seconds per real second, measured.
     pub fn measured(&self) -> f64 {
         self.measured
     }
+}
+
+/// A session with its pacing clock. Natively a thread steps it in the
+/// background (the UI only locks it to draw); on the web the UI ticks it.
+pub struct Run {
+    pub session: Session,
+    pub clock: Clock,
+}
+
+pub type Shared = Arc<Mutex<Run>>;
+
+pub fn lock(r: &Shared) -> MutexGuard<'_, Run> {
+    r.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn start(session: Session, running: bool, speed: f64) -> Shared {
+    let mut clock = Clock::new();
+    clock.running = running;
+    clock.speed = speed;
+    let shared = Arc::new(Mutex::new(Run { session, clock }));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Ends by itself once the UI drops its handle (reset, new firmware).
+        let weak = Arc::downgrade(&shared);
+        std::thread::spawn(move || {
+            while let Some(run) = weak.upgrade() {
+                let done = {
+                    let mut g = lock(&run);
+                    let Run { session, clock } = &mut *g;
+                    clock.tick(session, THREAD_SLICE)
+                };
+                drop(run);
+                // Leave the UI a window to take the lock.
+                std::thread::sleep(Duration::from_micros(if done == 0 { 1000 } else { 100 }));
+            }
+        });
+    }
+    shared
 }
 
 #[cfg(test)]
@@ -291,5 +335,28 @@ mod tests {
         s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
         s.drain();
         assert!(s.uart[0].len() <= UART_KEEP);
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Host speed of `Session::step` in 14 ms slices, no GUI. Run with
+    /// `cargo test --release -p rp2040-app bench_ -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_headless_slices() {
+        let fw = std::fs::read("../../../btl_01/software/os-embedded/target/thumbv6m-none-eabi/release/btl_os_embedded").unwrap();
+        let board = std::fs::read("../../boards/btl-01.board").unwrap();
+        let mut s = Session::new(&Source::new("fw", fw), Some(&Source::new("board", board))).unwrap();
+        let t0 = Instant::now();
+        let mut slices = 0;
+        while s.sys.cycles() < 125_000_000 {
+            s.step(u64::MAX / 2, Instant::now() + Duration::from_millis(14));
+            slices += 1;
+        }
+        let dt = t0.elapsed().as_secs_f64();
+        println!("{dt:.2} s host for 1 s emulated ({:.3}x), {slices} slices", 1.0 / dt);
     }
 }

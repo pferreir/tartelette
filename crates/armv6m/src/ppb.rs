@@ -86,9 +86,12 @@ impl Ppb {
         if primask {
             return None;
         }
+        let irqs = self.irq_pending();
+        if irqs == 0 && !self.pendsv && !self.systick_pending {
+            return None;
+        }
         // Thread mode runs below every configurable priority (0..=3).
         let current = if ipsr == 0 { 4 } else { self.priority_of_active(ipsr) };
-        let irqs = self.irq_pending();
         let mut best: Option<(u8, u8)> = None;
         let mut consider = |exc: u8| {
             let p = self.priority(exc);

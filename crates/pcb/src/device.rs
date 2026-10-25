@@ -88,7 +88,7 @@ impl<'a> Io<'a> {
 ///
 /// `Any` is a supertrait so hosts can reach a concrete device (a display's
 /// framebuffer, say) with [`Board::device`](crate::board::Board::device).
-pub trait Device: Any {
+pub trait Device: Any + Send {
     /// Pins whose changes [`pin_changed`](Self::pin_changed) wants to hear
     /// about (bit n = GPIO n). Read once when the board is plugged in.
     fn watched_pins(&self) -> u32 {

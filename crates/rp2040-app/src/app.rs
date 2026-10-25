@@ -1,7 +1,7 @@
 //! The window: a toolbar, the front panel, and a UART console.
 use crate::files::{self, Inbox, Slot};
 use crate::panel::{self, Layout, PanelState, Request};
-use crate::session::{Clock, Session, Source};
+use crate::session::{self, Run, Session, Shared, Source, lock};
 use egui::{Color32, RichText};
 
 const SPEEDS: &[(f64, &str)] = &[(0.01, "0.01×"), (0.1, "0.1×"), (0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (f64::INFINITY, "max")];
@@ -10,10 +10,9 @@ const LINE_ENDINGS: &[(&str, &str)] = &[("\n", "LF"), ("\r", "CR"), ("\r\n", "CR
 pub struct App {
     firmware: Option<Source>,
     board: Option<Source>,
-    session: Option<Session>,
+    run: Option<Shared>,
     layout: Option<Layout>,
     panel: PanelState,
-    clock: Clock,
     /// Problems to show: a run that could not start, ignored panel options.
     errors: Vec<String>,
     inbox: Inbox,
@@ -29,10 +28,9 @@ impl App {
         let mut app = Self {
             firmware,
             board,
-            session: None,
+            run: None,
             layout: None,
             panel: PanelState::default(),
-            clock: Clock::new(),
             errors: Vec::new(),
             inbox: Inbox::default(),
             uart_tab: 0,
@@ -48,8 +46,13 @@ impl App {
     /// Power-cycle: a fresh run from the current firmware and board. SD
     /// cards keep their contents.
     fn restart(&mut self) {
-        let cards = self.session.as_mut().map(Session::take_sd_cards).unwrap_or_default();
-        self.session = None;
+        let old = self.run.take();
+        let cards = old.as_ref().map(|r| lock(r).session.take_sd_cards()).unwrap_or_default();
+        let (running, speed) = old.as_ref().map_or((true, 1.0), |r| {
+            let g = lock(r);
+            (g.clock.running, g.clock.speed)
+        });
+        drop(old);
         self.layout = None;
         self.panel = PanelState::default();
         self.errors.clear();
@@ -64,7 +67,7 @@ impl App {
                 let (layout, warnings) = Layout::new(&s.sys.board);
                 self.errors = warnings;
                 self.layout = Some(layout);
-                self.session = Some(s);
+                self.run = Some(session::start(s, running, speed));
             }
             Err(e) => self.errors.push(e),
         }
@@ -73,7 +76,7 @@ impl App {
     /// Load a disk image into the SD card part `name` of the running board.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {
-        self.session.as_mut().is_some_and(|s| s.load_sd_card(name, image))
+        self.run.as_ref().is_some_and(|r| lock(r).session.load_sd_card(name, image))
     }
 
     fn take_files(&mut self) {
@@ -90,7 +93,9 @@ impl App {
                     restart = true;
                 }
                 Slot::Sd(name) => {
-                    let Some(s) = &mut self.session else { continue };
+                    let Some(run) = self.run.clone() else { continue };
+                    let mut g = lock(&run);
+                    let s = &mut g.session;
                     // A dropped image goes to the first card.
                     let name = if name.is_empty() {
                         match s.sys.board.parts.iter().find(|p| p.kind == "sdcard") {
@@ -113,7 +118,9 @@ impl App {
         }
     }
 
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
+    /// Returns whether Reset was pressed.
+    fn toolbar(&mut self, ui: &mut egui::Ui, mut run: Option<&mut Run>) -> bool {
+        let mut reset = false;
         ui.horizontal_wrapped(|ui| {
             if ui.button("Open firmware…").clicked() {
                 files::pick(Slot::Firmware, &self.inbox, ui.ctx());
@@ -122,38 +129,42 @@ impl App {
                 files::pick(Slot::Board, &self.inbox, ui.ctx());
             }
             ui.separator();
-            let label = if self.clock.running { "Pause" } else { "Run" };
-            if ui.add_enabled(self.session.is_some(), egui::Button::new(label)).clicked() {
-                self.clock.running = !self.clock.running;
+            let label = if run.as_deref().is_some_and(|r| r.clock.running) { "Pause" } else { "Run" };
+            if ui.add_enabled(run.is_some(), egui::Button::new(label)).clicked() {
+                if let Some(r) = run.as_deref_mut() {
+                    r.clock.running = !r.clock.running;
+                }
             }
             if ui.add_enabled(self.firmware.is_some(), egui::Button::new("Reset")).clicked() {
-                self.restart();
+                reset = true;
             }
-            let current = SPEEDS.iter().find(|s| s.0 == self.clock.speed).map_or("?", |s| s.1);
-            egui::ComboBox::from_id_salt("speed").selected_text(current).width(60.0).show_ui(ui, |ui| {
-                for &(v, name) in SPEEDS {
-                    ui.selectable_value(&mut self.clock.speed, v, name);
-                }
-            });
+            if let Some(r) = run.as_deref_mut() {
+                let current = SPEEDS.iter().find(|s| s.0 == r.clock.speed).map_or("?", |s| s.1);
+                egui::ComboBox::from_id_salt("speed").selected_text(current).width(60.0).show_ui(ui, |ui| {
+                    for &(v, name) in SPEEDS {
+                        ui.selectable_value(&mut r.clock.speed, v, name);
+                    }
+                });
+            }
             ui.separator();
             let names: Vec<&str> = [&self.firmware, &self.board].into_iter().flatten().map(|s| s.name.as_str()).collect();
             ui.label(RichText::new(names.join(" + ")).weak());
-            if let Some(s) = &self.session {
+            if let Some(Run { session: s, clock }) = run.as_deref() {
                 ui.separator();
                 ui.monospace(format!("{:.6} s", s.seconds()));
                 if let Some(r) = &s.halted {
                     ui.label(RichText::new(format!("halted: {r:?}")).color(ui.visuals().warn_fg_color));
-                } else if self.clock.running {
-                    ui.monospace(format!("{:5.2}× real time", self.clock.measured()));
+                } else if clock.running {
+                    ui.monospace(format!("{:5.2}× real time", clock.measured()));
                 } else {
                     ui.label("paused");
                 }
             }
         });
+        reset
     }
 
-    fn console(&mut self, ui: &mut egui::Ui) {
-        let Some(s) = &mut self.session else { return };
+    fn console(&mut self, ui: &mut egui::Ui, s: &mut Session) {
         ui.horizontal(|ui| {
             for n in 0..2 {
                 ui.selectable_value(&mut self.uart_tab, n, format!("UART{n}"));
@@ -181,8 +192,8 @@ impl App {
         });
     }
 
-    fn apply(&mut self, requests: Vec<Request>, ctx: &egui::Context) {
-        let Some(s) = &mut self.session else { return };
+    fn apply(&mut self, requests: Vec<Request>, ctx: &egui::Context, s: Option<&mut Session>) {
+        let Some(s) = s else { return };
         for r in requests {
             match r {
                 Request::Input(part, action, value) => {
@@ -209,26 +220,32 @@ impl eframe::App for App {
         }
         self.take_files();
 
-        if let Some(s) = &mut self.session {
-            self.clock.tick(s);
-            self.panel.absorb(&s.events);
-            s.events.clear();
+        let run = self.run.clone();
+        let mut guard = run.as_ref().map(lock);
+        #[cfg(target_arch = "wasm32")]
+        if let Some(Run { session, clock }) = guard.as_deref_mut() {
+            clock.tick(session, session::FRAME_BUDGET);
+        }
+        if let Some(r) = guard.as_deref_mut() {
+            self.panel.absorb(&r.session.events);
+            r.session.events.clear();
         }
 
+        let mut reset = false;
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
-            self.toolbar(ui);
+            reset = self.toolbar(ui, guard.as_deref_mut());
             for e in &self.errors {
                 ui.colored_label(ui.visuals().error_fg_color, e);
             }
             ui.add_space(2.0);
         });
-        if self.session.is_some() {
-            egui::Panel::bottom("console").resizable(true).default_size(160.0).show(ui, |ui| self.console(ui));
+        if let Some(r) = guard.as_deref_mut() {
+            egui::Panel::bottom("console").resizable(true).default_size(160.0).show(ui, |ui| self.console(ui, &mut r.session));
         }
         let requests = egui::CentralPanel::default()
-            .show(ui, |ui| match (&self.session, &self.layout) {
-                (Some(s), Some(layout)) => panel::show(ui, layout, &mut self.panel, s),
+            .show(ui, |ui| match (guard.as_deref(), &self.layout) {
+                (Some(r), Some(layout)) => panel::show(ui, layout, &mut self.panel, &r.session),
                 _ => {
                     ui.centered_and_justified(|ui| {
                         ui.label(RichText::new("Drop a firmware ELF and a .board file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
@@ -237,9 +254,13 @@ impl eframe::App for App {
                 }
             })
             .inner;
-        self.apply(requests, &ctx);
+        self.apply(requests, &ctx, guard.as_deref_mut().map(|r| &mut r.session));
 
-        let busy = self.session.as_ref().is_some_and(|s| s.halted.is_none()) && self.clock.running;
+        let busy = guard.as_deref().is_some_and(|r| r.session.halted.is_none() && r.clock.running);
+        drop(guard);
+        if reset {
+            self.restart();
+        }
         if busy {
             ctx.request_repaint();
         } else {

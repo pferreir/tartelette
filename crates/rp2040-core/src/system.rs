@@ -144,6 +144,10 @@ pub struct SystemBus {
     pub(crate) lines_dirty: bool,
     /// A peripheral register was accessed since the last full device sync.
     pub(crate) touched: bool,
+    /// System cycles the PIO dividers have not been told about yet: quiet
+    /// steps add to it, and it is applied before anything that could change
+    /// which machines run (a PIO or RESETS access) and before a full sync.
+    pio_owed: u64,
 }
 
 impl SystemBus {
@@ -182,6 +186,19 @@ impl SystemBus {
             core: 0,
             lines_dirty: true,
             touched: true,
+            pio_owed: 0,
+        }
+    }
+
+    /// Let the PIO dividers catch up with the quiet steps taken so far.
+    fn flush_pio(&mut self) {
+        let cycles = core::mem::take(&mut self.pio_owed);
+        if cycles != 0 {
+            for block in 0..2 {
+                if !self.resets.in_reset(RESET_PIO[block]) {
+                    self.pio[block].idle(cycles);
+                }
+            }
         }
     }
 
@@ -212,6 +229,7 @@ impl SystemBus {
     fn mmio_read(&mut self, addr: u32) -> u32 {
         self.lines_dirty = true;
         self.touched = true;
+        self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr - SIO_BASE) => self.gpio.sio_read(addr - SIO_BASE),
             0xD if Sio::handles(addr - SIO_BASE) => self.sio.read(self.core, addr - SIO_BASE),
@@ -231,6 +249,7 @@ impl SystemBus {
     fn mmio_write(&mut self, addr: u32, val: u32) {
         self.lines_dirty = true;
         self.touched = true;
+        self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE)) => {
                 self.gpio.sio_write(addr - SIO_BASE, val)
@@ -249,6 +268,15 @@ impl SystemBus {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Catch the PIO dividers up before an access that can see or change
+    /// them: PIO and DMA space, or the RESETS block.
+    #[inline]
+    fn flush_pio_for(&mut self, addr: u32) {
+        if self.pio_owed != 0 && (addr >> 28 == 5 || (addr >> 28 == 4 && addr.wrapping_sub(APB_BASE) >> 14 == APB_RESETS)) {
+            self.flush_pio();
         }
     }
 
@@ -755,17 +783,14 @@ impl System {
         if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() {
             if to > from {
                 self.time = to;
-                for block in 0..2 {
-                    if !self.bus.resets.in_reset(RESET_PIO[block]) {
-                        self.bus.pio[block].idle(to - from);
-                    }
-                }
+                self.bus.pio_owed += to - from;
                 self.advance_clocks(from, to);
             }
             self.refresh_core_views();
             return;
         }
         self.bus.touched = false;
+        self.bus.flush_pio();
         self.service_buses();
         if to > from {
             self.time = to;
