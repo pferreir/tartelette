@@ -6,6 +6,12 @@ pub trait Bus {
     fn read8(&mut self, addr: u32) -> u8;
     fn read16(&mut self, addr: u32) -> u16;
     fn read32(&mut self, addr: u32) -> u32;
+    /// Instruction fetch. Buses with directly addressable code memory
+    /// override this to skip the generic read path.
+    #[inline]
+    fn fetch16(&mut self, addr: u32) -> u16 {
+        self.read16(addr)
+    }
     fn write8(&mut self, addr: u32, val: u8);
     fn write16(&mut self, addr: u32, val: u16);
     fn write32(&mut self, addr: u32, val: u32);
@@ -25,24 +31,44 @@ impl Ram {
     pub fn read8(&self, off: u32) -> u8 {
         self.data.get(off as usize).copied().unwrap_or(0)
     }
+    #[inline]
     pub fn read16(&self, off: u32) -> u16 {
-        self.read8(off) as u16 | (self.read8(off + 1) as u16) << 8
+        match self.data.get(off as usize..off as usize + 2) {
+            Some(b) => u16::from_le_bytes([b[0], b[1]]),
+            None => self.read8(off) as u16 | (self.read8(off.wrapping_add(1)) as u16) << 8,
+        }
     }
+    #[inline]
     pub fn read32(&self, off: u32) -> u32 {
-        self.read16(off) as u32 | (self.read16(off + 2) as u32) << 16
+        match self.data.get(off as usize..off as usize + 4) {
+            Some(b) => u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            None => self.read16(off) as u32 | (self.read16(off.wrapping_add(2)) as u32) << 16,
+        }
     }
     pub fn write8(&mut self, off: u32, val: u8) {
         if let Some(b) = self.data.get_mut(off as usize) {
             *b = val;
         }
     }
+    #[inline]
     pub fn write16(&mut self, off: u32, val: u16) {
-        self.write8(off, val as u8);
-        self.write8(off + 1, (val >> 8) as u8);
+        match self.data.get_mut(off as usize..off as usize + 2) {
+            Some(b) => b.copy_from_slice(&val.to_le_bytes()),
+            None => {
+                self.write8(off, val as u8);
+                self.write8(off.wrapping_add(1), (val >> 8) as u8);
+            }
+        }
     }
+    #[inline]
     pub fn write32(&mut self, off: u32, val: u32) {
-        self.write16(off, val as u16);
-        self.write16(off + 2, (val >> 16) as u16);
+        match self.data.get_mut(off as usize..off as usize + 4) {
+            Some(b) => b.copy_from_slice(&val.to_le_bytes()),
+            None => {
+                self.write16(off, val as u16);
+                self.write16(off.wrapping_add(2), (val >> 16) as u16);
+            }
+        }
     }
 }
 

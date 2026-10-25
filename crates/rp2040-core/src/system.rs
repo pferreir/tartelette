@@ -499,6 +499,14 @@ impl Bus for SystemBus {
     fn read32(&mut self, addr: u32) -> u32 {
         self.read_word(addr)
     }
+    #[inline]
+    fn fetch16(&mut self, addr: u32) -> u16 {
+        match addr >> 24 {
+            0x10..=0x13 => self.flash.read16(addr & 0xFF_FFFF),
+            0x20 | 0x21 if addr & 0xFF_FFFF < SRAM_SIZE => self.sram.read16(addr & 0xFF_FFFF),
+            _ => (self.read_word(addr) >> (8 * (addr & 2))) as u16,
+        }
+    }
     // Sub-word stores to peripherals replicate the value across byte lanes,
     // as the real bus fabric does; memories take them natively.
     fn write8(&mut self, addr: u32, val: u8) {

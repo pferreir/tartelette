@@ -6,7 +6,7 @@ impl Cpu {
     /// Fetch, decode and execute one instruction.
     pub(super) fn exec16<B: Bus + ?Sized>(&mut self, bus: &mut B) -> Result<u32, Fault> {
         let pc = self.pc;
-        let hw = bus.read16(pc) as u32;
+        let hw = bus.fetch16(pc) as u32;
         let mut next = pc.wrapping_add(2);
         let mut cycles = 1;
 
@@ -196,7 +196,7 @@ impl Cpu {
             }
             // 32-bit encodings
             30 => {
-                let hw2 = bus.read16(pc.wrapping_add(2)) as u32;
+                let hw2 = bus.fetch16(pc.wrapping_add(2)) as u32;
                 next = pc.wrapping_add(4);
                 cycles = self.exec_wide(hw, hw2, pc, &mut next)?;
             }
