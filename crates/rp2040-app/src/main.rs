@@ -5,6 +5,7 @@
 //! the firmware and board reload when their files change. Web: built with
 //! `trunk` (see `index.html`); files are opened or dropped onto the page.
 mod app;
+mod brand;
 mod files;
 mod midi;
 mod panel;
@@ -46,7 +47,7 @@ fn main() -> eframe::Result {
         }
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("RP2040 emulator").with_inner_size([960.0, 760.0]),
+        viewport: egui::ViewportBuilder::default().with_title("RP2040 emulator").with_inner_size([1100.0, 760.0]).with_icon(brand::window_icon()),
         ..Default::default()
     };
     eframe::run_native("rp2040-app", options, Box::new(|_| Ok(Box::new(app))))

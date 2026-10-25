@@ -13,6 +13,7 @@ rfd = "0.17.2"
 web-time = "1.1.0"
 midir = "0.11.1"
 rtt = { path = "../rtt" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.106"

@@ -1,4 +1,5 @@
 //! The window: a toolbar, the front panel, and a UART console.
+use crate::brand::Logo;
 use crate::files::{self, Inbox, Slot};
 use crate::midi::Midi;
 use crate::panel::{self, Layout, PanelState, Request};
@@ -7,11 +8,14 @@ use egui::{Color32, RichText};
 
 const SPEEDS: &[(f64, &str)] = &[(0.01, "0.01×"), (0.1, "0.1×"), (0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (f64::INFINITY, "max")];
 /// The UART whose receiver is the firmware's MIDI in (GPIO1 on the BTL-01).
+/// Tall enough to read the lettering.
+const LOGO_HEIGHT: f32 = 96.0;
 const MIDI_UART: usize = 0;
 const LOG_TAB: usize = 2;
 const LINE_ENDINGS: &[(&str, &str)] = &[("\n", "LF"), ("\r", "CR"), ("\r\n", "CRLF"), ("", "none")];
 
 pub struct App {
+    logo: Option<Logo>,
     firmware: Option<Source>,
     board: Option<Source>,
     run: Option<Shared>,
@@ -33,6 +37,7 @@ pub struct App {
 impl App {
     pub fn new(firmware: Option<Source>, board: Option<Source>) -> Self {
         let mut app = Self {
+            logo: None,
             firmware,
             board,
             run: None,
@@ -280,6 +285,10 @@ impl eframe::App for App {
         }
 
         let mut reset = false;
+        let logo = self.logo.get_or_insert_with(|| Logo::new(&ctx));
+        egui::Panel::left("logo").resizable(false).show_separator_line(false).show(ui, |ui| {
+            ui.add(logo.image(LOGO_HEIGHT));
+        });
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
             reset = self.toolbar(ui, guard.as_deref_mut());
