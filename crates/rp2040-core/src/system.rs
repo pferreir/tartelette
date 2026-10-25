@@ -228,7 +228,7 @@ impl SystemBus {
 
     fn mmio_read(&mut self, addr: u32) -> u32 {
         self.lines_dirty = true;
-        self.touched = true;
+        self.touched |= Self::needs_sync(addr);
         self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr - SIO_BASE) => self.gpio.sio_read(addr - SIO_BASE),
@@ -248,7 +248,7 @@ impl SystemBus {
 
     fn mmio_write(&mut self, addr: u32, val: u32) {
         self.lines_dirty = true;
-        self.touched = true;
+        self.touched |= Self::needs_sync(addr);
         self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE)) => {
@@ -268,6 +268,20 @@ impl SystemBus {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Can an access to `addr` start work in a device that the quiet path
+    /// doesn't advance (DMA, PIO, buses, GPIO, resets)? Spinlocks, the SIO
+    /// FIFOs and divider, NVIC/SysTick and the timer can't: they only move
+    /// interrupt lines, which `lines_dirty` already covers.
+    #[inline]
+    fn needs_sync(addr: u32) -> bool {
+        match addr >> 28 {
+            0xE => false,
+            0xD => Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE)),
+            0x4 => addr.wrapping_sub(APB_BASE) >> 14 != APB_TIMER,
+            _ => true,
         }
     }
 
