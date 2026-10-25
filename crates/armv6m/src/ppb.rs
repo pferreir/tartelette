@@ -17,6 +17,7 @@ const ICSR_PENDSTCLR: u32 = 1 << 25;
 
 use crate::cpu::{EXC_IRQ_BASE, EXC_PENDSV, EXC_SVCALL, EXC_SYSTICK};
 
+#[derive(Debug)]
 pub struct Ppb {
     /// Core clock cycles per 1 MHz SysTick reference tick.
     cycles_per_us: u64,

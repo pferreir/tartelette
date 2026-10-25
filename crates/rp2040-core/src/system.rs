@@ -148,6 +148,13 @@ pub struct SystemBus {
     /// steps add to it, and it is applied before anything that could change
     /// which machines run (a PIO or RESETS access) and before a full sync.
     pio_owed: u64,
+    /// Device time: the cycle up to which peripherals have been brought
+    /// current. Each core keeps its own clock; this one follows the earliest
+    /// core that is still running.
+    pub(crate) time: u64,
+    /// While a core runs a batch of instructions without syncing devices, the
+    /// cycle its current instruction starts at (otherwise <= `time`).
+    now: u64,
 }
 
 impl SystemBus {
@@ -187,6 +194,29 @@ impl SystemBus {
             lines_dirty: true,
             touched: true,
             pio_owed: 0,
+            time: 0,
+            now: 0,
+        }
+    }
+
+    /// Bring the devices that keep time on their own (timer, SysTick, PIO
+    /// dividers) up to the cycle the running instruction starts at. Needed
+    /// before an access that can see or react to them, when a batch of quiet
+    /// instructions has run ahead of them.
+    #[inline]
+    fn sync_to_now(&mut self) {
+        if self.now > self.time {
+            let (from, to) = (self.time, self.now);
+            self.time = to;
+            self.pio_owed += to - from;
+            let timer_lines = self.timer.irq_lines();
+            self.timer.update(to);
+            if self.timer.irq_lines() != timer_lines {
+                self.lines_dirty = true;
+            }
+            for ppb in &mut self.ppb {
+                ppb.advance(to - from);
+            }
         }
     }
 
@@ -229,6 +259,9 @@ impl SystemBus {
     fn mmio_read(&mut self, addr: u32) -> u32 {
         self.lines_dirty = true;
         self.touched |= Self::needs_sync(addr);
+        if !(addr >> 28 == 0xD && !Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE))) {
+            self.sync_to_now();
+        }
         self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr - SIO_BASE) => self.gpio.sio_read(addr - SIO_BASE),
@@ -249,6 +282,9 @@ impl SystemBus {
     fn mmio_write(&mut self, addr: u32, val: u32) {
         self.lines_dirty = true;
         self.touched |= Self::needs_sync(addr);
+        if !(addr >> 28 == 0xD && !Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE))) {
+            self.sync_to_now();
+        }
         self.flush_pio_for(addr);
         match addr >> 28 {
             0xD if Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE)) => {
@@ -543,16 +579,15 @@ pub struct System {
     pub cores: [Cpu; 2],
     pub bus: SystemBus,
     pub board: Board,
-    /// Device time: the cycle up to which peripherals have been brought
-    /// current. Each core keeps its own clock; this one follows the earliest
-    /// core that is still running.
-    time: u64,
     /// Cores held in reset (see [`Psm`]).
     held: [bool; 2],
     /// Nothing but the timer and SysTick can change on their own until a
     /// register is touched or a pin changes: no DMA transfer, PIO program,
     /// or bus transaction is pending. Lets a step skip the full device sync.
     quiet: bool,
+    /// Let `run` execute quiet stretches in batches (see `run_batch`). Only
+    /// off to check that batching changes nothing.
+    pub batching: bool,
 }
 
 impl System {
@@ -561,9 +596,9 @@ impl System {
             cores: [Cpu::new(), Cpu::new()],
             bus: SystemBus::new(),
             board: Board::new(),
-            time: 0,
             held: [false; 2],
             quiet: false,
+            batching: true,
         };
         sys.reset_core1();
         sys
@@ -571,7 +606,7 @@ impl System {
 
     /// Current device time in core clock cycles.
     pub fn cycles(&self) -> u64 {
-        self.time
+        self.bus.time
     }
 
     /// Hold a core in reset (as the PSM does) or release it. Releasing core 1
@@ -589,7 +624,7 @@ impl System {
         self.bus.vtor[1] = 0;
         self.cores[1] = Cpu::new();
         self.cores[1].reset_from_vector_table(&mut self.bus, BOOTROM_BASE);
-        self.cores[1].cycles = self.time;
+        self.cores[1].cycles = self.bus.time;
     }
 
     /// Load an ELF image and reset the core into it.
@@ -647,7 +682,7 @@ impl System {
     pub fn input(&mut self, name: &str, action: &str, value: i64) -> bool {
         let r = self
             .board
-            .input(&mut self.bus.gpio, name, action, value, self.time);
+            .input(&mut self.bus.gpio, name, action, value, self.bus.time);
         self.settle_inputs();
         r == InputResult::Done
     }
@@ -669,7 +704,7 @@ impl System {
     /// Let time pass with every core asleep (for hosts that skip ahead to
     /// the next scheduled input). Does nothing if `cycle` is not in the future.
     pub fn idle_until(&mut self, cycle: u64) {
-        if cycle > self.time {
+        if cycle > self.bus.time {
             self.bus.lines_dirty = true;
             self.bus.touched = true;
             self.advance_to(cycle);
@@ -686,7 +721,7 @@ impl System {
             let changed = self.bus.gpio.take_changes();
             self.bus.lines_dirty = true;
             self.quiet = false;
-            self.board.service(&mut self.bus.gpio, changed, self.time);
+            self.board.service(&mut self.bus.gpio, changed, self.bus.time);
         }
     }
 
@@ -696,12 +731,12 @@ impl System {
         for n in 0..2 {
             if self.bus.i2c[n].has_work() {
                 self.bus.lines_dirty = true;
-                let mut wire = self.board.i2c_bus(n, &mut self.bus.gpio, self.time);
+                let mut wire = self.board.i2c_bus(n, &mut self.bus.gpio, self.bus.time);
                 self.bus.i2c[n].pump(&mut wire);
             }
             if self.bus.spi[n].has_work() {
                 self.bus.lines_dirty = true;
-                let mut wire = self.board.spi_bus(n, &mut self.bus.gpio, self.time);
+                let mut wire = self.board.spi_bus(n, &mut self.bus.gpio, self.bus.time);
                 self.bus.spi[n].pump(&mut wire);
             }
         }
@@ -716,7 +751,7 @@ impl System {
         if !self.bus.dma.active() {
             return 0;
         }
-        self.bus.dma.sync_timers(self.time);
+        self.bus.dma.sync_timers(self.bus.time);
         let mut moved = 0;
         while moved < budget {
             let dreq = self.bus.dreq_mask(self.bus.dma.needed_dreqs());
@@ -780,9 +815,9 @@ impl System {
     fn advance_to(&mut self, to: u64) {
         loop {
             let due = self.board.next_timer().filter(|&t| t <= to);
-            self.advance_segment(due.map_or(to, |t| t.max(self.time)));
+            self.advance_segment(due.map_or(to, |t| t.max(self.bus.time)));
             let Some(t) = due else { break };
-            self.board.fire_timers(&mut self.bus.gpio, t.max(self.time));
+            self.board.fire_timers(&mut self.bus.gpio, t.max(self.bus.time));
             self.quiet = false;
             self.sync_board();
         }
@@ -793,10 +828,10 @@ impl System {
     /// cycle, step the PIO blocks, advance timers and SysTick, refresh the
     /// interrupt lines and let board devices react.
     fn advance_segment(&mut self, to: u64) {
-        let from = self.time;
+        let from = self.bus.time;
         if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() {
             if to > from {
-                self.time = to;
+                self.bus.time = to;
                 self.bus.pio_owed += to - from;
                 self.advance_clocks(from, to);
             }
@@ -807,7 +842,7 @@ impl System {
         self.bus.flush_pio();
         self.service_buses();
         if to > from {
-            self.time = to;
+            self.bus.time = to;
             self.run_dma(to - from);
             for block in 0..2 {
                 if !self.bus.resets.in_reset(RESET_PIO[block]) {
@@ -861,12 +896,13 @@ impl System {
     }
 
     /// Apply a PSM reset request for core 1, if there was one.
-    fn apply_psm(&mut self) {
+    fn apply_psm(&mut self) -> bool {
         match self.bus.psm.take_proc1_change() {
             Some(true) => self.held[1] = true,
             Some(false) => self.set_core_held(1, false),
-            None => {}
+            None => return false,
         }
+        true
     }
 
     /// Wake `core` if an interrupt is pending (WFI or WFE) or, for WFE, an
@@ -885,7 +921,7 @@ impl System {
             if by_event {
                 cpu.event = false;
             }
-            cpu.cycles = cpu.cycles.max(self.time);
+            cpu.cycles = cpu.cycles.max(self.bus.time);
         }
     }
 
@@ -926,8 +962,72 @@ impl System {
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
             .min();
-        self.advance_to(running.unwrap_or(self.cores[core].cycles).max(self.time));
+        self.advance_to(running.unwrap_or(self.cores[core].cycles).max(self.bus.time));
         cycles
+    }
+
+    /// Can `run` execute a batch of instructions without syncing devices
+    /// after each one? Only when nothing but the timer, SysTick and PIO
+    /// dividers is moving, and no register access is waiting for a sync.
+    fn can_batch(&self) -> bool {
+        self.batching && self.quiet && !self.bus.touched && !self.bus.lines_dirty && !self.bus.gpio.has_changes()
+    }
+
+    /// The cycle at which a device next changes state on its own.
+    fn batch_limit(&self) -> u64 {
+        let event = self.bus.cycles_to_event().map(|c| self.bus.time + c);
+        let timer = self.board.next_timer();
+        [event, timer].into_iter().flatten().min().unwrap_or(u64::MAX)
+    }
+
+    /// Like `step_core`, but keeps executing `core` while the devices can
+    /// be left alone: it stays the earliest core, no device event is due,
+    /// and no register access needs a full sync. Timer, SysTick and PIO
+    /// dividers are brought up to date by the bus when an access looks at
+    /// them, and everything else catches up once at the end.
+    fn run_batch(&mut self, core: usize, end: u64) {
+        let other = 1 - core;
+        let mut limit = self.batch_limit();
+        self.bus.core = core;
+        loop {
+            let cpu = &mut self.cores[core];
+            self.bus.now = cpu.cycles;
+            match self.bus.ppb[core].pick(cpu.ipsr, cpu.primask) {
+                Some(exc) => {
+                    self.bus.ppb[core].acknowledge(exc);
+                    cpu.take_exception(&mut self.bus, exc);
+                }
+                None => {
+                    cpu.step(&mut self.bus);
+                }
+            }
+            cpu.vtor = self.bus.vtor[core];
+            self.bus.ppb[core].ipsr = cpu.ipsr;
+            let mut stop = cpu.sleeping || cpu.bkpt.is_some();
+            if core::mem::take(&mut cpu.sev_sent) {
+                self.cores[other].event = true;
+                stop = true;
+            }
+            stop |= self.apply_psm() || self.bus.touched || self.bus.gpio.has_changes();
+            if !stop && self.bus.lines_dirty {
+                self.refresh_core_views();
+                let o = &self.cores[other];
+                stop = o.sleeping && !self.held[other] && (self.bus.ppb[other].wakes_core() || (o.wfe && o.event));
+                limit = self.batch_limit();
+            }
+            let c = self.cores[core].cycles;
+            let o = &self.cores[other];
+            let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
+            if stop || c >= limit || c >= end || other_first {
+                break;
+            }
+        }
+        self.bus.core = 0;
+        let running = (0..2)
+            .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
+            .map(|i| self.cores[i].cycles)
+            .min();
+        self.advance_to(running.unwrap_or(self.cores[core].cycles).max(self.bus.time));
     }
 
     /// Advance the system by one instruction of whichever core is next, or
@@ -939,7 +1039,7 @@ impl System {
         match self.next_core() {
             Some(core) => self.step_core(core),
             None => {
-                self.advance_to(self.time + 1);
+                self.advance_to(self.bus.time + 1);
                 1
             }
         }
@@ -950,15 +1050,15 @@ impl System {
     pub fn run(&mut self, max_cycles: u64) -> StopReason {
         self.bus.lines_dirty = true;
         self.bus.touched = true;
-        let end = self.time.saturating_add(max_cycles);
-        while self.time < end {
+        let end = self.bus.time.saturating_add(max_cycles);
+        while self.bus.time < end {
             let Some(core) = self.next_core() else {
                 // Nothing to execute: skip ahead to the next device event,
                 // in short slices while the DMA controller or a PIO has work to do.
                 let timer = self
                     .board
                     .next_timer()
-                    .map(|t| t.saturating_sub(self.time).max(1));
+                    .map(|t| t.saturating_sub(self.bus.time).max(1));
                 let event = [self.bus.cycles_to_event(), timer]
                     .into_iter()
                     .flatten()
@@ -968,10 +1068,14 @@ impl System {
                     (Some(c), false) => c,
                     (c, true) => c.map_or(DMA_SLICE, |c| c.min(DMA_SLICE)),
                 };
-                self.advance_to((self.time + slice.max(1)).min(end));
+                self.advance_to((self.bus.time + slice.max(1)).min(end));
                 continue;
             };
-            self.step_core(core);
+            if self.can_batch() {
+                self.run_batch(core, end);
+            } else {
+                self.step_core(core);
+            }
             if let Some(n) = self.cores[core].bkpt.take() {
                 return StopReason::Breakpoint(n);
             }

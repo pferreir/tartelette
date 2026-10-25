@@ -7,6 +7,7 @@
 use super::Peripheral;
 use crate::system::CYCLES_PER_US;
 
+#[derive(Debug)]
 pub struct Timer {
     /// Core cycle count as of the last [`Timer::update`].
     cycles: u64,
