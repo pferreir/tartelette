@@ -26,6 +26,7 @@ const WLC_SET_VAR: u32 = 263;
 
 // Event numbers (`events.rs`).
 const E_SET_SSID: u32 = 0;
+const E_JOIN: u32 = 1;
 const E_AUTH: u32 = 3;
 const E_DEAUTH_IND: u32 = 6;
 const E_ASSOC: u32 = 7;
@@ -519,6 +520,9 @@ impl Whd {
             self.event(now + self.ms(70), E_LINK, ST_SUCCESS, 0, 0, 1, b, &[]);
             self.event(now + self.ms(80), E_SET_SSID, ST_SUCCESS, 0, 0, 0, b, &[]);
             self.later.push((now + self.ms(80), Later::LinkUp(i)));
+            // Newer drivers (`cyw43` 0.7) report the link up on JOIN, so it
+            // comes once the link is (frames sent before would be lost).
+            self.event(now + self.ms(80), E_JOIN, ST_SUCCESS, 0, 0, 0, b, &[]);
             self.notes.push(("join", 1));
         } else {
             // A wrong key stalls the four-way handshake until the chip gives up.

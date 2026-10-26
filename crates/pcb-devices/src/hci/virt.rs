@@ -544,6 +544,10 @@ impl HciBackend for VirtualController {
         core::mem::take(&mut self.notes)
     }
 
+    fn paper(&self) -> Option<&[u8]> {
+        self.peers.iter().find_map(|p| p.printer.as_ref()).map(|p| p.paper.as_slice())
+    }
+
     /// `midi` with a message packed big-endian in the low bytes of `value`
     /// (`0x903C64` is note on, middle C): sent by every connected MIDI peer.
     fn input(&mut self, now: u64, action: &str, value: i64) -> bool {

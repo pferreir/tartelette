@@ -11,10 +11,13 @@
 //!   reported as `ble_midi_out`.
 //! * A **battery peripheral** serves the Battery Service; once subscribed it
 //!   notifies a level that drops by one every second.
+//! * A **cat printer** (an MXW01) serves the printer service `AE30`; what
+//!   the firmware sends it is [printed](super::catprinter) on its paper.
 //! * A **central** connects to the firmware when it advertises, discovers its
 //!   services and characteristics, reads the device name and subscribes to
 //!   everything that notifies or indicates. Values it receives are reported
 //!   as `ble_notify`.
+use super::catprinter::CatPrinter;
 use alloc::{collections::VecDeque, string::String, vec, vec::Vec};
 
 pub const ATT_CID: u16 = 4;
@@ -57,6 +60,11 @@ const CCCD: u16 = 0x2902;
 const DEVICE_NAME: u16 = 0x2A00;
 const BATTERY_SERVICE: u16 = 0x180F;
 const BATTERY_LEVEL: u16 = 0x2A19;
+/// The MXW01's service and its command, reply and data characteristics.
+pub const PRINTER_SERVICE: u16 = 0xAE30;
+const PRINTER_CONTROL: u16 = 0xAE01;
+const PRINTER_REPLY: u16 = 0xAE02;
+const PRINTER_DATA: u16 = 0xAE03;
 
 // Characteristic properties.
 const PROP_READ: u8 = 0x02;
@@ -459,6 +467,14 @@ impl Client {
     }
 }
 
+/// A notification of `value`, cut to what fits the MTU.
+fn notification(handle: u16, value: &[u8]) -> Vec<u8> {
+    let mut pdu = vec![NOTIFY];
+    pdu.extend_from_slice(&handle.to_le_bytes());
+    pdu.extend_from_slice(&value[..value.len().min(ATT_MTU - 3)]);
+    pdu
+}
+
 fn range_req(op: u8, start: u16, end: u16, typ: &[u8]) -> Vec<u8> {
     let mut r = vec![op];
     r.extend_from_slice(&start.to_le_bytes());
@@ -475,6 +491,8 @@ pub enum Kind {
     Midi,
     /// Advertises the Battery Service and notifies its level.
     Battery,
+    /// An MXW01 thermal printer.
+    CatPrinter,
 }
 
 /// Per-connection state of a peer.
@@ -498,6 +516,10 @@ pub struct Peer {
     /// For a peripheral: the value handle of the characteristic it sends
     /// (MIDI I/O, battery level).
     midi_handle: u16,
+    /// For the printer: the command and data characteristics' value handles.
+    printer_handles: (u16, u16),
+    /// The printer itself (kept across connections, paper and all).
+    pub printer: Option<CatPrinter>,
     /// Battery level; the next notification is due at this time (µs).
     level: u8,
     level_due: u64,
@@ -509,7 +531,9 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(kind: Kind, name: String, addr: [u8; 6], random: bool) -> Self {
-        let mut p = Self { name, addr, random, kind, conn: None, gatt: Gatt::Client(Client::new()), midi_handle: 0, level: 100, level_due: 0, outbox: VecDeque::new(), notes: Vec::new() };
+        let printer = matches!(kind, Kind::CatPrinter).then(CatPrinter::new);
+        let mut p = Self { name, addr, random, kind, conn: None, gatt: Gatt::Client(Client::new()), midi_handle: 0, printer_handles: (0, 0), printer: None, level: 100, level_due: 0, outbox: VecDeque::new(), notes: Vec::new() };
+        p.printer = printer;
         p.reset();
         p
     }
@@ -535,6 +559,20 @@ impl Peer {
                 self.midi_handle = s.characteristic(&BATTERY_LEVEL.to_le_bytes(), PROP_READ | PROP_NOTIFY, vec![self.level]);
                 Gatt::Server(s)
             }
+            Kind::CatPrinter => {
+                let mut s = Server::new();
+                s.service(&0x1800u16.to_le_bytes());
+                s.characteristic(&DEVICE_NAME.to_le_bytes(), PROP_READ, self.name.as_bytes().into());
+                s.service(&PRINTER_SERVICE.to_le_bytes());
+                let control = s.characteristic(&PRINTER_CONTROL.to_le_bytes(), PROP_WRITE | PROP_WRITE_NO_RSP, Vec::new());
+                self.midi_handle = s.characteristic(&PRINTER_REPLY.to_le_bytes(), PROP_NOTIFY, Vec::new());
+                let data = s.characteristic(&PRINTER_DATA.to_le_bytes(), PROP_WRITE_NO_RSP, Vec::new());
+                self.printer_handles = (control, data);
+                if let Some(p) = &mut self.printer {
+                    p.disconnected();
+                }
+                Gatt::Server(s)
+            }
         };
     }
 
@@ -552,6 +590,10 @@ impl Peer {
             Kind::Midi => {
                 adv.extend_from_slice(&[17, AD_UUIDS128]);
                 adv.extend_from_slice(&MIDI_SERVICE);
+            }
+            Kind::CatPrinter => {
+                adv.extend_from_slice(&[3, AD_UUIDS16]);
+                adv.extend_from_slice(&PRINTER_SERVICE.to_le_bytes());
             }
             _ => {
                 adv.extend_from_slice(&[3, AD_UUIDS16]);
@@ -626,7 +668,15 @@ impl Peer {
                     self.outbox.push_back(rsp);
                 }
                 for (handle, value) in written {
-                    if handle == self.midi_handle {
+                    if let Some(p) = &mut self.printer {
+                        if handle == self.printer_handles.0 {
+                            for reply in p.control(&value, &mut self.notes) {
+                                self.outbox.push_back(notification(self.midi_handle, &reply));
+                            }
+                        } else if handle == self.printer_handles.1 {
+                            p.data(&value);
+                        }
+                    } else if handle == self.midi_handle {
                         let packed = value.iter().take(8).rev().fold(0i64, |acc, &b| acc << 8 | b as i64);
                         self.notes.push(("ble_midi_out", packed));
                     }
@@ -651,6 +701,11 @@ impl Peer {
             pdu.extend_from_slice(&self.midi_handle.to_le_bytes());
             pdu.push(self.level);
             self.outbox.push_back(pdu);
+        }
+        if let Some(p) = &mut self.printer
+            && let Some(done) = p.poll(now, &mut self.notes)
+        {
+            self.outbox.push_back(notification(self.midi_handle, &done));
         }
         if let Gatt::Client(c) = &mut self.gatt
             && let Some(req) = c.next_request()
@@ -704,16 +759,20 @@ impl Peer {
 pub const BATTERY_ADDR: [u8; 6] = [0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff];
 /// Address of the mock MIDI peripheral (public `e2:1e:46:25:24:83`, as sent).
 pub const MIDI_ADDR: [u8; 6] = [0x83, 0x24, 0x25, 0x46, 0x1e, 0xe2];
+/// Address of the mock cat printer (public `d4:e8:a0:01:57:70`, as sent).
+pub const PRINTER_ADDR: [u8; 6] = [0x70, 0x57, 0x01, 0xa0, 0xe8, 0xd4];
 /// Address of the mock central (random `c0:de:00:00:00:01`, as sent).
 pub const CENTRAL_ADDR: [u8; 6] = [0x01, 0x00, 0x00, 0x00, 0xde, 0xc0];
 
 /// The mock devices `--bt mock` puts in range: a central that connects to
-/// the firmware when it advertises, a BLE MIDI peripheral and a battery.
+/// the firmware when it advertises, a BLE MIDI peripheral, a battery and
+/// an MXW01 cat printer.
 pub fn neighbourhood() -> Vec<Peer> {
     vec![
         Peer::new(Kind::Central, "Mock central".into(), CENTRAL_ADDR, true),
         Peer::new(Kind::Midi, "Mock MIDI".into(), MIDI_ADDR, false),
         Peer::new(Kind::Battery, "Mock battery".into(), BATTERY_ADDR, true),
+        Peer::new(Kind::CatPrinter, "MXW01".into(), PRINTER_ADDR, false),
     ]
 }
 
@@ -784,6 +843,38 @@ mod tests {
         assert_eq!(ask(&[READ_REQ, 9, 0]), [ERROR_RSP, READ_REQ, 9, 0, E_INVALID_HANDLE]);
         assert_eq!(ask(&[WRITE_REQ, 3, 0, 1]), [ERROR_RSP, WRITE_REQ, 3, 0, E_WRITE_NOT_PERMITTED]);
         assert_eq!(ask(&[MTU_REQ, 0, 1]), [MTU_RSP, 23, 0]);
+    }
+
+    #[test]
+    fn the_printer_prints_what_comes_over_its_characteristics() {
+        use super::super::catprinter::{FLUSH, PRINT, PRINT_COMPLETE, ROW_BYTES, frame};
+        let mut p = Peer::new(Kind::CatPrinter, "MXW01".into(), PRINTER_ADDR, false);
+        let (adv, _) = p.advertising().unwrap();
+        assert_eq!(adv[3..7], [3, AD_UUIDS16, 0x30, 0xAE]);
+        p.connected(1);
+        // GAP 1..3, printer service 4, control 6, reply 8 (CCCD 9), data 11.
+        let mut send = |pdu: Vec<u8>, now: u64| {
+            p.att(&pdu);
+            p.poll(now)
+        };
+        let att = |op: u8, handle: u16, data: &[u8]| {
+            let mut v = vec![op];
+            v.extend_from_slice(&handle.to_le_bytes());
+            v.extend_from_slice(data);
+            v
+        };
+        assert_eq!(send(att(WRITE_REQ, 9, &[1, 0]), 0), [vec![WRITE_RSP]]);
+        let ack = send(att(WRITE_CMD, 6, &frame(PRINT, &[1, 0, 0x30, 0])), 0);
+        assert_eq!(ack, [att(NOTIFY, 8, &frame(PRINT, &[0]))]);
+        let row: Vec<u8> = (0..ROW_BYTES as u8).collect();
+        for chunk in row.chunks(ATT_MTU - 3) {
+            assert!(send(att(WRITE_CMD, 11, chunk), 0).is_empty());
+        }
+        send(att(WRITE_CMD, 6, &frame(FLUSH, &[0])), 0);
+        let done = send(Vec::new(), 1_000_000);
+        assert_eq!(done, [att(NOTIFY, 8, &frame(PRINT_COMPLETE, &[0]))]);
+        assert_eq!(p.printer.as_ref().unwrap().paper, row);
+        assert!(p.notes.contains(&("printed", 1)));
     }
 
     #[test]

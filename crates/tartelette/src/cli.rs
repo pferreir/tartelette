@@ -46,8 +46,8 @@ pub struct RunArgs {
     #[arg(long, value_name = "HOST:GUEST", value_parser = port_pair)]
     pub forward: Vec<(u16, u16)>,
     /// What the board's Bluetooth radios talk to: `none` (no radio, as in the
-    /// browser), `mock` (software devices: a central, a BLE MIDI peripheral
-    /// and a battery), or a real adapter `hciN` (Linux; takes the adapter
+    /// browser), `mock` (software devices: a central, a BLE MIDI peripheral,
+    /// a battery and an MXW01 cat printer), or a real adapter `hciN` (Linux; takes the adapter
     /// from the system while running and needs CAP_NET_ADMIN)
     #[arg(long, value_name = "none|mock|hciN", default_value = "none", value_parser = bt_mode)]
     pub bt: BtMode,
@@ -80,6 +80,10 @@ pub struct Headless {
     /// Save the picture on display NAME at the end, as PNG or binary PPM (by extension)
     #[arg(long, value_name = "NAME=FILE", value_parser = name_and_path, requires = "headless")]
     pub dump_screen: Vec<(String, PathBuf)>,
+    /// Save what the cat printer behind Wi-Fi chip NAME's Bluetooth printed (with `--bt
+    /// mock`) at the end, as PNG or PBM (by extension)
+    #[arg(long, value_name = "NAME=FILE", value_parser = name_and_path, requires = "headless")]
+    pub dump_paper: Vec<(String, PathBuf)>,
     /// Print the last 1024 bus transactions with Wi-Fi chip NAME at the end
     #[arg(long, value_name = "NAME", requires = "headless")]
     pub wifi_trace: Vec<String>,

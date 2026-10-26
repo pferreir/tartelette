@@ -10,6 +10,7 @@
 //! deterministic radio neighbourhood.
 use alloc::{string::String, vec::Vec};
 
+pub mod catprinter;
 pub mod peers;
 pub mod virt;
 
@@ -42,5 +43,10 @@ pub trait HciBackend: Send {
     /// mock MIDI peripherals). False if not understood.
     fn input(&mut self, _now: u64, _action: &str, _value: i64) -> bool {
         false
+    }
+    /// What the cat printer behind the backend has printed, if there is
+    /// one: rows of [`catprinter::ROW_BYTES`], 1 bit per dot, bit 0 leftmost.
+    fn paper(&self) -> Option<&[u8]> {
+        None
     }
 }

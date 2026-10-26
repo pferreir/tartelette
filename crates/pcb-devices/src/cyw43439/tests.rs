@@ -647,7 +647,7 @@ fn join_open_and_wpa2_succeed_and_wrong_password_fails_cleanly() {
     h.chip_mut().set_backend(LoopbackBackend::boxed());
 
     let ev = h.join("TarteletteNet", Some("hunter22"));
-    assert_eq!(ev.iter().map(|e| e.kind).collect::<Vec<_>>(), [3, 7, 46, 16, 0]);
+    assert_eq!(ev.iter().map(|e| e.kind).collect::<Vec<_>>(), [3, 7, 46, 16, 0, 1], "auth, assoc, psk_sup, link, set_ssid, join");
     assert!(ev.iter().all(|e| e.status == 0 || e.kind == 46));
     assert_eq!(ev[3].flags & 1, 1, "link-up flag");
     assert_eq!(h.chip().link(), Link::Up(0));
@@ -666,7 +666,8 @@ fn join_open_and_wpa2_succeed_and_wrong_password_fails_cleanly() {
     assert_eq!(ev.last().unwrap().status, 3);
 
     let ev = h.join("FreeCafe", None);
-    assert_eq!((ev.last().unwrap().kind, ev.last().unwrap().status), (0, 0));
+    assert!(ev.iter().any(|e| (e.kind, e.status) == (0, 0)), "SET_SSID success");
+    assert_eq!((ev.last().unwrap().kind, ev.last().unwrap().status), (1, 0), "then JOIN");
     assert_eq!(h.chip().link(), Link::Up(1));
 }
 
@@ -926,6 +927,6 @@ fn mock_devices_show_up_in_scans_and_survive_a_power_cycle() {
     h.hci_command(&mut bt, 0x200B, &[0, 0x10, 0, 0x10, 0, 0, 0], 0);
     let got = h.hci_command(&mut bt, 0x200C, &[1, 1], 30);
     let reports: Vec<_> = got.iter().filter(|(k, p)| *k == 4 && p[0] == 0x3E && p[2] == 0x02).map(|(_, p)| p[6..12].to_vec()).collect();
-    assert_eq!(reports, [peers::MIDI_ADDR.to_vec(), peers::BATTERY_ADDR.to_vec()], "one passive report each");
+    assert_eq!(reports, [peers::MIDI_ADDR.to_vec(), peers::BATTERY_ADDR.to_vec(), peers::PRINTER_ADDR.to_vec()], "one passive report each");
     assert!(h.chip().bt_backend().available());
 }

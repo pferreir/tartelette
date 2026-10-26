@@ -35,6 +35,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if let Some((name, _)) = h.dump_screen.iter().find(|(name, _)| board.device::<St7789>(name).is_none()) {
         return Err(format!("--dump-screen: no display named {name:?} on the board"));
     }
+    if let Some((name, _)) = h.dump_paper.iter().find(|(name, _)| board.device::<Cyw43439>(name).is_none()) {
+        return Err(format!("--dump-paper: no Wi-Fi chip named {name:?} on the board"));
+    }
     if h.log
         && let Some(note) = &s.log_note
     {
@@ -92,6 +95,12 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             save_screen(lcd, file)?;
         }
     }
+    for (name, file) in &h.dump_paper {
+        match board.device::<Cyw43439>(name).and_then(|c| c.bt_backend().paper()) {
+            Some(paper) => save_paper(paper, file)?,
+            None => eprintln!("--dump-paper: no cat printer in range of {name:?} (it needs --bt mock)"),
+        }
+    }
     for (name, file) in &args.sd {
         if let Some(card) = board.device::<SdCard>(name)
             && card.dirty()
@@ -124,4 +133,19 @@ fn save_screen(lcd: &St7789, file: &Path) -> Result<(), String> {
         return std::fs::write(file, ppm).map_err(|e| format!("{}: {e}", file.display()));
     }
     image::save_buffer(file, &rgb, w as u32, h as u32, image::ColorType::Rgb8).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// A roll of thermal paper (1 bit per dot, bit 0 leftmost), black on white,
+/// in the format the file's extension names.
+fn save_paper(paper: &[u8], file: &Path) -> Result<(), String> {
+    use pcb_devices::hci::catprinter::{ROW_BYTES, WIDTH};
+    let rows = paper.len() / ROW_BYTES;
+    if file.extension().is_some_and(|e| e.eq_ignore_ascii_case("pbm")) {
+        // PBM is MSB-first with 1 = black.
+        let mut pbm = format!("P4\n{WIDTH} {rows}\n").into_bytes();
+        pbm.extend(paper.iter().map(|b| b.reverse_bits()));
+        return std::fs::write(file, pbm).map_err(|e| format!("{}: {e}", file.display()));
+    }
+    let gray: Vec<u8> = (0..rows * WIDTH).map(|i| if paper[i / 8] >> (i % 8) & 1 != 0 { 0x20 } else { 0xF4 }).collect();
+    image::save_buffer(file, &gray, WIDTH as u32, rows as u32, image::ColorType::L8).map_err(|e| format!("{}: {e}", file.display()))
 }
