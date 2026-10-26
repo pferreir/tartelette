@@ -39,6 +39,36 @@ impl Source {
             path: None,
         }
     }
+
+    /// Read a file, remembering where it came from.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        Ok(Self { name, bytes, path: std::fs::canonicalize(path).ok() })
+    }
+}
+
+/// What the board's Wi-Fi chips are connected to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(clap::ValueEnum))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the command line picks one
+pub enum NetMode {
+    /// The host's network, through a user-mode NAT (the host's 127.0.0.1 is 10.0.2.2)
+    #[default]
+    User,
+    /// A deterministic fake network with only a gateway
+    Loopback,
+    /// No network, as in the browser
+    None,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Network {
+    pub mode: NetMode,
+    /// (host port, guest port): the host's `127.0.0.1:HOST` forwarded to a
+    /// TCP port on the guest (user mode only).
+    pub forwards: Vec<(u16, u16)>,
 }
 
 /// A message of the firmware's defmt log and the emulated time it was read at.
@@ -66,12 +96,13 @@ pub struct Session {
 
 impl Session {
     /// Build a run from a firmware ELF and an optional board file.
-    pub fn new(firmware: &Source, board: Option<&Source>) -> Result<Self, String> {
+    pub fn new(firmware: &Source, board: Option<&Source>, net: &Network) -> Result<Self, String> {
         let mut sys = System::new();
         sys.load_elf(&firmware.bytes).map_err(|e| format!("{}: cannot load ELF: {e:?}", firmware.name))?;
         if let Some(b) = board {
             sys.set_board(parse_board(b)?);
         }
+        connect_network(&mut sys.board, net)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
             Ok(Some(r)) => (Some(r), None),
             Ok(None) => (None, Some("this firmware has no defmt-over-RTT log".to_string())),
@@ -142,27 +173,26 @@ impl Session {
             }
         }
         self.events.append(&mut self.sys.board.events);
+        let lines = self.poll_log();
+        let at = self.seconds();
+        self.log.extend(lines.into_iter().map(|line| LogEntry { at, line }));
+        let extra = self.log.len().saturating_sub(LOG_KEEP);
+        self.log.drain(..extra);
+    }
+
+    /// Read out what the firmware has logged since the last call.
+    pub fn poll_log(&mut self) -> Vec<rtt::Line> {
+        let mut lines = Vec::new();
         if let Some(rtt) = self.rtt.as_mut() {
-            let mut lines = Vec::new();
             rtt.poll(&mut self.sys, &mut lines);
-            let at = self.sys.cycles() as f64 / CYCLES_PER_SEC;
-            self.log.extend(lines.into_iter().map(|line| LogEntry { at, line }));
-            let extra = self.log.len().saturating_sub(LOG_KEEP);
-            self.log.drain(..extra);
         }
+        lines
     }
 
     /// SD card contents by part name, to carry over into a fresh run (a reset
     /// is a power cycle; the card keeps its data).
     pub fn take_sd_cards(&mut self) -> Vec<(String, Vec<u8>, bool)> {
-        let names: Vec<String> = self.sys.board.parts.iter().filter(|p| p.kind == "sdcard").map(|p| p.name.clone()).collect();
-        names
-            .into_iter()
-            .filter_map(|n| {
-                let card = self.sys.board.device_mut::<SdCard>(&n)?;
-                Some((n, card.image().to_vec(), card.dirty()))
-            })
-            .collect()
+        self.sys.board.devices_mut::<SdCard>().map(|(n, card)| (n.to_string(), card.image().to_vec(), card.dirty())).collect()
     }
 
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {
@@ -174,6 +204,31 @@ impl Session {
             None => false,
         }
     }
+}
+
+/// Give every Wi-Fi chip on the board a network to talk to. The browser has no
+/// user-mode NAT, so there the chip finds no networks and the panel says why.
+fn connect_network(board: &mut Board, net: &Network) -> Result<(), String> {
+    let mut chips = board.devices_mut::<pcb_devices::cyw43439::Cyw43439>().peekable();
+    if chips.peek().is_none() && !net.forwards.is_empty() {
+        return Err("--forward: no Wi-Fi chip on the board".into());
+    }
+    for (_, chip) in chips {
+        match net.mode {
+            #[cfg(not(target_arch = "wasm32"))]
+            NetMode::User => {
+                let mut slirp = netstack::Slirp::new();
+                for &(host, guest) in &net.forwards {
+                    let addr = slirp.forward(host, guest).map_err(|e| format!("--forward {host}:{guest}: {e}"))?;
+                    eprintln!("forwarding {addr} to the guest's port {guest}");
+                }
+                chip.set_backend(Box::new(slirp));
+            }
+            NetMode::Loopback => chip.set_backend(pcb_devices::net::LoopbackBackend::boxed()),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_board(b: &Source) -> Result<Board, String> {
@@ -299,6 +354,21 @@ pub fn start(session: Session, running: bool, speed: f64) -> Shared {
     shared
 }
 
+/// End a run. Natively this waits for the emulator thread to let go of it, so
+/// its host sockets (port forwards) are closed before a new run binds them.
+pub fn stop(run: Shared) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let weak = Arc::downgrade(&run);
+        drop(run);
+        while weak.strong_count() > 0 {
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    drop(run);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,7 +399,7 @@ mod tests {
     #[test]
     fn steps_inputs_and_halts_like_the_cli() {
         let board = Source::new("t.board", b"led status gpio=25\nbutton user gpio=2\npanel user at=0,0\n".to_vec());
-        let mut s = Session::new(&firmware("button-led"), Some(&board)).unwrap();
+        let mut s = Session::new(&firmware("button-led"), Some(&board), &Network::default()).unwrap();
         assert_eq!(s.step(125 * 100, far()), 125 * 100);
         assert_eq!(is_lit(&s.sys.board, "status"), Some(false));
 
@@ -354,7 +424,7 @@ mod tests {
     fn sleeping_firmware_still_lets_time_pass() {
         // Waits (asleep) for a button that never comes.
         let board = Source::new("t.board", b"led status gpio=25\nbutton user gpio=2\n".to_vec());
-        let mut s = Session::new(&firmware("button-led"), Some(&board)).unwrap();
+        let mut s = Session::new(&firmware("button-led"), Some(&board), &Network::default()).unwrap();
         assert_eq!(s.step(CYCLES_PER_SEC as u64, far()), CYCLES_PER_SEC as u64);
         assert!((s.seconds() - 1.0).abs() < 1e-9);
         assert!(s.halted.is_none());
@@ -362,21 +432,21 @@ mod tests {
 
     #[test]
     fn deadline_cuts_a_step_short() {
-        let mut s = Session::new(&firmware("button-led"), None).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &Network::default()).unwrap();
         assert!(s.step(u64::MAX / 2, Instant::now()) == 0);
     }
 
     #[test]
     fn bad_inputs_are_reported() {
         let fw = firmware("button-led");
-        let err = |board: &str| Session::new(&fw, Some(&Source::new("x.board", board.as_bytes().to_vec()))).err().unwrap();
+        let err = |board: &str| Session::new(&fw, Some(&Source::new("x.board", board.as_bytes().to_vec())), &Network::default()).err().unwrap();
         assert_eq!(err("led a"), "x.board:1: missing gpio=N");
-        assert!(Session::new(&Source::new("junk.elf", vec![1, 2, 3]), None).err().unwrap().starts_with("junk.elf: cannot load ELF"));
+        assert!(Session::new(&Source::new("junk.elf", vec![1, 2, 3]), None, &Network::default()).err().unwrap().starts_with("junk.elf: cannot load ELF"));
     }
 
     #[test]
     fn uart_text_is_kept_bounded() {
-        let mut s = Session::new(&firmware("button-led"), None).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &Network::default()).unwrap();
         s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
         s.drain();
         assert!(s.uart[0].len() <= UART_KEEP);
@@ -395,7 +465,7 @@ mod log_tests {
             return;
         };
         let board = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.board")).unwrap();
-        let mut s = Session::new(&Source::new("fw", std::fs::read(path).unwrap()), Some(&Source::new("board", board))).unwrap();
+        let mut s = Session::new(&Source::new("fw", std::fs::read(path).unwrap()), Some(&Source::new("board", board)), &Network::default()).unwrap();
         assert_eq!(s.log_note, None);
         s.step(125_000_000, Instant::now() + Duration::from_secs(60));
         assert!(s.log.iter().any(|e| e.line.text.contains("Entering main loop")), "{:?}", s.log.iter().map(|e| &e.line.text).collect::<Vec<_>>());
@@ -409,13 +479,13 @@ mod bench {
     use super::*;
 
     /// Host speed of `Session::step` in 14 ms slices, no GUI. Run with
-    /// `cargo test --release -p rp2040-app bench_ -- --ignored --nocapture`.
+    /// `cargo test --release -p tartelette bench_ -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bench_headless_slices() {
         let fw = std::fs::read("../../../btl_01/software/os-embedded/target/thumbv6m-none-eabi/release/btl_os_embedded").unwrap();
         let board = std::fs::read("../../boards/btl-01.board").unwrap();
-        let mut s = Session::new(&Source::new("fw", fw), Some(&Source::new("board", board))).unwrap();
+        let mut s = Session::new(&Source::new("fw", fw), Some(&Source::new("board", board)), &Network::default()).unwrap();
         let t0 = Instant::now();
         let mut slices = 0;
         while s.sys.cycles() < 125_000_000 {

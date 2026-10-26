@@ -3,7 +3,7 @@ use crate::brand::Logo;
 use crate::files::{self, Inbox, Slot};
 use crate::midi::Midi;
 use crate::panel::{self, Layout, PanelState, Request};
-use crate::session::{self, Run, Session, Shared, Source, lock};
+use crate::session::{self, Network, Run, Session, Shared, Source, lock};
 use egui::{Color32, RichText};
 
 const SPEEDS: &[(f64, &str)] = &[(0.01, "0.01×"), (0.1, "0.1×"), (0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (f64::INFINITY, "max")];
@@ -18,6 +18,7 @@ pub struct App {
     logo: Option<Logo>,
     firmware: Option<Source>,
     board: Option<Source>,
+    net: Network,
     run: Option<Shared>,
     layout: Option<Layout>,
     panel: PanelState,
@@ -35,11 +36,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(firmware: Option<Source>, board: Option<Source>) -> Self {
+    pub fn new(firmware: Option<Source>, board: Option<Source>, net: Network) -> Self {
         let mut app = Self {
             logo: None,
             firmware,
             board,
+            net,
             run: None,
             layout: None,
             panel: PanelState::default(),
@@ -66,14 +68,16 @@ impl App {
             let g = lock(r);
             (g.clock.running, g.clock.speed)
         });
-        drop(old);
+        if let Some(old) = old {
+            session::stop(old);
+        }
         self.layout = None;
         self.panel = PanelState::default();
         self.errors.clear();
         #[cfg(not(target_arch = "wasm32"))]
         self.watch.track(self.firmware.as_ref(), self.board.as_ref());
         let Some(fw) = &self.firmware else { return };
-        match Session::new(fw, self.board.as_ref()) {
+        match Session::new(fw, self.board.as_ref(), &self.net) {
             Ok(mut s) => {
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);
@@ -112,8 +116,8 @@ impl App {
                     let s = &mut g.session;
                     // A dropped image goes to the first card.
                     let name = if name.is_empty() {
-                        match s.sys.board.parts.iter().find(|p| p.kind == "sdcard") {
-                            Some(p) => p.name.clone(),
+                        match s.sys.board.devices_mut::<pcb_devices::sdcard::SdCard>().next() {
+                            Some((name, _)) => name.to_string(),
                             None => {
                                 self.errors.push(format!("{}: the board has no SD card", src.name));
                                 continue;

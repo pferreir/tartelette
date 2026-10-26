@@ -88,6 +88,18 @@ impl Pio {
         }
     }
 
+    /// Whether the atomic register aliases (XOR / SET / CLR) mean anything at
+    /// `off`: true for registers that hold what was written (CTRL, the input
+    /// synchronizer bypass, interrupt enables and forces, and each machine's
+    /// CLKDIV / EXECCTRL / SHIFTCTRL / PINCTRL).
+    pub fn alias_applies(off: u32) -> bool {
+        match off {
+            0x000 | 0x038 | 0x12C | 0x130 | 0x138 | 0x13C => true,
+            0x0C8..=0x127 => matches!((off - 0xC8) % 0x18, 0x00 | 0x04 | 0x08 | 0x14),
+            _ => false,
+        }
+    }
+
     /// Merged pad outputs and output enables.
     pub fn outputs(&self) -> (u32, u32) {
         (self.shared.out & PAD_MASK, self.shared.oe & PAD_MASK)

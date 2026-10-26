@@ -14,10 +14,11 @@
 //! | `mcp23008` | eight pin switches with levels  | `mode=hold\|toggle` `active=low\|high` |
 //! | `dac8165`  | four voltage meters             |                                 |
 //! | `sdcard`   | card status, load / save image  |                                 |
+//! | `cyw43439` | Wi-Fi: LED, link, address, errors |                               |
 use crate::session::Session;
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2};
 use pcb::{Board, BoardEvent};
-use pcb_devices::{button::Button, dac8165::Dac8165, led::Led, mcp23008::Mcp23008, sdcard::SdCard, st7789::St7789, ws2812::Ws2812};
+use pcb_devices::{button::Button, cyw43439::{Cyw43439, Link}, dac8165::Dac8165, led::Led, mcp23008::Mcp23008, sdcard::SdCard, st7789::St7789, ws2812::Ws2812};
 use std::collections::HashMap;
 
 /// Detents per knob revolution, for turning by dragging around the knob.
@@ -53,6 +54,7 @@ pub enum Widget {
     Expander { toggle: bool, active_high: bool },
     Dac,
     SdCard,
+    Wifi,
     /// A kind this app has no widget for.
     Other,
 }
@@ -110,6 +112,7 @@ fn auto_span(board: &Board, part: &pcb::Part) -> (u16, u16) {
         "ws2812" | "mcp23008" => (4, 1),
         "dac8165" => (2, 2),
         "sdcard" => (2, 1),
+        "cyw43439" => (3, 2),
         _ => (1, 1),
     }
 }
@@ -138,6 +141,7 @@ fn widget_for<'a>(kind: &str, options: &mut dyn Iterator<Item = (&'a str, &'a st
         "mcp23008" => Widget::Expander { toggle: false, active_high: false },
         "dac8165" => Widget::Dac,
         "sdcard" => Widget::SdCard,
+        "cyw43439" => Widget::Wifi,
         _ => Widget::Other,
     };
     let key = |v: &str| Key::from_name(v).ok_or_else(|| format!("unknown key {v:?}"));
@@ -203,14 +207,33 @@ pub struct PanelState {
     travel: HashMap<usize, f32>,
     /// Expander pins the panel is driving.
     driven: HashMap<usize, u8>,
+    /// What each Wi-Fi chip last reported.
+    wifi: HashMap<usize, WifiNotes>,
+}
+
+/// Things the Wi-Fi panel remembers from the chip's events.
+#[derive(Default, Clone, Copy)]
+struct WifiNotes {
+    /// Networks the last scan found.
+    scanned: Option<i64>,
+    /// The last join attempt failed.
+    join_failed: bool,
+    /// A scan or join was tried with no network behind the chip.
+    unavailable: bool,
 }
 
 impl PanelState {
     /// Follow what happened on the board, at UI time `now` (seconds).
     pub fn absorb(&mut self, events: &[BoardEvent], now: f64) {
         for e in events {
-            if e.label == "detent" {
-                self.turned.insert(e.part, (e.value.signum(), now));
+            match e.label {
+                "detent" => {
+                    self.turned.insert(e.part, (e.value.signum(), now));
+                }
+                "scan" => self.wifi.entry(e.part).or_default().scanned = Some(e.value),
+                "join" => self.wifi.entry(e.part).or_default().join_failed = e.value == 0,
+                "unavailable" => self.wifi.entry(e.part).or_default().unavailable = true,
+                _ => {}
             }
         }
     }
@@ -245,6 +268,7 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
                 Widget::Expander { toggle, active_high } => expander(ctx, st, toggle, active_high, &mut out),
                 Widget::Dac => dac(ctx),
                 Widget::SdCard => sdcard(ctx, &mut out),
+                Widget::Wifi => wifi(ctx, st),
                 Widget::Other => {
                     let kind = &s.sys.board.parts[it.part].kind;
                     ctx.ui.painter_at(body).text(body.center(), Align2::CENTER_CENTER, kind, FontId::monospace(12.0), ctx.ui.visuals().weak_text_color());
@@ -538,6 +562,44 @@ fn sdcard(c: Ctx, out: &mut Vec<Request>) {
     });
 }
 
+/// The one-line story of a Wi-Fi chip, and whether it is an error.
+fn wifi_status(chip: &Cyw43439, notes: &WifiNotes) -> (String, bool) {
+    let ip = |chip: &Cyw43439| chip.lease().map_or_else(|| "no address yet".to_string(), |a| format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]));
+    if notes.unavailable && !chip.network_available() {
+        let why = if cfg!(target_arch = "wasm32") { "Wi-Fi unavailable in the browser" } else { "Wi-Fi unavailable: no network" };
+        return (why.into(), true);
+    }
+    if !chip.firmware_running() {
+        return ("radio off".into(), false);
+    }
+    match chip.link() {
+        Link::Up(_) => (format!("{} \u{2022} {}", chip.ssid().unwrap_or("?"), ip(chip)), false),
+        Link::Joining => (format!("joining {}\u{2026}", chip.ssid().unwrap_or("?")), false),
+        Link::Down if notes.join_failed => ("join failed".into(), true),
+        Link::Down => (notes.scanned.map_or("idle".into(), |n| format!("idle \u{2022} last scan found {n}")), false),
+    }
+}
+
+fn wifi(c: Ctx, st: &PanelState) {
+    let session: &Session = c.s;
+    let Some(chip) = session.sys.board.device::<Cyw43439>(&c.it.name) else { return };
+    let notes = st.wifi.get(&c.it.part).copied().unwrap_or_default();
+    let (status, is_error) = wifi_status(chip, &notes);
+    let r = (c.body.height().min(c.body.width() / 3.0) * 0.28).max(4.0);
+    lamp(c.ui, c.body.left_center() + vec2(r + 4.0, 0.0), r, Color32::from_rgb(40, 230, 70), chip.led());
+    let text = Rect::from_min_max(pos2(c.body.left() + 2.0 * r + 14.0, c.body.top()), c.body.right_bottom());
+    c.ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(&status).color(if is_error { ui.visuals().error_fg_color } else { ui.visuals().text_color() }));
+            ui.label(egui::RichText::new(format!("{} \u{2022} {} network{}", mac_text(chip.mac()), chip.aps().len(), if chip.aps().len() == 1 { "" } else { "s" })).small().weak());
+        });
+    });
+}
+
+fn mac_text(mac: [u8; 6]) -> String {
+    mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +633,22 @@ mod tests {
                 assert!(apart, "{} overlaps {}", a.name, o.name);
             }
         }
+    }
+
+    #[test]
+    fn the_pico_w_board_lays_out_and_its_wifi_widget_reports_state() {
+        let b = board(include_str!("../../../boards/pico-w.board"));
+        let (l, warnings) = Layout::new(&b);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(matches!(l.items[0].widget, Widget::Wifi));
+        let chip = b.device::<Cyw43439>("wifi").unwrap();
+        // Fresh board: radio off. After an attempt with no network, say why.
+        assert_eq!(wifi_status(chip, &WifiNotes::default()), ("radio off".to_string(), false));
+        let (text, error) = wifi_status(chip, &WifiNotes { unavailable: true, ..Default::default() });
+        assert!(error && text.starts_with("Wi-Fi unavailable"), "{text}");
+        let mut st = PanelState::default();
+        st.absorb(&[BoardEvent { cycles: 0, part: 0, label: "join", value: 0 }, BoardEvent { cycles: 0, part: 0, label: "scan", value: 2 }], 0.0);
+        assert!(st.wifi[&0].join_failed && st.wifi[&0].scanned == Some(2));
     }
 
     #[test]

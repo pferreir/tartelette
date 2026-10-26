@@ -13,6 +13,7 @@
 //! | `dac8165`  | quad 14-bit DAC on a bit-banged serial link            |
 //! | `encoder`  | rotary encoder (quadrature contacts)                   |
 //! | `sdcard`   | SDHC card in SPI mode over a disk image                |
+//! | `cyw43439` | Pico W Wi-Fi chip on a bit-banged gSPI link            |
 #![no_std]
 
 extern crate alloc;
@@ -30,6 +31,8 @@ pub mod dac8165;
 pub mod encoder;
 pub mod fat;
 pub mod sdcard;
+pub mod cyw43439;
+pub mod net;
 
 pub use led::is_lit;
 
@@ -42,6 +45,7 @@ pub fn register_builtin(r: &mut Registry) {
     r.register("dac8165", dac8165::factory);
     r.register("encoder", encoder::factory);
     r.register("sdcard", sdcard::factory);
+    r.register("cyw43439", cyw43439::factory);
 }
 
 /// A registry holding every stock device kind.
@@ -68,6 +72,11 @@ mod testutil {
     impl FakePins {
         pub fn set_chip(&mut self, pin: usize, level: bool) {
             self.chip[pin] = Some(level);
+        }
+
+        /// The chip stops driving the pad (an input again).
+        pub fn release_chip(&mut self, pin: usize) {
+            self.chip[pin] = None;
         }
 
         /// Pads whose level moved since the last call.

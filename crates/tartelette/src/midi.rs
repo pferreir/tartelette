@@ -16,7 +16,7 @@ const KEEP: usize = 4096;
 const REFRESH: Duration = Duration::from_secs(1);
 /// How long the activity light stays on after a byte.
 const LIGHT: Duration = Duration::from_millis(120);
-const CLIENT: &str = "rp2040-app";
+const CLIENT: &str = "tartelette";
 
 /// What the port's callback fills and the UI empties.
 #[derive(Default)]

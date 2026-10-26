@@ -300,7 +300,21 @@ impl SystemBus {
             }
             0x5 => {
                 if let Some(b) = self.pio_at(addr) {
-                    self.pio[b].write(addr & 0xFFF, val);
+                    let off = addr & 0xFFF;
+                    // The atomic aliases (+0x1000 XOR, +0x2000 SET, +0x3000 CLR) work on
+                    // the plain registers; FIFOs and write-1-to-act registers ignore them.
+                    let val = match addr >> 12 & 3 {
+                        alias if alias != 0 && Pio::alias_applies(off) => {
+                            let cur = self.pio[b].read(off);
+                            match alias {
+                                1 => cur ^ val,
+                                2 => cur | val,
+                                _ => cur & !val,
+                            }
+                        }
+                        _ => val,
+                    };
+                    self.pio[b].write(off, val);
                 }
             }
             _ => {}
@@ -1138,6 +1152,22 @@ mod tests {
         bus.write32(RESETS + 0x1000, 0b0011); // xor
         bus.write32(RESETS + 0x3000, 0b1000); // clr
         assert_eq!(bus.read32(RESETS), 0b0101);
+    }
+
+    #[test]
+    fn pio_registers_have_atomic_aliases() {
+        let mut bus = SystemBus::new();
+        bus.write32(RESETS + 0x3000, 1 << 10); // release PIO0
+        let ctrl = PIO0_BASE;
+        bus.write32(ctrl, 0b0101);
+        bus.write32(ctrl + 0x3000, 0b0001); // CLR: how embassy stops a state machine
+        assert_eq!(bus.read32(ctrl), 0b0100);
+        bus.write32(ctrl + 0x2000, 0b0010); // SET
+        bus.write32(ctrl + 0x1000, 0b0100); // XOR
+        assert_eq!(bus.read32(ctrl), 0b0010);
+        // A TX FIFO write through an alias is still a plain push.
+        bus.write32(PIO0_BASE + 0x10 + 0x3000, 7);
+        assert_eq!(bus.read32(PIO0_BASE + 0x04) >> 24 & 1, 0, "TXF0 empty after a push");
     }
 
     #[test]

@@ -38,7 +38,7 @@ fn library_runs_firmware() {
 #[test]
 fn cli_prints_uart0_to_stdout() {
     let elf = build_firmware();
-    let out = Command::new(env!("CARGO_BIN_EXE_rp2040-cli")).arg(&elf).output().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tartelette")).arg(&elf).arg("--headless").output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), EXPECTED);
 }
@@ -103,14 +103,15 @@ fn button_drives_led_through_the_board() {
 #[test]
 fn cli_logs_board_events_and_honours_press_schedule() {
     let elf = build_named("button-led");
-    let dir = std::env::temp_dir().join(format!("rp2040-cli-board-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rp2040-headless-board-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let board = dir.join("test.board");
     std::fs::write(&board, BOARD).unwrap();
 
     let run = |extra: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_rp2040-cli"))
+        Command::new(env!("CARGO_BIN_EXE_tartelette"))
             .arg(&elf)
+            .arg("--headless")
             .arg("--board")
             .arg(&board)
             .args(["--max-cycles", "1000000"])
@@ -207,13 +208,14 @@ fn spi_and_dma_draw_on_the_display() {
 #[test]
 fn cli_dumps_the_display_and_logs_updates() {
     let elf = build_named("spi-dma-test");
-    let dir = std::env::temp_dir().join(format!("rp2040-cli-screen-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rp2040-headless-screen-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (board, shot) = (dir.join("lcd.board"), dir.join("shot.ppm"));
     std::fs::write(&board, SCREEN_BOARD).unwrap();
     let run = |extra: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_rp2040-cli"))
+        Command::new(env!("CARGO_BIN_EXE_tartelette"))
             .arg(&elf)
+            .arg("--headless")
             .arg("--board")
             .arg(&board)
             .args(extra)
@@ -346,7 +348,7 @@ fn spi_and_dma_talk_to_an_sd_card() {
 fn cli_loads_an_sd_image_and_saves_what_the_firmware_wrote() {
     use pcb_devices::sdcard::BLOCK;
     let elf = build_named("sd-test");
-    let dir = std::env::temp_dir().join(format!("rp2040-cli-sd-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rp2040-headless-sd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (board, img) = (dir.join("sd.board"), dir.join("card.img"));
     std::fs::write(&board, "spi1 sck=10 mosi=11 miso=12\nsdcard sd bus=spi1 cs=8 size_mb=1\n").unwrap();
@@ -356,8 +358,9 @@ fn cli_loads_an_sd_image_and_saves_what_the_firmware_wrote() {
     }
     std::fs::write(&img, &image).unwrap();
     let run = |sd: &str| {
-        Command::new(env!("CARGO_BIN_EXE_rp2040-cli"))
+        Command::new(env!("CARGO_BIN_EXE_tartelette"))
             .arg(&elf)
+            .arg("--headless")
             .arg("--board")
             .arg(&board)
             .args(["--sd", sd])

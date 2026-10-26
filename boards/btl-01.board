@@ -34,7 +34,7 @@ encoder knob clk=22 dt=21 cw=dt
 # image with `--sd sd=card.img` (the default blank card is 16 MiB).
 sdcard sd bus=spi1 cs=8
 
-# Front panel for rp2040-app: cells on a grid, `at=COL,ROW [span=W,H]`.
+# Front panel for tartelette: cells on a grid, `at=COL,ROW [span=W,H]`.
 # Arrange to taste; parts left out are not shown.
 panel screen   at=0,0 span=4,3 rotate=90
 panel rgb      at=0,4 span=4,1 label=LEDs

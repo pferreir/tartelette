@@ -1,0 +1,8 @@
+[package]
+name = "netstack"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pcb-devices = { path = "../pcb-devices" }
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp", "alloc"] }

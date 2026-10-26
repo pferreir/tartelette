@@ -239,6 +239,14 @@ impl Board {
         any.downcast_mut()
     }
 
+    /// Every device that is a `T`, with its part name.
+    pub fn devices_mut<T: Device>(&mut self) -> impl Iterator<Item = (&str, &mut T)> {
+        self.parts.iter_mut().filter_map(|p| {
+            let any: &mut dyn core::any::Any = &mut *p.device;
+            Some((p.name.as_str(), any.downcast_mut()?))
+        })
+    }
+
     /// Plug the board into the pins: devices set the pins they drive, then
     /// everyone samples the resulting levels. No events are emitted.
     pub fn attach(&mut self, pins: &mut dyn Pins) {
