@@ -63,9 +63,23 @@ pub enum NetMode {
     None,
 }
 
+/// What the board's Bluetooth radios are connected to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the command line picks one
+pub enum BtMode {
+    /// No radio, as in the browser: the firmware finds and reaches nobody.
+    #[default]
+    None,
+    /// Mock devices in software: a central, a BLE MIDI peripheral, a battery.
+    Mock,
+    /// A real adapter (`hciN`), through a Linux HCI user channel.
+    Adapter(u16),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Network {
     pub mode: NetMode,
+    pub bt: BtMode,
     /// (host port, guest port): the host's `127.0.0.1:HOST` forwarded to a
     /// TCP port on the guest (user mode only).
     pub forwards: Vec<(u16, u16)>,
@@ -228,8 +242,37 @@ fn connect_network(board: &mut Board, net: &Network) -> Result<(), String> {
             _ => {}
         }
     }
+    connect_bluetooth(board, net.bt)
+}
+
+/// Give every Bluetooth radio on the board its controller. A real adapter
+/// can serve only one.
+fn connect_bluetooth(board: &mut Board, bt: BtMode) -> Result<(), String> {
+    use pcb_devices::{cyw43439::bt::bt_address, hci::{peers, virt::VirtualController}};
+    let mut chips = board.devices_mut::<pcb_devices::cyw43439::Cyw43439>();
+    while let Some((name, chip)) = chips.next() {
+        match bt {
+            BtMode::None => {}
+            BtMode::Mock => chip.set_bt_backend(Box::new(VirtualController::new(bt_address(chip.mac()), peers::neighbourhood()))),
+            BtMode::Adapter(dev) => {
+                if chips.next().is_some() {
+                    return Err(format!("--bt hci{dev}: the board has more than one Bluetooth radio"));
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    chip.set_bt_backend(hcibridge::open(dev)?);
+                    eprintln!("{name}: Bluetooth bridged to hci{dev}");
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = (name, dev);
+                return Ok(());
+            }
+        }
+        let _ = name;
+    }
     Ok(())
 }
+
 
 pub fn parse_board(b: &Source) -> Result<Board, String> {
     let text = std::str::from_utf8(&b.bytes).map_err(|_| format!("{}: not a text file", b.name))?;

@@ -47,6 +47,8 @@ struct Host {
     /// Response to the ioctl being waited for.
     ioctl_resp: Option<Vec<u8>>,
     led_events: Vec<i64>,
+    /// Every other board event, in order.
+    notes: Vec<(&'static str, i64)>,
 }
 
 impl Host {
@@ -72,6 +74,7 @@ impl Host {
             data_frames: Vec::new(),
             ioctl_resp: None,
             led_events: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -100,6 +103,8 @@ impl Host {
         for e in std::mem::take(&mut self.board.events) {
             if e.label == "led" {
                 self.led_events.push(e.value);
+            } else {
+                self.notes.push((e.label, e.value));
             }
         }
     }
@@ -762,4 +767,165 @@ fn board_file_errors() {
     assert!(e(&format!("{base} ap1=x,open,-70,99")).contains("channel"));
     assert!(e(&format!("{base} ap1=x,open ap2=x,open")).contains("listed twice"));
     assert_eq!(e(&format!("{base} ap9=x,open")), "unknown parameter ap9");
+}
+
+// ---- Bluetooth, the way `cyw43`'s bluetooth.rs drives it ----
+
+const MS: u64 = 125_000;
+const BT_CTRL: u32 = 0x1800_0C7C;
+const WLAN_RAM_BASE: u32 = 0x1800_0D68;
+const HOST_CTRL: u32 = 0x1800_0D6C;
+const SDIO_INT_STATUS: u32 = 0x1800_2020;
+const SDIO_INT_HOST_MASK: u32 = 0x1800_2024;
+
+/// The host side of the Bluetooth rings.
+struct BtHost {
+    base: u32,
+    h2b: u32,
+    b2h: u32,
+}
+
+impl Host {
+    fn bp_read32(&mut self, addr: u32) -> u32 {
+        u32::from_le_bytes(self.bp_read(addr, 4).try_into().unwrap())
+    }
+
+    /// `init_bluetooth`: power-up, patch download, wait for ready, rings,
+    /// host ready.
+    fn bt_init(&mut self) -> BtHost {
+        self.bp_write32(SDIO_INT_HOST_MASK, 1 << 5);
+        self.bp_write32(0x1964_0894, 3);
+        self.advance(2 * MS);
+        self.bp_write(0x1900_1000, &[0xA5; 64]);
+        assert_eq!(self.bp_read32(BT_CTRL) & 1 << 24, 0, "not ready the moment the patch is in");
+        self.advance(3 * MS);
+        assert_eq!(self.bp_read32(BT_CTRL) & (1 << 24 | 1 << 8), 1 << 24 | 1 << 8, "ready and awake");
+        let base = self.bp_read32(WLAN_RAM_BASE);
+        assert_ne!(base, 0);
+        for off in [0x2000, 0x2004, 0x2008, 0x200C] {
+            self.bp_write32(base + off, 0);
+        }
+        let v = self.bp_read32(HOST_CTRL);
+        self.bp_write32(HOST_CTRL, v | 1 << 24);
+        BtHost { base, h2b: 0, b2h: 0 }
+    }
+
+    /// `hci_write`: header and padded payload into the ring, advance the
+    /// index, toggle data-valid.
+    fn hci_write(&mut self, bt: &mut BtHost, kind: u8, payload: &[u8]) {
+        let len = payload.len() as u32;
+        self.bp_write(bt.base + bt.h2b, &(len | (kind as u32) << 24).to_le_bytes());
+        bt.h2b = (bt.h2b + 4) % 0x1000;
+        let mut padded = payload.to_vec();
+        padded.resize(payload.len().div_ceil(4) * 4, 0);
+        for (i, b) in padded.chunks(4).enumerate() {
+            self.bp_write(bt.base + (bt.h2b + 4 * i as u32) % 0x1000, b);
+        }
+        bt.h2b = (bt.h2b + padded.len() as u32) % 0x1000;
+        self.bp_write32(bt.base + 0x2000, bt.h2b);
+        let v = self.bp_read32(HOST_CTRL);
+        self.bp_write32(HOST_CTRL, v ^ 1 << 1);
+    }
+
+    /// `handle_irq`: if the SDIO core flags ring activity, clear it and read
+    /// every packet.
+    fn hci_read(&mut self, bt: &mut BtHost) -> Vec<(u8, Vec<u8>)> {
+        let mut got = Vec::new();
+        let st = self.bp_read32(SDIO_INT_STATUS);
+        if st & 1 << 5 == 0 {
+            return got;
+        }
+        self.bp_write32(SDIO_INT_STATUS, st & 1 << 5);
+        loop {
+            let write = self.bp_read32(bt.base + 0x2008);
+            if write == bt.b2h {
+                break;
+            }
+            let header = self.bp_read32(bt.base + 0x1000 + bt.b2h);
+            let len = header & 0xFF_FFFF;
+            bt.b2h = (bt.b2h + 4) % 0x1000;
+            let mut p = Vec::new();
+            for i in 0..len.div_ceil(4) {
+                p.extend(self.bp_read(bt.base + 0x1000 + (bt.b2h + 4 * i) % 0x1000, 4));
+            }
+            p.truncate(len as usize);
+            bt.b2h = (bt.b2h + len.div_ceil(4) * 4) % 0x1000;
+            self.bp_write32(bt.base + 0x200C, bt.b2h);
+            got.push(((header >> 24) as u8, p));
+        }
+        got
+    }
+
+    /// Send a command and collect what comes back within `ms`.
+    fn hci_command(&mut self, bt: &mut BtHost, opcode: u16, params: &[u8], ms: u64) -> Vec<(u8, Vec<u8>)> {
+        let mut p = opcode.to_le_bytes().to_vec();
+        p.push(params.len() as u8);
+        p.extend_from_slice(params);
+        self.hci_write(bt, 1, &p);
+        let mut got = self.hci_read(bt);
+        for _ in 0..ms {
+            self.advance(MS);
+            got.extend(self.hci_read(bt));
+        }
+        got
+    }
+}
+
+#[test]
+fn bluetooth_comes_up_and_carries_hci_both_ways() {
+    let mut h = booted(BOARD);
+    let mut bt = h.bt_init();
+    assert!(h.chip().bt_up());
+    let got = h.hci_command(&mut bt, 0x0C03, &[], 0);
+    assert_eq!(got, [(4, vec![0x0E, 4, 1, 0x03, 0x0C, 0])], "Reset completes");
+    // The interrupt line went up with the data and down with the clear.
+    assert_eq!(h.read16(0, 0x04) & 0x2000, 0);
+    let mut p = 0x1009u16.to_le_bytes().to_vec();
+    p.push(0);
+    h.hci_write(&mut bt, 1, &p);
+    assert_ne!(h.read16(0, 0x04) & 0x2000, 0, "F1_INTR while the ring has data");
+    let got = h.hci_read(&mut bt);
+    assert_eq!(got[0].1[..7], [0x0E, 10, 1, 0x09, 0x10, 0, 0x02], "BD_ADDR is the MAC plus one");
+    assert_eq!(h.read16(0, 0x04) & 0x2000, 0);
+}
+
+#[test]
+fn many_packets_wrap_around_the_rings() {
+    let mut h = booted(BOARD);
+    let mut bt = h.bt_init();
+    // Each Read Local Supported Commands answer is 72 bytes: 100 of them go
+    // round the 4 KiB ring more than once in each direction.
+    for _ in 0..100 {
+        let got = h.hci_command(&mut bt, 0x1002, &[], 0);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1.len(), 2 + 4 + 64);
+    }
+}
+
+#[test]
+fn without_a_radio_bluetooth_scans_find_nothing_and_say_so() {
+    let mut h = booted(BOARD);
+    let mut bt = h.bt_init();
+    h.hci_command(&mut bt, 0x200B, &[1, 0x10, 0, 0x10, 0, 0, 0], 0);
+    let got = h.hci_command(&mut bt, 0x200C, &[1, 1], 50);
+    assert_eq!(got.len(), 1, "only the command completes: {got:?}");
+    assert!(h.notes.contains(&("bt_unavailable", 1)));
+    assert!(!h.chip().bt_backend().available());
+    assert_eq!(h.chip().bt_activity(), (true, false, 0));
+}
+
+#[test]
+fn mock_devices_show_up_in_scans_and_survive_a_power_cycle() {
+    use crate::hci::{peers, virt::VirtualController};
+    let mut h = Host::new(BOARD);
+    let addr = h.chip().mac();
+    h.chip_mut().set_bt_backend(Box::new(VirtualController::new(bt::bt_address(addr), peers::neighbourhood())));
+    h.bring_up();
+    h.init_control();
+    let mut bt = h.bt_init();
+    h.hci_command(&mut bt, 0x200B, &[0, 0x10, 0, 0x10, 0, 0, 0], 0);
+    let got = h.hci_command(&mut bt, 0x200C, &[1, 1], 30);
+    let reports: Vec<_> = got.iter().filter(|(k, p)| *k == 4 && p[0] == 0x3E && p[2] == 0x02).map(|(_, p)| p[6..12].to_vec()).collect();
+    assert_eq!(reports, [peers::MIDI_ADDR.to_vec(), peers::BATTERY_ADDR.to_vec()], "one passive report each");
+    assert!(h.chip().bt_backend().available());
 }

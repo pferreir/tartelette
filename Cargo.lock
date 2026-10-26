@@ -1500,6 +1500,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hcibridge"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pcb-devices",
+]
+
+[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3160,6 +3168,7 @@ dependencies = [
  "clap",
  "eframe",
  "egui",
+ "hcibridge",
  "image",
  "js-sys",
  "midir",

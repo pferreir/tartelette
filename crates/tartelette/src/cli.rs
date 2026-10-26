@@ -1,6 +1,6 @@
 //! Command line (native only): one set of options for the front panel and for
 //! headless runs, plus the `mkdisk` tool.
-use crate::session::{NetMode, Network};
+use crate::session::{BtMode, NetMode, Network};
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
 use std::path::PathBuf;
@@ -45,6 +45,12 @@ pub struct RunArgs {
     /// Forward the host's 127.0.0.1:HOST to TCP port GUEST on the guest (with --net user)
     #[arg(long, value_name = "HOST:GUEST", value_parser = port_pair)]
     pub forward: Vec<(u16, u16)>,
+    /// What the board's Bluetooth radios talk to: `none` (no radio, as in the
+    /// browser), `mock` (software devices: a central, a BLE MIDI peripheral
+    /// and a battery), or a real adapter `hciN` (Linux; takes the adapter
+    /// from the system while running and needs CAP_NET_ADMIN)
+    #[arg(long, value_name = "none|mock|hciN", default_value = "none", value_parser = bt_mode)]
+    pub bt: BtMode,
     /// Run without a window
     #[arg(long)]
     pub headless: bool,
@@ -54,7 +60,7 @@ pub struct RunArgs {
 
 impl RunArgs {
     pub fn network(&self) -> Network {
-        Network { mode: self.net, forwards: self.forward.clone() }
+        Network { mode: self.net, bt: self.bt, forwards: self.forward.clone() }
     }
 }
 
@@ -145,6 +151,18 @@ fn name_and_path(s: &str) -> Result<(String, PathBuf), String> {
     Ok((name.into(), file.into()))
 }
 
+fn bt_mode(s: &str) -> Result<BtMode, String> {
+    match s {
+        "none" => Ok(BtMode::None),
+        "mock" => Ok(BtMode::Mock),
+        _ => s
+            .strip_prefix("hci")
+            .and_then(|n| n.parse().ok())
+            .map(BtMode::Adapter)
+            .ok_or_else(|| format!("{s:?}: expected none, mock or hciN (e.g. hci0)")),
+    }
+}
+
 fn port_pair(s: &str) -> Result<(u16, u16), String> {
     let (h, g) = s.split_once(':').ok_or("expected HOST:GUEST")?;
     Ok((h.parse().map_err(|e| format!("{h:?}: {e}"))?, g.parse().map_err(|e| format!("{g:?}: {e}"))?))
@@ -165,7 +183,13 @@ fn input(s: &str) -> Result<Input, String> {
     let (target, when) = s.rsplit_once('@').ok_or("expected NAME:ACTION[=VALUE]@US")?;
     let (part, action) = target.split_once(':').ok_or("expected NAME:ACTION[=VALUE]@US")?;
     let (action, value) = match action.split_once('=') {
-        Some((a, v)) => (a, v.parse().map_err(|e| format!("{v:?}: {e}"))?),
+        Some((a, v)) => {
+            let n = match v.strip_prefix("0x") {
+                Some(hex) => i64::from_str_radix(hex, 16),
+                None => v.parse(),
+            };
+            (a, n.map_err(|e| format!("{v:?}: {e}"))?)
+        }
         None => (action, 0),
     };
     Ok(Input { cycle: us_to_cycles(when)?, part: part.into(), action: action.into(), value })
@@ -193,6 +217,11 @@ mod tests {
         assert!(Cli::try_parse_from(["x", "fw", "--log"]).is_err());
         assert!(Cli::try_parse_from(["x", "--headless"]).is_err());
         assert!(Cli::try_parse_from(["x", "fw", "--board", "b", "--net", "loopback"]).is_ok());
+        let bt = |v: &str| Cli::try_parse_from(["x", "fw", "--bt", v]).map(|c| c.run.bt);
+        assert_eq!(bt("hci1").unwrap(), BtMode::Adapter(1));
+        assert_eq!(bt("mock").unwrap(), BtMode::Mock);
+        assert!(bt("hcix").is_err() && bt("usb").is_err());
+        assert_eq!(input("wifi:midi=0x903C64@5").unwrap().value, 0x903C64);
         assert!(matches!(Cli::try_parse_from(["x", "mkdisk", "a.img", "--dir", "data"]).unwrap().command, Some(Command::Mkdisk(_))));
     }
 }

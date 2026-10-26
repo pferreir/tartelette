@@ -13,7 +13,7 @@
 //! | `dac8165`  | quad 14-bit DAC on a bit-banged serial link            |
 //! | `encoder`  | rotary encoder (quadrature contacts)                   |
 //! | `sdcard`   | SDHC card in SPI mode over a disk image                |
-//! | `cyw43439` | Pico W Wi-Fi chip on a bit-banged gSPI link            |
+//! | `cyw43439` | Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link  |
 #![no_std]
 
 extern crate alloc;
@@ -33,6 +33,7 @@ pub mod fat;
 pub mod sdcard;
 pub mod cyw43439;
 pub mod net;
+pub mod hci;
 
 pub use led::is_lit;
 

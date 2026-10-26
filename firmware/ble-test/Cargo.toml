@@ -1,0 +1,41 @@
+[package]
+name = "ble-test"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone (not part of the emulator workspace): Pico W firmware running
+# trouble's example apps (trouble `main`) over Embassy's cyw43 Bluetooth, to
+# exercise the emulated CYW43439's Bluetooth side. Build with
+#   CYW43_FIRMWARE_DIR=/path/to/cyw43-firmware cargo build --release
+# The Embassy revision is the one trouble's own rp-pico-w examples pin.
+
+[workspace]
+
+[dependencies]
+embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "defmt", "executor-interrupt"] }
+embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { version = "0.10", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+trouble-example-apps = { git = "https://github.com/embassy-rs/trouble.git", branch = "main", features = ["defmt"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble.git", branch = "main", features = ["default-packet-pool-mtu-128"] }
+cyw43 = { version = "0.7.0", features = ["defmt", "firmware-logs", "bluetooth"] }
+cyw43-pio = { version = "0.10.0", features = ["defmt"] }
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+cortex-m = { version = "0.7.6" }
+cortex-m-rt = "0.7.0"
+static_cell = "2"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+
+[patch.crates-io]
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"

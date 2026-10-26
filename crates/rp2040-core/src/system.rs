@@ -268,9 +268,7 @@ impl SystemBus {
             0xD if Sio::handles(addr - SIO_BASE) => self.sio.read(self.core, addr - SIO_BASE),
             0xE => self.ppb_read(addr),
             0x4 => self.apb_read(addr),
-            0x5 if addr - DMA_BASE < 0x1000 && !self.resets.in_reset(RESET_DMA) => {
-                self.dma.read(addr - DMA_BASE)
-            }
+            0x5 if addr - DMA_BASE < 0x4000 && !self.resets.in_reset(RESET_DMA) => self.dma.read(addr & 0xFFF),
             0x5 => match self.pio_at(addr) {
                 Some(b) => self.pio[b].read(addr & 0xFFF),
                 None => 0,
@@ -295,8 +293,25 @@ impl SystemBus {
             }
             0xE => self.ppb_write(addr, val),
             0x4 => self.apb_write(addr, val),
-            0x5 if addr - DMA_BASE < 0x1000 && !self.resets.in_reset(RESET_DMA) => {
-                self.dma.write(addr - DMA_BASE, val)
+            0x5 if addr - DMA_BASE < 0x4000 => {
+                if self.resets.in_reset(RESET_DMA) {
+                    return;
+                }
+                // Atomic aliases as for PIO below (embassy enables channel
+                // interrupts with a SET write to INTE0).
+                let off = addr & 0xFFF;
+                let val = match addr >> 12 & 3 {
+                    alias if alias != 0 && Dma::alias_applies(off) => {
+                        let cur = self.dma.read(off);
+                        match alias {
+                            1 => cur ^ val,
+                            2 => cur | val,
+                            _ => cur & !val,
+                        }
+                    }
+                    _ => val,
+                };
+                self.dma.write(off, val)
             }
             0x5 => {
                 if let Some(b) = self.pio_at(addr) {
@@ -1168,6 +1183,26 @@ mod tests {
         // A TX FIFO write through an alias is still a plain push.
         bus.write32(PIO0_BASE + 0x10 + 0x3000, 7);
         assert_eq!(bus.read32(PIO0_BASE + 0x04) >> 24 & 1, 0, "TXF0 empty after a push");
+    }
+
+    #[test]
+    fn dma_registers_have_atomic_aliases() {
+        let mut bus = SystemBus::new();
+        bus.write32(RESETS + 0x3000, 1 << 2); // release DMA
+        let inte0 = DMA_BASE + 0x404;
+        // How embassy enables each channel's interrupt.
+        bus.write32(inte0 + 0x2000, 1 << 0);
+        bus.write32(inte0 + 0x2000, 1 << 1);
+        assert_eq!(bus.read32(inte0), 0b11);
+        bus.write32(inte0 + 0x3000, 1 << 0);
+        assert_eq!(bus.read32(inte0 + 0x1000), 0b10, "aliases read the plain register");
+        // Write-1-to-clear through an alias still clears only those bits.
+        // Null triggers (enabled, zero count) flag channels 0 and 1 done.
+        bus.write32(DMA_BASE + 0x0C, 1);
+        bus.write32(DMA_BASE + 0x40 + 0x0C, 1);
+        assert_eq!(bus.read32(DMA_BASE + 0x400), 0b11);
+        bus.write32(DMA_BASE + 0x40C + 0x2000, 0b10);
+        assert_eq!(bus.read32(DMA_BASE + 0x400), 0b01);
     }
 
     #[test]

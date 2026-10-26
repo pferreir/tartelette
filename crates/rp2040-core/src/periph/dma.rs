@@ -298,6 +298,14 @@ impl Dma {
         (ALIASES[(sub >> 4 & 3) as usize][slot], slot == 3)
     }
 
+    /// Whether the atomic register aliases (XOR/SET/CLR) work on the
+    /// register at `off` as a read-modify-write. The write-1-to-act
+    /// registers (interrupt clears, multi-trigger, abort) take an alias
+    /// write as a plain one.
+    pub fn alias_applies(off: u32) -> bool {
+        !matches!(off, 0x400 | 0x40C | 0x41C | 0x430 | 0x444)
+    }
+
     pub fn read(&mut self, off: u32) -> u32 {
         if off < 0x400 {
             let c = &self.ch[(off >> 6) as usize];

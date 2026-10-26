@@ -1,7 +1,9 @@
 //! What sits behind the gSPI command decoder: the bus function registers
 //! (F0), the backplane function (F1: its own registers plus a window onto
-//! the internal bus), and the WLAN data function (F2).
+//! the internal bus, where the Bluetooth side also lives), and the WLAN data
+//! function (F2).
 use super::backplane::Backplane;
+use super::bt::Bt;
 use super::whd::Whd;
 use alloc::{vec, vec::Vec};
 
@@ -26,6 +28,7 @@ const CTRL_IRQ_HIGH: u8 = 0x20;
 
 const IRQ_DATA_UNAVAILABLE: u16 = 0x0001;
 pub const IRQ_F2_PACKET_AVAILABLE: u16 = 0x0020;
+const IRQ_F1_INTR: u16 = 0x2000;
 
 const STATUS_F2_RX_READY: u32 = 0x20;
 const STATUS_F2_PKT_AVAILABLE: u32 = 0x100;
@@ -60,12 +63,13 @@ pub struct Chip {
     f1: [u8; 0x40],
     pub bp: Backplane,
     pub whd: Whd,
+    pub bt: Bt,
     /// The ARM core left reset at this cycle.
     fw_at: Option<u64>,
 }
 
 impl Chip {
-    pub fn new(whd: Whd, cycles_per_us: u64) -> Self {
+    pub fn new(whd: Whd, bt: Bt, cycles_per_us: u64) -> Self {
         Self {
             trace: alloc::collections::VecDeque::new(),
             now: 0,
@@ -78,6 +82,7 @@ impl Chip {
             f1: [0; 0x40],
             bp: Backplane::new(),
             whd,
+            bt,
             fw_at: None,
         }
     }
@@ -99,7 +104,9 @@ impl Chip {
     }
 
     pub fn interrupt(&self) -> u16 {
-        self.irq_sticky | if self.whd.has_frame() { IRQ_F2_PACKET_AVAILABLE } else { 0 }
+        self.irq_sticky
+            | if self.whd.has_frame() { IRQ_F2_PACKET_AVAILABLE } else { 0 }
+            | if self.bt.interrupt(&self.bp) { IRQ_F1_INTR } else { 0 }
     }
 
     /// Should the chip be raising its interrupt line (DIO) now?
@@ -156,7 +163,13 @@ impl Chip {
         match func {
             0 => self.f0_read(addr as usize, len),
             1 if addr & 0x1_0000 != 0 => (0..len).map(|i| self.f1_read((addr as usize & 0xFFFF) + i)).collect(),
-            1 => self.bp.read(self.window() | (addr & 0x7FFF), len),
+            1 => {
+                let addr = self.window() | (addr & 0x7FFF);
+                match self.bt.read32(self.now, addr).filter(|_| len == 4) {
+                    Some(v) => v.to_le_bytes().to_vec(),
+                    None => self.bp.read(addr, len),
+                }
+            }
             2 => match self.whd.pop() {
                 Some(mut frame) => {
                     frame.resize(len, 0);
@@ -186,7 +199,8 @@ impl Chip {
                 }
             }
             1 => {
-                if self.bp.write(self.window() | (addr & 0x7FFF), data) {
+                let addr = self.window() | (addr & 0x7FFF);
+                if !self.bt.write(self.now, addr, data, &mut self.bp) && self.bp.write(addr, data) {
                     self.fw_at = Some(self.now);
                 }
             }

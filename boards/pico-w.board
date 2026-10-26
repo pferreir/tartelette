@@ -1,6 +1,7 @@
 # Raspberry Pi Pico W: the CYW43439 Wi-Fi chip on GPIO23 (WL_ON), 24 (DIO, also
 # the chip's interrupt), 25 (CS) and 29 (CLK), driven by a PIO state machine.
-# Its LED is on the Wi-Fi chip, not on a GPIO.
+# Its LED is on the Wi-Fi chip, not on a GPIO. Its Bluetooth goes where --bt
+# says: nowhere (the default), mock devices, or a real adapter (hciN).
 #
 # The access points are what a scan finds and a join can succeed against:
 #   apN=SSID,open[,RSSI[,CHAN]]  or  apN=SSID,wpa2,PASSPHRASE[,RSSI[,CHAN]]

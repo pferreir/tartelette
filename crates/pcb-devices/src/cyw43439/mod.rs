@@ -1,7 +1,8 @@
 //! `cyw43439 <name> on=N dio=N cs=N clk=N [mac=AA:BB:..] [mhz=125]
 //! [ap1=SSID,open[,RSSI[,CHAN]]] [ap2=SSID,wpa2,PASS[,RSSI[,CHAN]]] ...`:
 //! the Infineon CYW43439 Wi-Fi chip on a Raspberry Pi Pico W, modelled at
-//! the pins so unmodified Embassy `cyw43` firmware (with `cyw43-pio`) runs.
+//! the pins so unmodified Embassy `cyw43` firmware (with `cyw43-pio`) runs,
+//! Wi-Fi and Bluetooth.
 //!
 //! Wiring (Pico W): `on` is WL_ON (power/reset), `dio` the bidirectional
 //! data line that doubles as the host interrupt, `cs` the active-low chip
@@ -9,7 +10,7 @@
 //! (SSIDs and passphrases can't contain spaces or commas); they are what a
 //! scan finds and what a join can succeed against.
 //!
-//! The model has four layers:
+//! The model has these layers:
 //!
 //! * [`gspi`]: the SPI-like wire, bit by bit on the clock edges.
 //! * [`chip`]: the bus registers, the backplane window and the WLAN
@@ -18,23 +19,37 @@
 //!   firmware download "boots" something).
 //! * [`whd`]: the host driver protocol the firmware speaks: SDPCM/CDC/BDC
 //!   framing, iovars, events, scan, join and the Ethernet data path.
+//! * [`bt`]: the Bluetooth patch download, control registers and HCI ring
+//!   buffers.
 //!
 //! Ethernet frames go to a [`NetBackend`] the host installs with
 //! [`Cyw43439::set_backend`]. Without one (the browser) the chip scans no
-//! networks and joins fail.
+//! networks and joins fail. HCI packets go to an [`HciBackend`] installed
+//! with [`Cyw43439::set_bt_backend`] (a real controller, or the virtual one
+//! with mock devices); without one a controller with no radio answers, so
+//! Bluetooth scans find nothing.
 //!
 //! Events: `led` (the on-board LED, CYW43 GPIO0) 1/0; `scan` with the number
 //! of networks found; `join` 1 on success, 0 on failure; `link` 1/0 as the
 //! station associates or leaves; `unavailable` when a scan or join was
-//! attempted with no network behind the chip.
+//! attempted with no network behind the chip; `bt_unavailable` when the
+//! firmware scans, connects or advertises with no radio behind the chip;
+//! from mock Bluetooth devices, `ble_connected` 1/0, `ble_notify` (a value a
+//! central received, little-endian in the low bytes) and `ble_midi_out`.
+//!
+//! Input: `midi=0x903C64` sends a MIDI message from every connected mock
+//! MIDI peripheral (the bytes packed big-endian in the value).
 pub mod backplane;
+pub mod bt;
 pub mod chip;
 pub mod gspi;
 pub mod whd;
 pub mod wpa;
 
+use crate::hci::HciBackend;
 use crate::net::NetBackend;
 use alloc::{boxed::Box, string::String, vec::Vec};
+use bt::Bt;
 use chip::Chip;
 use gspi::Gspi;
 use pcb::{Device, Io, Params};
@@ -62,6 +77,7 @@ pub struct Cyw43439 {
     /// Wake-up requested for these cycles.
     armed_due: Option<u64>,
     armed_poll: Option<u64>,
+    armed_bt: Option<u64>,
 }
 
 fn parse_mac(s: &str) -> Result<[u8; 6], String> {
@@ -145,15 +161,37 @@ impl Cyw43439 {
             clk_high: false,
             dio_driven: None,
             spi: Gspi::new(),
-            chip: Chip::new(whd, cycles_per_us),
+            chip: Chip::new(whd, Bt::new(Bt::no_radio(mac), cycles_per_us), cycles_per_us),
             armed_due: None,
             armed_poll: None,
+            armed_bt: None,
         }
     }
 
     /// Install the network the chip's Ethernet side talks to.
     pub fn set_backend(&mut self, backend: Box<dyn NetBackend>) {
         self.chip.whd.backend = Some(backend);
+    }
+
+    /// Install the Bluetooth controller behind the chip's HCI transport.
+    pub fn set_bt_backend(&mut self, backend: Box<dyn HciBackend>) {
+        self.chip.bt.backend = backend;
+    }
+
+    pub fn bt_backend(&self) -> &dyn HciBackend {
+        self.chip.bt.backend.as_ref()
+    }
+
+    /// The firmware brought Bluetooth up and is talking HCI.
+    pub fn bt_up(&self) -> bool {
+        self.chip.bt.up
+    }
+
+    /// What the radio is doing, as the HCI traffic says: (scanning,
+    /// advertising, open connections).
+    pub fn bt_activity(&self) -> (bool, bool, u16) {
+        let bt = &self.chip.bt;
+        (bt.scanning, bt.advertising, bt.links)
     }
 
     pub fn backend(&self) -> Option<&dyn NetBackend> {
@@ -216,10 +254,12 @@ impl Cyw43439 {
             b.link_changed(false);
             whd.backend = Some(b);
         }
-        self.chip = Chip::new(whd, self.cycles_per_us);
+        let radio = core::mem::replace(&mut self.chip.bt.backend, Bt::no_radio(self.mac));
+        self.chip = Chip::new(whd, Bt::new(radio, self.cycles_per_us), self.cycles_per_us);
         self.spi = Gspi::new();
         self.armed_due = None;
         self.armed_poll = None;
+        self.armed_bt = None;
         if on {
             self.chip.power_on_at = Some(io.cycles());
         }
@@ -228,7 +268,7 @@ impl Cyw43439 {
     /// Settle everything that follows from a change: report happenings,
     /// drive the interrupt line, schedule wake-ups.
     fn settle(&mut self, io: &mut Io) {
-        for (label, value) in self.chip.whd.notes.drain(..) {
+        for (label, value) in self.chip.whd.notes.drain(..).chain(self.chip.bt.notes.drain(..)) {
             io.emit(label, value);
         }
         if !self.powered {
@@ -251,6 +291,12 @@ impl Cyw43439 {
         if self.chip.whd.link != Link::Down && self.armed_poll.is_none() && self.chip.whd.backend.is_some() {
             let t = io.cycles() + 1000 * self.cycles_per_us;
             self.armed_poll = Some(t);
+            io.wake_at(t);
+        }
+        // Bluetooth: look for controller traffic every millisecond.
+        if self.chip.bt.up && self.armed_bt.is_none() {
+            let t = io.cycles() + 1000 * self.cycles_per_us;
+            self.armed_bt = Some(t);
             io.wake_at(t);
         }
     }
@@ -312,6 +358,17 @@ impl Device for Cyw43439 {
         self.settle(io);
     }
 
+    fn input(&mut self, io: &mut Io, action: &str, value: i64) -> bool {
+        let now = io.cycles();
+        let ok = self.chip.bt.backend.input(now / self.cycles_per_us, action, value);
+        if ok {
+            self.chip.now = now;
+            self.chip.bt.pump(now, &mut self.chip.bp);
+            self.settle(io);
+        }
+        ok
+    }
+
     fn timer(&mut self, io: &mut Io) {
         self.chip.now = io.cycles();
         let now = io.cycles();
@@ -322,6 +379,10 @@ impl Device for Cyw43439 {
         if self.armed_poll.is_some_and(|t| t <= now) {
             self.armed_poll = None;
             self.chip.whd.poll_backend();
+        }
+        if self.armed_bt.is_some_and(|t| t <= now) {
+            self.armed_bt = None;
+            self.chip.bt.pump(now, &mut self.chip.bp);
         }
         self.settle(io);
     }
