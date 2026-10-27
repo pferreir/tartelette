@@ -1,4 +1,3 @@
-//! `st7789 <name> bus=spiN cs=N dc=N [rst=N] [bl=N] [width=240] [height=320]`:
 //! Sitronix ST7789 TFT controller on a 4-wire SPI link (D/C on its own pin).
 //!
 //! Modelled: the command/data protocol, the address window (`CASET`/`RASET`)
@@ -15,7 +14,7 @@
 //! the glass shows. A `update` event (value = pixels written) is emitted
 //! when chip select is released after pixel data.
 use alloc::{boxed::Box, vec, vec::Vec};
-use pcb::{Device, Io, Params, SpiDevice};
+use pcb::{BusType, Device, Io, Kind, Param, SpiDevice};
 
 // Commands
 const SWRESET: u8 = 0x01;
@@ -76,14 +75,22 @@ pub struct St7789 {
     pub total_pixels: u64,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, alloc::string::String> {
-    let dc = p.pin("dc")?;
-    let rst = p.opt_pin("rst")?;
-    let bl = p.opt_pin("bl")?;
-    let width = p.opt_int("width", 1, 480)?.unwrap_or(240) as usize;
-    let height = p.opt_int("height", 1, 480)?.unwrap_or(320) as usize;
-    Ok(Box::new(St7789::new(width, height, dc, rst, bl)))
-}
+pub const KIND: Kind = Kind {
+    name: "st7789",
+    summary: "SPI TFT display controller with frame RAM",
+    bus: Some(BusType::Spi),
+    params: &[
+        Param::pin("dc", "data/command select"),
+        Param::pin("rst", "reset, active low").optional(),
+        Param::pin("bl", "backlight enable").optional(),
+        Param::int("width", 1, 480, "panel width in pixels, in its native orientation").default_int(240),
+        Param::int("height", 1, 480, "panel height in pixels").default_int(320),
+    ],
+    build: |p| {
+        let (w, h) = (p.int("width") as usize, p.int("height") as usize);
+        Ok(Box::new(St7789::new(w, h, p.pin("dc"), p.opt_pin("rst"), p.opt_pin("bl"))))
+    },
+};
 
 impl St7789 {
     pub fn new(width: usize, height: usize, dc: usize, rst: Option<usize>, bl: Option<usize>) -> Self {
@@ -542,12 +549,10 @@ mod tests {
 
     #[test]
     fn factory_parses_parameters() {
-        let mut p = Params::new("st7789", "s").with_words(["dc=13", "rst=17", "width=240", "height=240"].into_iter()).unwrap();
-        let dev: Box<dyn core::any::Any> = factory(&mut p).unwrap();
-        p.finish().unwrap();
-        let lcd = dev.downcast::<St7789>().unwrap();
+        let parse = |t: &str| pcb::Board::parse_with(t, &crate::registry());
+        let b = parse("parts.s = { kind = \"st7789\", dc = 13, rst = 17, width = 240, height = 240 }").unwrap();
+        let lcd = b.device::<St7789>("s").unwrap();
         assert_eq!((lcd.size(), lcd.framebuffer().len()), ((240, 240), 240 * 240));
-        let mut p = Params::new("st7789", "s").with_words(std::iter::empty()).unwrap();
-        assert!(factory(&mut p).is_err(), "dc is required");
+        assert_eq!(parse("parts.s = { kind = \"st7789\" }").unwrap_err().msg, "missing dc (data/command select)");
     }
 }

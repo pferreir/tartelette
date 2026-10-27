@@ -1,33 +1,64 @@
 //! The PCB around the chip: devices wired to GPIO pins and buses, described
-//! by a small line-based text file.
+//! by a TOML board file.
 //!
-//! ```text
-//! # comments start with '#'
-//! board my-pcb
-//! i2c1   sda=2 scl=3                       # optional: documents the bus wiring
-//! led    status gpio=25                    # <kind> <name> key=value...
-//! button user   gpio=2 active=low
-//! mcp23008 expander bus=i2c1 addr=0x20 int=16
-//! st7789 screen bus=spi0 cs=9 dc=13 rst=17   # SPI: cs=N is the chip-select pin
-//! panel  screen at=0,0 span=2,2            # optional: UI layout, see [`panel`]
+//! ```toml
+//! name = "my-pcb"
+//!
+//! [buses]                   # the chip's bus controllers in use, and their pins
+//! i2c1 = { sda = 2, scl = 3 }
+//! spi0 = { sck = 18, mosi = 19 }
+//!
+//! [parts.status]            # [parts.<name>]: one device
+//! kind = "led"
+//! gpio = 25
+//!
+//! [parts.expander]
+//! kind = "mcp23008"
+//! bus = "i2c1"
+//! addr = 0x20
+//! int = 16
+//!
+//! [parts.screen]
+//! kind = "st7789"
+//! bus = "spi0"
+//! cs = 9                    # SPI: the chip-select pin (none: always selected)
+//! dc = 13
+//!
+//! [panel]                   # optional: UI layout, see [`panel`]
+//! screen = { at = [0, 0], span = [2, 2] }
 //! ```
 //!
-//! Every line after `board` is `<kind> <name> key=value...`. The kind selects
-//! a factory from the [`Registry`] (the `pcb-devices` crate has the
-//! stock ones), the name identifies the part to the host. Devices that sit on a
-//! bus say which with `bus=`.
+//! `kind` selects a [`Kind`] from the [`Registry`] (the `pcb-devices` crate
+//! has the stock ones), which says what other keys the part takes; the name
+//! identifies the part to the host. Parts are attached in file order.
+//! Devices that sit on a bus say which with `bus`, and the bus must be
+//! declared under `[buses]`.
+//!
+//! Every GPIO a board names is claimed by its user: two parts (or a part and
+//! a bus) on the same GPIO is an error, unless both declare the pin
+//! shareable ([`Ty::SharedPin`]: an LED watching a line, an open-drain
+//! interrupt).
+//!
+//! A shield ([`Board::add_shield`]) is a file in the same format whose parts,
+//! buses and panel items go on top of the board's. Its panel items replace
+//! the board's for the parts they name, and board items they cover move to
+//! the right, out of the way.
 //!
 //! The board never does I/O itself: devices queue [`BoardEvent`]s for the
 //! host to drain, and the host pokes devices with [`Board::input`].
+mod doc;
 pub mod panel;
 pub mod params;
 pub mod registry;
+pub mod spec;
 
 use crate::device::{Device, I2cDevice, I2cTarget, Io, Pins, SpiTarget};
 use alloc::{boxed::Box, format, string::String, vec::Vec};
+use doc::{Key, Node, Span, V};
 pub use panel::PanelItem;
 pub use params::Params;
-pub use registry::{Factory, Registry};
+pub use registry::{PinCheck, Registry};
+pub use spec::{BusType, Kind, Need, Param, Ty};
 
 /// Something observable happened on the board.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,19 +84,33 @@ pub struct Part {
     cs: Option<usize>,
 }
 
-/// A bus declared in the board file, with its wiring.
+/// A bus declared under `[buses]`, with its wiring.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BusDecl {
     pub name: String,
+    /// (signal, GPIO), e.g. `("sck", 18)`.
     pub pins: Vec<(String, usize)>,
+}
+
+/// Who uses a GPIO.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinUse {
+    pub pin: usize,
+    /// `expander.int`, `spi0.sck`, ...
+    pub user: String,
+    pub shared: bool,
 }
 
 #[derive(Default)]
 pub struct Board {
     pub name: String,
+    /// Names of the shields added on top.
+    pub shields: Vec<String>,
     pub parts: Vec<Part>,
     pub buses: Vec<BusDecl>,
-    /// Where a host UI should put each part's controls (`panel` lines).
+    /// Every GPIO the board files name, and who for.
+    pub pins: Vec<PinUse>,
+    /// Where a host UI should put each part's controls (`[panel]`).
     pub panel: Vec<PanelItem>,
     /// Events since the host last took them.
     pub events: Vec<BoardEvent>,
@@ -89,9 +134,16 @@ impl core::fmt::Debug for Board {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
-    /// 1-based line number.
+    /// 1-based line and column in the file that failed.
     pub line: usize,
+    pub col: usize,
     pub msg: String,
+}
+
+impl core::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}:{}: {}", self.line, self.col, self.msg)
+    }
 }
 
 /// Outcome of [`Board::input`].
@@ -103,13 +155,15 @@ pub enum InputResult {
     Unsupported,
 }
 
-/// Names a bus line may declare itself with, and the pin keys it allows.
-const BUS_KINDS: &[(&str, &[&str])] = &[
+/// The buses a board may declare, and the signals each one has.
+pub const BUS_KINDS: &[(&str, &[&str])] = &[
     ("i2c0", &["sda", "scl"]),
     ("i2c1", &["sda", "scl"]),
     ("spi0", &["sck", "mosi", "miso"]),
     ("spi1", &["sck", "mosi", "miso"]),
 ];
+
+const TOP_KEYS: &[&str] = &["name", "buses", "parts", "panel"];
 
 fn bus_index(bus: &str, prefix: &str) -> Option<usize> {
     match bus.strip_prefix(prefix)? {
@@ -124,6 +178,24 @@ fn asserted(pins: &dyn Pins, cs: Option<usize>) -> bool {
     cs.is_none_or(|p| !pins.level(p))
 }
 
+fn hint<'a>(word: &str, options: impl IntoIterator<Item = &'a str>) -> String {
+    spec::suggest(word, options).map(|s| format!(" (did you mean {s}?)")).unwrap_or_default()
+}
+
+fn entries(what: &str, node: Node) -> Result<Vec<(Key, Node)>, doc::Error> {
+    match node.v {
+        V::Table(e) => Ok(e),
+        v => Err(doc::err(&node.span, format!("{what} must be a table, not {}", v.what()))),
+    }
+}
+
+fn string(what: &str, node: Node) -> Result<(String, Span), doc::Error> {
+    match node.v {
+        V::Str(s) => Ok((s, node.span)),
+        v => Err(doc::err(&node.span, format!("{what} must be a string, not {}", v.what()))),
+    }
+}
+
 impl Board {
     pub fn new() -> Self {
         Self::default()
@@ -132,94 +204,201 @@ impl Board {
     /// Parse a board file, building devices from the kinds in `registry`.
     pub fn parse_with(text: &str, registry: &Registry) -> Result<Board, ParseError> {
         let mut board = Board::new();
-        for (i, raw) in text.lines().enumerate() {
-            let line = raw.split('#').next().unwrap_or("").trim();
-            if line.is_empty() {
-                continue;
-            }
-            board.parse_line(line, i + 1, registry).map_err(|msg| ParseError { line: i + 1, msg })?;
-        }
+        board.load(text, registry, false)?;
         Ok(board)
     }
 
-    fn parse_line(&mut self, line: &str, number: usize, registry: &Registry) -> Result<(), String> {
-        let mut words = line.split_whitespace();
-        let kind = words.next().unwrap_or_default();
-        if kind == "board" {
-            self.name = words.collect::<Vec<_>>().join(" ");
-            return Ok(());
+    /// Put a shield on the board: its buses, parts and panel items are added
+    /// to the board's (errors are about the shield's text).
+    pub fn add_shield(&mut self, text: &str, registry: &Registry) -> Result<(), ParseError> {
+        self.load(text, registry, true)
+    }
+
+    fn load(&mut self, text: &str, registry: &Registry, shield: bool) -> Result<(), ParseError> {
+        self.load_doc(text, registry, shield).map_err(|e| {
+            let (line, col) = doc::line_col(text, e.span.start);
+            ParseError { line, col, msg: e.msg }
+        })
+    }
+
+    fn load_doc(&mut self, text: &str, registry: &Registry, shield: bool) -> Result<(), doc::Error> {
+        let root = doc::parse(text)?;
+        let (mut buses, mut parts, mut panel) = (None, None, None);
+        let mut name = None;
+        for (key, node) in entries("the file", root)? {
+            match key.name.as_str() {
+                "name" => name = Some(string("name", node)?.0),
+                "buses" => buses = Some(node),
+                "parts" => parts = Some(node),
+                "panel" => panel = Some(node),
+                k => return Err(doc::err(&key.span, format!("unknown section {k} (expected {}){}", TOP_KEYS.join(", "), hint(k, TOP_KEYS.iter().copied())))),
+            }
         }
-        if kind == "panel" {
-            let name = words.next().ok_or("missing part name")?;
-            let part = self.part_index(name).ok_or_else(|| format!("no part named {name:?} (declare it before its panel line)"))?;
-            let params = Params::new(kind, name).with_words(words)?;
-            let item = panel::parse_item(params, part, number, &self.panel)?;
-            self.panel.push(item);
-            return Ok(());
+        match (shield, name) {
+            (false, Some(n)) => self.name = n,
+            (true, n) => self.shields.push(n.unwrap_or_else(|| "shield".into())),
+            (false, None) => {}
         }
-        if let Some((_, keys)) = BUS_KINDS.iter().find(|(n, _)| *n == kind) {
-            return self.declare_bus(kind, keys, words);
+        if let Some(node) = buses {
+            for (key, node) in entries("buses", node)? {
+                self.declare_bus(key, node, registry)?;
+            }
         }
-        let factory = registry.get(kind).ok_or_else(|| format!("unknown device kind {kind:?}"))?;
-        let name = words.next().ok_or("missing part name")?;
-        if name.contains('=') {
-            return Err("missing part name".into());
+        if let Some(node) = parts {
+            for (key, node) in entries("parts", node)? {
+                self.add_part(key, node, registry)?;
+            }
         }
-        if self.part_index(name).is_some() {
-            return Err("duplicate part name".into());
+        if let Some(node) = panel {
+            self.lay_out(entries("panel", node)?, shield)?;
         }
-        let mut params = Params::new(kind, name).with_words(words)?;
-        let bus = params.opt_str("bus").map(String::from);
-        let mut device = factory(&mut params)?;
+        Ok(())
+    }
+
+    /// Record that `user` is wired to `pin`.
+    fn claim(&mut self, pin: usize, user: String, shared: bool, span: &Span) -> Result<(), doc::Error> {
+        if let Some(u) = self.pins.iter().find(|u| u.pin == pin && !(u.shared || shared)) {
+            return Err(doc::err(span, format!("GPIO {pin} is already used by {}", u.user)));
+        }
+        self.pins.push(PinUse { pin, user, shared });
+        Ok(())
+    }
+
+    fn declare_bus(&mut self, key: Key, node: Node, registry: &Registry) -> Result<(), doc::Error> {
+        let name = key.name.as_str();
+        let Some((_, signals)) = BUS_KINDS.iter().find(|(n, _)| *n == name) else {
+            let names: Vec<_> = BUS_KINDS.iter().map(|(n, _)| *n).collect();
+            return Err(doc::err(&key.span, format!("unknown bus {name} (expected {}){}", names.join(", "), hint(name, names.iter().copied()))));
+        };
+        let mut pins = Vec::new();
+        let mut spans = Vec::new();
+        for (sig, value) in entries(name, node)? {
+            if !signals.contains(&sig.name.as_str()) {
+                return Err(doc::err(&sig.span, format!("{name} has no signal {} (it has {}){}", sig.name, signals.join(", "), hint(&sig.name, signals.iter().copied()))));
+            }
+            let pin = match value.v {
+                V::Int(n) if (0..crate::NUM_PINS as i64).contains(&n) => n as usize,
+                _ => return Err(doc::err(&value.span, format!("{} must be a GPIO, 0..{}", sig.name, crate::NUM_PINS - 1))),
+            };
+            if let Some(check) = registry.pin_check {
+                check(name, &sig.name, pin).map_err(|e| doc::err(&value.span, e))?;
+            }
+            pins.push((sig.name, pin));
+            spans.push(value.span);
+        }
+        let decl = BusDecl { name: name.into(), pins };
+        if let Some(old) = self.buses.iter().find(|b| b.name == name) {
+            // A shield may restate the board's wiring, but not change it.
+            return if *old == decl { Ok(()) } else { Err(doc::err(&key.span, format!("bus {name} is already declared with other pins"))) };
+        }
+        for ((sig, pin), span) in decl.pins.iter().zip(&spans) {
+            self.claim(*pin, format!("{name}.{sig}"), false, span)?;
+        }
+        self.buses.push(decl);
+        Ok(())
+    }
+
+    fn add_part(&mut self, key: Key, node: Node, registry: &Registry) -> Result<(), doc::Error> {
+        let name = key.name;
+        if self.part_index(&name).is_some() {
+            return Err(doc::err(&key.span, format!("there is already a part named {name}")));
+        }
+        let mut rest = entries(&name, node)?;
+        let mut take = |k: &str| rest.iter().position(|(key, _)| key.name == k).map(|i| rest.remove(i));
+        let Some((_, kind_node)) = take("kind") else {
+            return Err(doc::err(&key.span, format!("part {name} has no kind")));
+        };
+        let (kind_name, kind_span) = string("kind", kind_node)?;
+        let Some(kind) = registry.get(&kind_name) else {
+            return Err(doc::err(&kind_span, format!("unknown device kind {kind_name:?}{}", hint(&kind_name, registry.kinds().map(|k| k.name)))));
+        };
+        let bus = take("bus");
+        let cs = if kind.bus == Some(BusType::Spi) { take("cs") } else { None };
+        let mut params = Params::check(kind.name, &name, kind.params, rest, &key.span)?;
+        let mut device = (kind.build)(&mut params).map_err(|e| doc::err(&key.span, format!("{name}: {e}")))?;
+        debug_assert!(params.unread().is_none(), "{}: never read {:?}", kind.name, params.unread());
 
         let index = self.parts.len();
-        let cs = match bus {
-            Some(bus) => self.attach_to_bus(&bus, &mut *device, index, &mut params)?,
-            None => None,
-        };
-        params.finish()?;
-        self.parts.push(Part { name: name.into(), kind: kind.into(), device, watch: 0, cs });
+        let mut cs_pin = None;
+        if let Some((_, cs)) = &cs {
+            match cs.v {
+                V::Int(n) if (0..crate::NUM_PINS as i64).contains(&n) => cs_pin = Some(n as usize),
+                _ => return Err(doc::err(&cs.span, format!("cs must be a GPIO, 0..{}", crate::NUM_PINS - 1))),
+            }
+            if bus.is_none() {
+                return Err(doc::err(&cs.span, "cs only means something with a bus"));
+            }
+        }
+        if let Some((bus_key, bus)) = bus {
+            let Some(want) = kind.bus else {
+                return Err(doc::err(&bus_key.span, format!("{} does not sit on a bus", kind.name)));
+            };
+            let (bus, span) = string("bus", bus)?;
+            let Some(n) = bus_index(&bus, want.prefix()) else {
+                return Err(doc::err(&span, format!("bus must be {0}0 or {0}1", want.prefix())));
+            };
+            if !self.buses.iter().any(|b| b.name == bus) {
+                return Err(doc::err(&span, format!("bus {bus} is not declared: add it under [buses] with its pins")));
+            }
+            match want {
+                BusType::I2c => {
+                    let addr = device.i2c().unwrap_or_else(|| panic!("{} is declared I2C but has no I2C side", kind.name)).address();
+                    if let Some((_, other)) = self.i2c[n].iter().find(|(a, _)| *a == addr) {
+                        return Err(doc::err(&key.span, format!("address {addr:#04x} is already used on {bus} by {}", self.parts[*other].name)));
+                    }
+                    self.i2c[n].push((addr, index));
+                }
+                BusType::Spi => {
+                    assert!(device.spi().is_some(), "{} is declared SPI but has no SPI side", kind.name);
+                    self.spi[n].push(index);
+                }
+            }
+        }
+        if let (Some(pin), Some((_, node))) = (cs_pin, &cs) {
+            self.claim(pin, format!("{name}.cs"), false, &node.span)?;
+        }
+        for c in core::mem::take(&mut params.pins) {
+            self.claim(c.pin, format!("{name}.{}", c.key), c.shared, &c.span)?;
+        }
+        self.parts.push(Part { name, kind: kind.name.into(), device, watch: 0, cs: cs_pin });
         Ok(())
     }
 
-    fn declare_bus<'a>(&mut self, name: &str, keys: &[&str], words: impl Iterator<Item = &'a str>) -> Result<(), String> {
-        if self.buses.iter().any(|b| b.name == name) {
-            return Err(format!("bus {name} declared twice"));
+    /// Add `[panel]` items; each part named replaces its earlier items. A
+    /// shield's items push the earlier ones they cover out of the way.
+    fn lay_out(&mut self, entries: Vec<(Key, Node)>, shield: bool) -> Result<(), doc::Error> {
+        let mut new: Vec<(PanelItem, Span)> = Vec::new();
+        for (key, node) in entries {
+            let Some(part) = self.part_index(&key.name) else {
+                let names = self.parts.iter().map(|p| p.name.as_str());
+                return Err(doc::err(&key.span, format!("no part named {}{}", key.name, hint(&key.name, names))));
+            };
+            let span = node.span.clone();
+            new.extend(panel::parse_items(part, node)?.into_iter().map(|i| (i, span.clone())));
         }
-        let mut params = Params::new(name, name).with_words(words)?;
-        let mut pins = Vec::new();
-        for key in keys {
-            if let Some(pin) = params.opt_pin(key)? {
-                pins.push((String::from(*key), pin));
+        self.panel.retain(|old| !new.iter().any(|(n, _)| n.part == old.part));
+        let mut earlier = core::mem::take(&mut self.panel);
+        if !shield {
+            self.panel = earlier.drain(..).collect();
+        }
+        for (item, span) in new {
+            if let Some(o) = self.panel.iter().find(|o| o.overlaps(&item)) {
+                return Err(doc::err(&span, format!("overlaps the panel item of {}", self.parts[o.part].name)));
             }
+            self.panel.push(item);
         }
-        params.finish()?;
-        self.buses.push(BusDecl { name: name.into(), pins });
+        // What's left are the board's items under a shield: keep those in
+        // the clear, move the others past the right edge of everything.
+        for mut item in earlier {
+            if self.panel.iter().any(|o| o.overlaps(&item)) {
+                item.col = self.panel.iter().chain(core::iter::once(&item)).map(|o| o.col + o.cols).max().unwrap_or(0);
+                while self.panel.iter().any(|o| o.overlaps(&item)) {
+                    item.col += 1;
+                }
+            }
+            self.panel.push(item);
+        }
         Ok(())
-    }
-
-    /// Wire `device` to `bus`. Returns the chip-select pin for SPI devices.
-    fn attach_to_bus(&mut self, bus: &str, device: &mut dyn Device, part: usize, params: &mut Params) -> Result<Option<usize>, String> {
-        if let Some(n) = bus_index(bus, "i2c") {
-            let addr = device.i2c().ok_or_else(|| format!("this device is not an I2C device (bus={bus})"))?.address();
-            if self.i2c[n].iter().any(|(a, _)| *a == addr) {
-                return Err(format!("address {addr:#04x} is already used on {bus}"));
-            }
-            self.i2c[n].push((addr, part));
-            Ok(None)
-        } else if let Some(n) = bus_index(bus, "spi") {
-            if device.spi().is_none() {
-                return Err(format!("this device is not an SPI device (bus={bus})"));
-            }
-            let cs = params.opt_pin("cs")?;
-            if let Some(other) = cs.and_then(|c| self.spi[n].iter().find(|&&i| self.parts[i].cs == Some(c))) {
-                return Err(format!("chip select {} is already used by {:?}", cs.unwrap_or_default(), self.parts[*other].name));
-            }
-            self.spi[n].push(part);
-            Ok(cs)
-        } else {
-            Err(format!("unknown bus {bus:?} (expected i2c0, i2c1, spi0 or spi1)"))
-        }
     }
 
     pub fn part_index(&self, name: &str) -> Option<usize> {
@@ -405,6 +584,7 @@ impl I2cTarget for BoardI2c<'_> {
 mod tests {
     use super::*;
     use crate::device::SpiDevice;
+    use alloc::string::ToString;
 
     /// Levels the test sets by hand plus whatever devices drive on top.
     #[derive(Default)]
@@ -441,10 +621,6 @@ mod tests {
             io.drive(self.pin, Some(value != 0));
             true
         }
-    }
-
-    fn probe(p: &mut Params) -> Result<Box<dyn Device>, String> {
-        Ok(Box::new(Probe { pin: p.pin("gpio")? }))
     }
 
     /// I2C device at `addr` (default 0x20) holding one byte: a write stores
@@ -503,18 +679,26 @@ mod tests {
         }
     }
 
-    fn echo(_: &mut Params) -> Result<Box<dyn Device>, String> {
-        Ok(Box::new(Echo { last: 0 }))
-    }
-
-    fn cell(p: &mut Params) -> Result<Box<dyn Device>, String> {
-        let addr = p.opt_int("addr", 0, 127)?.unwrap_or(0x20) as u8;
-        Ok(Box::new(Cell { addr, val: 0, writes: 0 }))
-    }
+    const PROBE: Kind = Kind {
+        name: "probe",
+        summary: "watches and drives a pin",
+        bus: None,
+        params: &[Param::pin("gpio", "the pin")],
+        build: |p| Ok(Box::new(Probe { pin: p.pin("gpio") })),
+    };
+    const SHARED_PROBE: Kind = Kind { name: "tap", params: &[Param::shared_pin("gpio", "the pin")], ..PROBE };
+    const CELL: Kind = Kind {
+        name: "cell",
+        summary: "one-byte I2C memory",
+        bus: Some(BusType::I2c),
+        params: &[Param::hex("addr", 0, 127, "address").default_int(0x20)],
+        build: |p| Ok(Box::new(Cell { addr: p.int("addr") as u8, val: 0, writes: 0 })),
+    };
+    const ECHO: Kind = Kind { name: "echo", summary: "SPI echo", bus: Some(BusType::Spi), params: &[], build: |_| Ok(Box::new(Echo { last: 0 })) };
 
     fn registry() -> Registry {
         let mut r = Registry::empty();
-        r.register("probe", probe).register("cell", cell).register("echo", echo);
+        r.register(PROBE).register(SHARED_PROBE).register(CELL).register(ECHO);
         r
     }
 
@@ -522,70 +706,147 @@ mod tests {
         Board::parse_with(text, &registry())
     }
 
-    const SAMPLE: &str = "\
-# demo
-board my pcb
-probe status gpio=25   # on-board
-probe err gpio=16
+    fn err(text: &str) -> String {
+        parse(text).unwrap_err().msg
+    }
 
-cell sensor bus=i2c0
-";
+    const BUSES: &str = "buses.i2c0 = { sda = 0, scl = 1 }\nbuses.i2c1 = { sda = 2, scl = 3 }\nbuses.spi0 = { sck = 18, mosi = 19 }\nbuses.spi1 = { sck = 10, mosi = 11 }\n";
+
+    fn with_buses(parts: &str) -> String {
+        format!("{BUSES}{parts}")
+    }
+
+    const SAMPLE: &str = r#"
+# demo
+name = "my pcb"
+
+[buses]
+i2c0 = { sda = 0, scl = 1 }
+
+[parts.status]
+kind = "probe"
+gpio = 25   # on-board
+
+[parts.err]
+kind = "probe"
+gpio = 16
+
+[parts.sensor]
+kind = "cell"
+bus = "i2c0"
+"#;
 
     #[test]
-    fn parses_parts_and_defaults() {
+    fn parses_parts_in_file_order() {
         let b = parse(SAMPLE).unwrap();
         assert_eq!(b.name, "my pcb");
         let names: Vec<_> = b.parts.iter().map(|p| (p.name.as_str(), p.kind.as_str())).collect();
         assert_eq!(names, [("status", "probe"), ("err", "probe"), ("sensor", "cell")]);
         assert!(parse("").unwrap().parts.is_empty());
+        // Inline tables keep file order too, whatever the names.
+        let b = parse("parts.zz = { kind = \"probe\", gpio = 1 }\nparts.aa = { kind = \"probe\", gpio = 2 }").unwrap();
+        assert_eq!(b.parts[0].name, "zz");
     }
 
     #[test]
-    fn reports_errors_with_line_numbers() {
-        let e = |t: &str| parse(t).unwrap_err();
-        assert_eq!(e("probe a gpio=1\nfoo b").line, 2);
-        assert_eq!(e("foo b").msg, "unknown device kind \"foo\"");
-        assert_eq!(e("probe").msg, "missing part name");
-        assert_eq!(e("probe a").msg, "missing gpio=N");
-        assert_eq!(e("probe a gpio=x").msg, "gpio must be a number");
-        assert_eq!(e("probe a gpio=30").msg, "gpio must be 0..29");
-        assert_eq!(e("probe a gpio=1 colour=red").msg, "unknown parameter colour");
-        assert_eq!(e("probe a gpio=1\ncell a").msg, "duplicate part name");
+    fn reports_errors_with_line_and_column() {
+        let e = parse("parts.a = { kind = \"probe\", gpio = 1 }\nparts.b = { kind = \"foo\" }").unwrap_err();
+        assert_eq!((e.line, e.col, e.msg.as_str()), (2, 20, "unknown device kind \"foo\""));
+        assert_eq!(e.to_string(), "2:20: unknown device kind \"foo\"");
+        assert_eq!(err("parts.a = { kind = \"prob\" }"), "unknown device kind \"prob\" (did you mean probe?)");
+        assert_eq!(err("parts.a = { gpio = 1 }"), "part a has no kind");
+        assert_eq!(err("parts.a = { kind = \"probe\" }"), "missing gpio (the pin)");
+        assert_eq!(err("parts.a = { kind = \"probe\", gpio = 30 }"), "gpio must be a GPIO, 0..29");
+        assert_eq!(err("parts.a = { kind = \"probe\", gpio = 1, colour = 2 }"), "unknown parameter colour (probe takes gpio)");
+        assert_eq!(err("parts = 3"), "parts must be a table, not a number");
+        assert_eq!(err("part.a = 1"), "unknown section part (expected name, buses, parts, panel) (did you mean parts?)");
+        let syntax = parse("parts.a = { kind = ").unwrap_err();
+        assert_eq!((syntax.line, syntax.msg.as_str()), (1, "unclosed inline table, expected `}`"), "TOML syntax errors come through");
     }
 
     #[test]
-    fn bus_lines_and_bus_attachment() {
-        let b = parse("i2c1 sda=2 scl=3\nspi0 sck=18 mosi=19\ncell x bus=i2c1 addr=0x21").unwrap();
-        assert_eq!(b.buses[0], BusDecl { name: "i2c1".into(), pins: [("sda".into(), 2), ("scl".into(), 3)].into() });
-        assert_eq!(b.buses[1].pins.len(), 2);
-        let e = |t: &str| parse(t).unwrap_err().msg;
-        assert_eq!(e("i2c1 sda=2\ni2c1 sda=4"), "bus i2c1 declared twice");
-        assert_eq!(e("i2c1 sdx=2"), "unknown parameter sdx");
-        assert_eq!(e("probe a gpio=1 bus=i2c0"), "this device is not an I2C device (bus=i2c0)");
-        assert_eq!(e("cell a bus=i2c9"), "unknown bus \"i2c9\" (expected i2c0, i2c1, spi0 or spi1)");
-        assert_eq!(e("cell a bus=i2c0\ncell b bus=i2c0"), "address 0x20 is already used on i2c0");
-        // Same address on different controllers is fine.
-        assert!(parse("cell a bus=i2c0\ncell b bus=i2c1").is_ok());
+    fn pins_are_claimed_once_unless_both_users_share() {
+        let probe = |name: &str, pin: usize| format!("parts.{name} = {{ kind = \"probe\", gpio = {pin} }}\n");
+        let tap = |name: &str, pin: usize| format!("parts.{name} = {{ kind = \"tap\", gpio = {pin} }}\n");
+        assert_eq!(err(&(probe("a", 4) + &probe("b", 4))), "GPIO 4 is already used by a.gpio");
+        assert!(parse(&(probe("a", 4) + &tap("b", 4) + &tap("c", 4))).is_ok());
+        assert!(parse(&(tap("a", 4) + &probe("b", 4))).is_ok());
+        // Bus pins and chip selects count too.
+        assert_eq!(err(&with_buses(&probe("a", 18))), "GPIO 18 is already used by spi0.sck");
+        assert_eq!(
+            err(&with_buses("parts.a = { kind = \"echo\", bus = \"spi0\", cs = 5 }\nparts.b = { kind = \"echo\", bus = \"spi1\", cs = 5 }")),
+            "GPIO 5 is already used by a.cs"
+        );
+        let b = parse(&(probe("a", 4) + &tap("b", 4))).unwrap();
+        assert_eq!(b.pins, [PinUse { pin: 4, user: "a.gpio".into(), shared: false }, PinUse { pin: 4, user: "b.gpio".into(), shared: true }]);
+    }
+
+    #[test]
+    fn buses_must_be_declared_and_follow_the_pin_rules() {
+        let b = parse(&with_buses("parts.x = { kind = \"cell\", bus = \"i2c1\", addr = 0x21 }")).unwrap();
+        assert_eq!(b.buses[1], BusDecl { name: "i2c1".into(), pins: [("sda".into(), 2), ("scl".into(), 3)].into() });
+        assert_eq!(b.buses[2].pins.len(), 2);
+        assert_eq!(err("buses.i2c1 = { sdx = 2 }"), "i2c1 has no signal sdx (it has sda, scl) (did you mean sda?)");
+        assert_eq!(err("buses.i2c9 = {}"), "unknown bus i2c9 (expected i2c0, i2c1, spi0, spi1) (did you mean i2c0?)");
+        assert_eq!(err("parts.a = { kind = \"cell\", bus = \"i2c0\" }"), "bus i2c0 is not declared: add it under [buses] with its pins");
+        assert_eq!(err(&with_buses("parts.a = { kind = \"probe\", gpio = 4, bus = \"i2c0\" }")), "probe does not sit on a bus");
+        assert_eq!(err(&with_buses("parts.a = { kind = \"cell\", bus = \"spi0\" }")), "bus must be i2c0 or i2c1");
+        assert_eq!(err(&with_buses("parts.a = { kind = \"cell\", bus = \"i2c0\" }\nparts.b = { kind = \"cell\", bus = \"i2c0\" }")), "address 0x20 is already used on i2c0 by a");
+        assert_eq!(err(&with_buses("parts.a = { kind = \"cell\", bus = \"i2c0\", cs = 5 }")), "unknown parameter cs (cell takes addr)");
+        assert_eq!(err("parts.a = { kind = \"echo\", cs = 5 }"), "cs only means something with a bus");
+        // Same address on different controllers is fine; no bus, no routing.
+        assert!(parse(&with_buses("parts.a = { kind = \"cell\", bus = \"i2c0\" }\nparts.b = { kind = \"cell\", bus = \"i2c1\" }")).is_ok());
+        assert_eq!(parse("parts.a = { kind = \"echo\" }").unwrap().spi_bus(0, &mut FakePins::default(), 0).transfer(1, 8), 0xFF);
+
+        let mut r = registry();
+        r.set_pin_check(|bus, sig, pin| if pin % 2 == 0 { Ok(()) } else { Err(format!("{bus} {sig} can't be on GPIO {pin}")) });
+        let e = Board::parse_with("[buses]\nspi0 = { sck = 2, mosi = 3 }", &r).unwrap_err();
+        assert_eq!((e.line, e.col, e.msg.as_str()), (2, 26, "spi0 mosi can't be on GPIO 3"));
     }
 
     #[test]
     fn custom_kinds_can_be_registered_and_overridden() {
         let mut r = Registry::empty();
-        assert!(Board::parse_with("probe p gpio=1", &r).is_err());
-        r.register("probe", probe);
-        let b = Board::parse_with("probe p gpio=1", &r).unwrap();
+        let text = "parts.p = { kind = \"probe\", gpio = 1 }";
+        assert!(Board::parse_with(text, &r).is_err());
+        r.register(PROBE);
+        let b = Board::parse_with(text, &r).unwrap();
         assert_eq!(b.parts[0].kind, "probe");
         assert!(b.device::<Probe>("p").is_some());
         assert!(b.device::<Cell>("p").is_none());
-        r.register("probe", cell); // override
-        assert!(Board::parse_with("probe a", &r).is_ok());
-        assert!(r.kinds().any(|k| k == "probe"));
+        r.register(Kind { name: "probe", ..CELL }); // override
+        assert!(Board::parse_with("parts.a = { kind = \"probe\" }", &r).is_ok());
+        assert!(r.kinds().any(|k| k.name == "probe"));
+    }
+
+    #[test]
+    fn shields_add_parts_and_rearrange_the_panel() {
+        let base = "name = \"base\"\nbuses.spi0 = { sck = 18, mosi = 19 }\nparts.led = { kind = \"probe\", gpio = 25 }\npanel.led = { at = [0, 0], span = [2, 2] }";
+        let mut b = parse(base).unwrap();
+        let shield = "name = \"hat\"\nbuses.spi0 = { sck = 18, mosi = 19 }\nparts.screen = { kind = \"echo\", bus = \"spi0\", cs = 9 }\n[panel]\nscreen = { at = [0, 0], span = [3, 3] }\nled = { at = [3, 0] }";
+        b.add_shield(shield, &registry()).unwrap();
+        assert_eq!((b.name.as_str(), b.shields.as_slice()), ("base", ["hat".to_string()].as_slice()));
+        assert_eq!(b.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["led", "screen"]);
+        let at: Vec<_> = b.panel.iter().map(|i| (i.part, i.col, i.row)).collect();
+        assert_eq!(at, [(1, 0, 0), (0, 3, 0)]);
+
+        let shield_err = |s: &str| parse(base).unwrap().add_shield(s, &registry()).unwrap_err().msg;
+        assert_eq!(shield_err("parts.led = { kind = \"probe\", gpio = 3 }"), "there is already a part named led");
+        assert_eq!(shield_err("parts.x = { kind = \"probe\", gpio = 25 }"), "GPIO 25 is already used by led.gpio");
+        assert_eq!(shield_err("buses.spi0 = { sck = 18 }"), "bus spi0 is already declared with other pins");
+        assert_eq!(shield_err("parts.x = { kind = \"probe\", gpio = 3 }\npanel.x = { at = [0, 0] }\npanel.led = { at = [0, 0] }"), "overlaps the panel item of x");
+
+        // Board items a shield covers without naming them move right.
+        let mut b = parse(base).unwrap();
+        b.add_shield("parts.x = { kind = \"probe\", gpio = 3 }\npanel.x = { at = [1, 1], span = [2, 1] }", &registry()).unwrap();
+        let at: Vec<_> = b.panel.iter().map(|i| (b.parts[i.part].name.as_str(), i.col, i.row)).collect();
+        assert_eq!(at, [("x", 1, 1), ("led", 3, 0)]);
     }
 
     #[test]
     fn service_reports_only_watched_pins_that_moved() {
         let mut pins = FakePins::default();
-        let mut b = parse("probe a gpio=5\nprobe b gpio=6").unwrap();
+        let mut b = parse("parts.a = { kind = \"probe\", gpio = 5 }\nparts.b = { kind = \"probe\", gpio = 6 }").unwrap();
         b.attach(&mut pins);
         assert!(b.events.is_empty(), "attach is quiet");
 
@@ -600,7 +861,7 @@ cell sensor bus=i2c0
     #[test]
     fn input_reports_why_it_failed_and_drives_pins() {
         let mut pins = FakePins::default();
-        let mut b = parse("probe p gpio=3\ncell c").unwrap();
+        let mut b = parse("parts.p = { kind = \"probe\", gpio = 3 }\nparts.c = { kind = \"cell\" }").unwrap();
         assert_eq!(b.input(&mut pins, "x", "set", 1, 0), InputResult::NoSuchPart);
         assert_eq!(b.input(&mut pins, "c", "set", 1, 0), InputResult::Unsupported);
         assert_eq!(b.input(&mut pins, "p", "wiggle", 1, 0), InputResult::Unsupported);
@@ -613,7 +874,7 @@ cell sensor bus=i2c0
     #[test]
     fn i2c_transactions_span_bus_handles_and_route_by_controller() {
         let mut pins = FakePins::default();
-        let mut b = parse("cell e bus=i2c0 addr=0x22").unwrap();
+        let mut b = parse(&with_buses("parts.e = { kind = \"cell\", bus = \"i2c0\", addr = 0x22 }")).unwrap();
         b.attach(&mut pins);
         // Each handle is short-lived (one per instruction); the transaction isn't.
         assert!(b.i2c_bus(0, &mut pins, 0).start(0x22, false));
@@ -634,7 +895,10 @@ cell sensor bus=i2c0
     #[test]
     fn spi_frames_reach_only_selected_devices() {
         let mut pins = FakePins::default();
-        let mut b = parse("echo a bus=spi0 cs=5\necho b bus=spi0 cs=6\necho c bus=spi1").unwrap();
+        let mut b = parse(&with_buses(
+            "parts.a = { kind = \"echo\", bus = \"spi0\", cs = 5 }\nparts.b = { kind = \"echo\", bus = \"spi0\", cs = 6 }\nparts.c = { kind = \"echo\", bus = \"spi1\" }",
+        ))
+        .unwrap();
         // CS lines idle high.
         pins.chip = 1 << 5 | 1 << 6;
         b.attach(&mut pins);
@@ -658,7 +922,7 @@ cell sensor bus=i2c0
     #[test]
     fn spi_select_edges_are_reported_to_devices() {
         let mut pins = FakePins::default();
-        let mut b = parse("echo a bus=spi0 cs=5\necho c bus=spi1").unwrap();
+        let mut b = parse(&with_buses("parts.a = { kind = \"echo\", bus = \"spi0\", cs = 5 }\nparts.c = { kind = \"echo\", bus = \"spi1\" }")).unwrap();
         pins.chip = 1 << 5;
         b.attach(&mut pins);
         assert!(b.events.is_empty(), "attach is quiet");
@@ -671,46 +935,36 @@ cell sensor bus=i2c0
         assert_eq!(ev, [(100, 0, "select", 1), (200, 0, "select", 0)]);
     }
 
+    const TWO: &str = "parts.a = { kind = \"probe\", gpio = 1 }\nparts.b = { kind = \"probe\", gpio = 2 }\n";
+
     #[test]
-    fn panel_lines_place_parts_on_a_grid() {
-        let b = parse("probe a gpio=1\nprobe b gpio=2\npanel b at=1,0 span=2,3 label=Big_one rotate=90\npanel a at=0,2").unwrap();
+    fn the_panel_places_parts_on_a_grid() {
+        let b = parse(&format!("{TWO}[panel]\nb = {{ at = [1, 0], span = [2, 3], label = \"Big one\", rotate = 90, keys = [\"A\", \"D\"] }}\na = {{ at = [0, 2] }}")).unwrap();
         assert_eq!(b.panel.len(), 2);
         let big = &b.panel[0];
         assert_eq!((big.part, big.col, big.row, big.cols, big.rows), (1, 1, 0, 2, 3));
         assert_eq!(big.label.as_deref(), Some("Big one"));
-        assert_eq!(big.options, [("rotate".into(), "90".into())]);
-        assert_eq!((big.option("rotate"), big.option("nope"), big.line), (Some("90"), None, 3));
+        assert_eq!(big.options, [("rotate".into(), "90".into()), ("keys".into(), "A,D".into())]);
+        assert_eq!((big.option("rotate"), big.option("nope")), (Some("90"), None));
         assert_eq!((b.panel[1].part, b.panel[1].cols, b.panel[1].rows, b.panel[1].label.as_deref()), (0, 1, 1, None));
         assert!(parse(SAMPLE).unwrap().panel.is_empty());
+        let twice = parse(&format!("{TWO}panel.a = [{{ at = [0, 0] }}, {{ at = [5, 5], x = 1 }}]")).unwrap();
+        assert_eq!(twice.panel.len(), 2, "a part may appear twice");
     }
 
     #[test]
     fn panel_errors() {
-        let e = |t: &str| parse(t).unwrap_err();
-        assert_eq!(e("panel a at=0,0").msg, "no part named \"a\" (declare it before its panel line)");
-        assert_eq!(e("probe a gpio=1\npanel a").msg, "missing at=COL,ROW");
-        assert_eq!(e("probe a gpio=1\npanel a at=1").msg, "at must be N,M");
-        assert_eq!(e("probe a gpio=1\npanel a at=0,64").msg, "at values must be 0..63");
-        assert_eq!(e("probe a gpio=1\npanel a at=0,0 span=0,1").msg, "span values must be 1..64");
-        assert_eq!(parse("probe a gpio=1\npanel a at=0,0\npanel a at=5,5 x=1").unwrap().panel.len(), 2, "a part may appear twice");
-        let overlap = e("probe a gpio=1\nprobe b gpio=2\npanel a at=0,0 span=2,2\npanel b at=1,1");
-        assert_eq!((overlap.line, overlap.msg.as_str()), (4, "overlaps the panel item on line 3"));
+        assert_eq!(err("panel.c = { at = [0, 0] }"), "no part named c");
+        assert_eq!(err(&format!("{TWO}panel.aa = {{ at = [0, 0] }}")), "no part named aa (did you mean a?)");
+        assert_eq!(err(&format!("{TWO}panel.a = {{ span = [1, 1] }}")), "missing at = [COLUMN, ROW]");
+        assert_eq!(err(&format!("{TWO}panel.a = {{ at = [1] }}")), "at must be [N, M], each 0..63");
+        assert_eq!(err(&format!("{TWO}panel.a = {{ at = [0, 64] }}")), "at must be [N, M], each 0..63");
+        assert_eq!(err(&format!("{TWO}panel.a = {{ at = [0, 0], span = [0, 1] }}")), "span must be [N, M], each 1..64");
+        assert_eq!(err(&format!("{TWO}panel.a = {{ at = [0, 0], x = {{ y = 1 }} }}")), "x must be a number, string, true/false or an array of them, not a table");
+        let overlap = parse(&format!("{TWO}[panel]\na = {{ at = [0, 0], span = [2, 2] }}\nb = {{ at = [1, 1] }}")).unwrap_err();
+        assert_eq!((overlap.line, overlap.msg.as_str()), (5, "overlaps the panel item of a"));
         // Touching edges is fine.
-        assert!(parse("probe a gpio=1\nprobe b gpio=2\npanel a at=0,0 span=2,2\npanel b at=2,0").is_ok());
-    }
-
-    #[test]
-    fn spi_attachment_errors() {
-        let e = |t: &str| parse(t).unwrap_err().msg;
-        assert_eq!(e("cell a bus=spi0"), "this device is not an SPI device (bus=spi0)");
-        assert_eq!(e("echo a bus=i2c0"), "this device is not an I2C device (bus=i2c0)");
-        assert_eq!(e("echo a bus=spi0 cs=5\necho b bus=spi0 cs=5"), "chip select 5 is already used by \"a\"");
-        assert_eq!(e("echo a bus=spi0 cs=40"), "cs must be 0..29");
-        assert_eq!(e("cell a bus=i2c0 cs=5"), "unknown parameter cs");
-        // The same CS pin on different controllers is a board design problem too, but not ours to police.
-        assert!(parse("echo a bus=spi0 cs=5\necho b bus=spi1 cs=5").is_ok());
-        // No bus, no routing.
-        assert!(parse("echo a").unwrap().spi_bus(0, &mut FakePins::default(), 0).transfer(1, 8) == 0xFF);
+        assert!(parse(&format!("{TWO}[panel]\na = {{ at = [0, 0], span = [2, 2] }}\nb = {{ at = [2, 0] }}")).is_ok());
     }
 
     /// Toggles its `level` event every `period` cycles starting at `period`.
@@ -730,16 +984,20 @@ cell sensor bus=i2c0
         }
     }
 
-    fn ticker(p: &mut Params) -> Result<Box<dyn Device>, String> {
-        Ok(Box::new(Ticker { period: p.opt_int("period", 1, 1_000_000)?.unwrap_or(100) as u64, n: 0 }))
-    }
+    const TICKER: Kind = Kind {
+        name: "ticker",
+        summary: "ticks",
+        bus: None,
+        params: &[Param::int("period", 1, 1_000_000, "cycles between ticks").default_int(100)],
+        build: |p| Ok(Box::new(Ticker { period: p.int("period") as u64, n: 0 })),
+    };
 
     #[test]
     fn device_timers_fire_in_order_at_their_own_cycle() {
         let mut r = registry();
-        r.register("ticker", ticker);
+        r.register(TICKER);
         let mut pins = FakePins::default();
-        let mut b = Board::parse_with("ticker a period=100\nticker b period=150", &r).unwrap();
+        let mut b = Board::parse_with("parts.a = { kind = \"ticker\", period = 100 }\nparts.b = { kind = \"ticker\", period = 150 }", &r).unwrap();
         b.attach(&mut pins);
         assert_eq!(b.next_timer(), Some(100));
         b.fire_timers(&mut pins, 99);
@@ -764,13 +1022,22 @@ cell sensor bus=i2c0
             }
         }
         let mut r = Registry::empty();
-        r.register("eager", |_| Ok(Box::new(Eager)));
+        r.register(Kind { name: "eager", summary: "", bus: None, params: &[], build: |_| Ok(Box::new(Eager)) });
         let mut pins = FakePins::default();
-        let mut b = Board::parse_with("eager e", &r).unwrap();
+        let mut b = Board::parse_with("parts.e = { kind = \"eager\" }", &r).unwrap();
         b.attach(&mut pins);
         assert_eq!(b.next_timer(), Some(1));
         b.fire_timers(&mut pins, 5);
         let at: Vec<i64> = b.events.iter().map(|e| e.value).collect();
         assert_eq!(at, [1, 2, 3, 4, 5], "one per cycle, never stuck at the same instant");
+    }
+
+    #[test]
+    fn the_json_schema_covers_every_kind() {
+        let schema = spec::json_schema(&registry());
+        for k in ["\"probe\"", "\"cell\"", "\"echo\"", "\"tap\"", "\"spi1\"", "\"additionalProperties\": false"] {
+            assert!(schema.contains(k), "{k} missing");
+        }
+        assert_eq!(schema.matches('{').count(), schema.matches('}').count());
     }
 }

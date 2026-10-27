@@ -29,7 +29,7 @@ impl Inbox {
 /// What a dropped file probably is, from its name.
 pub fn guess(name: &str) -> Slot {
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".board") {
+    if lower.ends_with(".toml") {
         Slot::Board
     } else if lower.ends_with(".img") {
         Slot::Sd(String::new()) // the first card on the board
@@ -47,7 +47,7 @@ fn dialog(slot: &Slot) -> rfd::AsyncFileDialog {
     }
     match slot {
         Slot::Firmware => d.set_title("Open firmware ELF").add_filter("ELF", &["elf", ""]).add_filter("Any", &["*"]),
-        Slot::Board => d.set_title("Open board file").add_filter("Board", &["board"]).add_filter("Any", &["*"]),
+        Slot::Board => d.set_title("Open board file").add_filter("Board", &["toml"]).add_filter("Any", &["*"]),
         Slot::Sd(_) => d.set_title("Open SD card image").add_filter("Disk image", &["img", "bin"]).add_filter("Any", &["*"]),
         Slot::Guess => d,
     }

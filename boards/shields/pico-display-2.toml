@@ -1,0 +1,42 @@
+#:schema ../board.schema.json
+# Pimoroni Pico Display Pack 2.0, a shield for a Pico (W): a 2.0" 320x240
+# ST7789 on SPI0 (chip select, D/C and backlight are plain GPIOs) and four
+# buttons A/B/X/Y to GND.
+#
+#   tartelette fw.elf --board pico-w --shield pico-display-2
+name = "Pico Display Pack 2.0"
+
+[buses]
+spi0 = { sck = 18, mosi = 19 }
+
+[parts.screen]
+kind = "st7789"
+bus = "spi0"
+cs = 9
+dc = 13
+bl = 17
+
+[parts.a]
+kind = "button"
+gpio = 12
+
+[parts.b]
+kind = "button"
+gpio = 20
+
+[parts.x]
+kind = "button"
+gpio = 14
+
+[parts.y]
+kind = "button"
+gpio = 15
+
+# The board's own panel items that these cover (the Pico W's Wi-Fi) move
+# out of the way, to the right.
+[panel]
+screen = { at = [0, 0], span = [6, 4], rotate = 270 }
+a = { at = [0, 4], label = "A", key = "A" }
+b = { at = [1, 4], label = "B", key = "B" }
+x = { at = [2, 4], label = "X", key = "X" }
+y = { at = [3, 4], label = "Y", key = "Y" }

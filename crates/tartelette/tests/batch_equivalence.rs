@@ -12,7 +12,7 @@ fn build(name: &str) -> Vec<u8> {
     let target_dir = root.join("target/firmware").join(name);
     let status = Command::new(env!("CARGO"))
         .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
-        .arg(root.join(format!("firmware/{name}/Cargo.toml")))
+        .arg(root.join(format!("firmware/tests/{name}/Cargo.toml")))
         .arg("--target-dir")
         .arg(&target_dir)
         .status()

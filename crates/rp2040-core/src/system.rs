@@ -20,7 +20,7 @@ use crate::periph::timer::Timer;
 use crate::periph::uart::Uart;
 use crate::periph::{Peripheral, RegStub, clocks::Clocks};
 use crate::ppb::Ppb;
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use pcb::{Board, InputResult};
 
 /// While the core sleeps with DMA running, time advances in slices of this
@@ -625,6 +625,11 @@ pub struct System {
     /// Let `run` execute quiet stretches in batches (see `run_batch`). Only
     /// off to check that batching changes nothing.
     pub batching: bool,
+    /// Problems spotted while running (a bus used with the board's pins not
+    /// routed to it), for the host to show. Each is reported once.
+    pub warnings: Vec<String>,
+    /// Buses whose wiring was checked: I2C0, I2C1, SPI0, SPI1.
+    wiring_checked: [bool; 4],
 }
 
 impl System {
@@ -636,6 +641,8 @@ impl System {
             held: [false; 2],
             quiet: false,
             batching: true,
+            warnings: Vec::new(),
+            wiring_checked: [false; 4],
         };
         sys.reset_core1();
         sys
@@ -711,6 +718,7 @@ impl System {
         board.attach(&mut self.bus.gpio);
         self.bus.gpio.take_changes();
         self.board = board;
+        self.wiring_checked = [false; 4];
         self.quiet = false;
     }
 
@@ -767,15 +775,30 @@ impl System {
     fn service_buses(&mut self) {
         for n in 0..2 {
             if self.bus.i2c[n].has_work() {
+                self.check_wiring(n);
                 self.bus.lines_dirty = true;
                 let mut wire = self.board.i2c_bus(n, &mut self.bus.gpio, self.bus.time);
                 self.bus.i2c[n].pump(&mut wire);
             }
             if self.bus.spi[n].has_work() {
+                self.check_wiring(2 + n);
                 self.bus.lines_dirty = true;
                 let mut wire = self.board.spi_bus(n, &mut self.bus.gpio, self.bus.time);
                 self.bus.spi[n].pump(&mut wire);
             }
+        }
+    }
+
+    /// The first time the firmware uses a bus controller (0, 1: I2C; 2, 3:
+    /// SPI), compare the board's wiring for it with the firmware's pin
+    /// functions.
+    fn check_wiring(&mut self, which: usize) {
+        if core::mem::replace(&mut self.wiring_checked[which], true) {
+            return;
+        }
+        let name = ["i2c0", "i2c1", "spi0", "spi1"][which];
+        if let Some(decl) = self.board.buses.iter().find(|b| b.name == name) {
+            self.warnings.extend(crate::pinmux::wiring_warnings(decl, &self.bus.gpio));
         }
     }
 
@@ -1628,7 +1651,7 @@ mod tests {
         sys.bus
             .load(SRAM_BASE + 4 * (16 + IRQ_IO_BANK0), &handler.to_le_bytes());
         sys.set_board(
-            Board::parse_with("led l gpio=25\nbutton b gpio=2", &pcb_devices::registry()).unwrap(),
+            Board::parse_with("parts.l = { kind = \"led\", gpio = 25 }\nparts.b = { kind = \"button\", gpio = 2 }", &pcb_devices::registry()).unwrap(),
         );
         sys.bus.write32(IO_BANK0 + 8 * 2 + 4, 5); // SIO function
         sys.bus.write32(PADS_BANK0 + 4 + 4 * 2, 1 << 6 | 1 << 3); // pull-up
@@ -1850,19 +1873,23 @@ mod tests {
         use pcb::Board;
         let mut sys = boot(&[SPIN]);
         sys.set_board(
-            Board::parse_with("st7789 s bus=spi0 cs=9 dc=13", &pcb_devices::registry()).unwrap(),
+            Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"st7789\", bus = \"spi0\", cs = 9, dc = 13 }", &pcb_devices::registry()).unwrap(),
         );
         sys.bus.write32(SPI0, 7);
         sys.bus.write32(SPI0 + 4, 2);
         // CS (GPIO9) low, D/C (13) low: a command byte (RDDID), then data clocked back.
         sys.bus.write32(IO_BANK0 + 8 * 9 + 4, 5); // FUNCSEL = SIO
         sys.bus.write32(IO_BANK0 + 8 * 13 + 4, 5);
+        // MOSI where the board has it, SCK on GPIO2 instead of the board's 18.
+        sys.bus.write32(IO_BANK0 + 8 * 19 + 4, 1);
+        sys.bus.write32(IO_BANK0 + 8 * 2 + 4, 1);
         let sio_oe = SIO_BASE + 0x24;
         sys.bus.write32(sio_oe, 1 << 9 | 1 << 13);
         sys.bus.write32(SIO_BASE + 0x18, 1 << 9 | 1 << 13); // OUT_CLR
         sys.sync_board();
         sys.bus.write32(SPI0 + 8, 0x04);
         sys.service_buses();
+        assert_eq!(sys.warnings, ["SPI0 is in use, but GPIO 18 (the board's SPI0 SCK) is set to no function, not SPI; the firmware put SPI0 SCK on GPIO 2"]);
         sys.bus.write32(SIO_BASE + 0x14, 1 << 13); // D/C high
         sys.bus.write32(SPI0 + 8, 0);
         sys.service_buses();
@@ -1877,6 +1904,7 @@ mod tests {
         sys.bus.write32(SPI0 + 8, 0);
         sys.service_buses();
         assert_eq!(sys.bus.read32(SPI0 + 8), 0xFF);
+        assert_eq!(sys.warnings.len(), 1, "each bus is checked once");
     }
 
     // ---- two cores ------------------------------------------------------------

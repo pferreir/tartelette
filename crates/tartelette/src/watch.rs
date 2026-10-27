@@ -1,5 +1,5 @@
-//! Native only: reload the firmware or board when its file changes on disk,
-//! so a rebuild shows up without touching the app.
+//! Native only: reload the firmware, board or shields when their file changes
+//! on disk, so a rebuild shows up without touching the app.
 use crate::session::Source;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -8,8 +8,8 @@ const EVERY: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub struct Watch {
-    /// (path, modification time) of the firmware and the board.
-    files: [Option<(PathBuf, Option<SystemTime>)>; 2],
+    /// (path, modification time) of each watched file.
+    files: Vec<(PathBuf, Option<SystemTime>)>,
     last: Option<Instant>,
 }
 
@@ -19,36 +19,30 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 
 impl Watch {
     /// Watch the files these sources came from.
-    pub fn track(&mut self, firmware: Option<&Source>, board: Option<&Source>) {
-        for (slot, src) in self.files.iter_mut().zip([firmware, board]) {
-            *slot = src.and_then(|s| s.path.clone()).map(|p| {
-                let t = mtime(&p);
-                (p, t)
-            });
-        }
+    pub fn track<'a>(&mut self, sources: impl IntoIterator<Item = &'a Source>) {
+        self.files = sources.into_iter().filter_map(|s| s.path.clone()).map(|p| (mtime(&p), p)).map(|(t, p)| (p, t)).collect();
     }
 
     /// Re-read any watched file that changed; true if one did.
-    pub fn changed(&mut self, firmware: &mut Option<Source>, board: &mut Option<Source>) -> bool {
+    pub fn changed<'a>(&mut self, sources: impl IntoIterator<Item = &'a mut Source>) -> bool {
         if self.last.is_some_and(|t| t.elapsed() < EVERY) {
             return false;
         }
         self.last = Some(Instant::now());
         let mut any = false;
-        for (slot, src) in self.files.iter_mut().zip([firmware, board]) {
-            let Some((path, seen)) = slot else { continue };
+        for src in sources {
+            let Some(path) = &src.path else { continue };
+            let Some((_, seen)) = self.files.iter_mut().find(|(p, _)| p == path) else { continue };
             let now = mtime(path);
             if now == *seen || now.is_none() {
                 continue;
             }
             // A build may still be writing it: wait for the next check if it
             // doesn't read back.
-            let Ok(bytes) = std::fs::read(&*path) else { continue };
+            let Ok(bytes) = std::fs::read(path) else { continue };
             *seen = now;
-            if let Some(s) = src {
-                s.bytes = bytes;
-                any = true;
-            }
+            src.bytes = bytes;
+            any = true;
         }
         any
     }

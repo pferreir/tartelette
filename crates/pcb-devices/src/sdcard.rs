@@ -1,5 +1,4 @@
-//! `sdcard <name> bus=spiN cs=N [size_mb=16]`: an SDHC memory card in SPI
-//! mode, backed by an in-memory disk image.
+//! An SDHC memory card in SPI mode, backed by an in-memory disk image.
 //!
 //! The card starts in native SD mode and ignores everything until `CMD0`
 //! with chip select low switches it to SPI. Implemented commands: `CMD0`,
@@ -20,8 +19,8 @@
 //!
 //! The host loads or inspects the disk with [`SdCard::load_image`] and
 //! [`SdCard::image`]; [`SdCard::dirty`] says whether the firmware wrote to it.
-use alloc::{boxed::Box, collections::VecDeque, string::String, vec, vec::Vec};
-use pcb::{Device, Io, Params, SpiDevice};
+use alloc::{boxed::Box, collections::VecDeque, vec, vec::Vec};
+use pcb::{BusType, Device, Io, Kind, Param, SpiDevice};
 
 pub const BLOCK: usize = 512;
 /// Bytes of "busy" (data line held low) after each programmed block.
@@ -103,10 +102,13 @@ pub struct SdCard {
     dirty: bool,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let size_mb = p.opt_int("size_mb", 1, 2048)?.unwrap_or(16) as usize;
-    Ok(Box::new(SdCard::new(size_mb * 1024 * 1024 / BLOCK)))
-}
+pub const KIND: Kind = Kind {
+    name: "sdcard",
+    summary: "SDHC card in SPI mode over a disk image",
+    bus: Some(BusType::Spi),
+    params: &[Param::int("size_mb", 1, 2048, "size of the blank card in MiB (a loaded image sets its own)").default_int(16)],
+    build: |p| Ok(Box::new(SdCard::new(p.int("size_mb") as usize * 1024 * 1024 / BLOCK))),
+};
 
 impl SdCard {
     /// A blank card of `blocks` 512-byte blocks.
@@ -424,7 +426,7 @@ mod tests {
 
     impl Host {
         fn new() -> Self {
-            let text = alloc::format!("sdcard sd bus=spi1 cs={CS} size_mb=1");
+            let text = alloc::format!("buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = 1 }}");
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             pins.set_chip(CS, true);
@@ -791,10 +793,10 @@ mod tests {
         assert_eq!(card.blocks(), 1025, "partial block rounded up");
         assert!(!card.dirty());
         let reg = crate::registry();
-        let b = Board::parse_with("sdcard s bus=spi0 cs=1 size_mb=4", &reg).unwrap();
+        let b = Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 4 }", &reg).unwrap();
         assert_eq!(b.device::<SdCard>("s").unwrap().blocks(), 8192);
-        assert!(Board::parse_with("sdcard s bus=spi0 size_mb=4", &reg).is_ok(), "no CS: always selected");
-        assert!(Board::parse_with("sdcard s cs=1", &reg).is_err(), "a chip select only means something on a bus");
-        assert!(Board::parse_with("sdcard s bus=spi0 cs=1 size_mb=0", &reg).is_err());
+        assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", size_mb = 4 }", &reg).is_ok(), "no CS: always selected");
+        assert!(Board::parse_with("parts.s = { kind = \"sdcard\", cs = 1 }", &reg).is_err(), "a chip select only means something on a bus");
+        assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 0 }", &reg).is_err());
     }
 }

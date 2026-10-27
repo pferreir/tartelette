@@ -1,7 +1,8 @@
-//! `led <name> gpio=N [active=high|low]`: anode on the pin (through a
-//! resistor), cathode on GND by default; `active=low` wires it to 3V3.
-use pcb::{Board, Device, Io, Params};
-use alloc::{boxed::Box, string::String};
+//! An LED on a pin: anode on the pin (through a resistor), cathode on GND
+//! by default; `active = "low"` wires it to 3V3. It only watches the pin, so
+//! it may sit on a line another part uses (an activity LED).
+use pcb::{Board, Device, Io, Kind, Param};
+use alloc::boxed::Box;
 
 pub struct Led {
     pub pin: usize,
@@ -9,11 +10,16 @@ pub struct Led {
     pub lit: bool,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let pin = p.pin("gpio")?;
-    let active_high = p.opt_level("active")?.unwrap_or(true);
-    Ok(Box::new(Led { pin, active_high, lit: false }))
-}
+pub const KIND: Kind = Kind {
+    name: "led",
+    summary: "LED on a pin",
+    bus: None,
+    params: &[
+        Param::shared_pin("gpio", "the pin it hangs off"),
+        Param::choice("active", &["high", "low"], "the level that lights it").default_str("high"),
+    ],
+    build: |p| Ok(Box::new(Led { pin: p.pin("gpio"), active_high: p.str("active") == "high", lit: false })),
+};
 
 impl Device for Led {
     fn watched_pins(&self) -> u32 {

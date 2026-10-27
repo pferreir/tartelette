@@ -12,8 +12,18 @@ const DIO: usize = 24;
 const CS: usize = 25;
 const CLK: usize = 29;
 
-const BOARD: &str = "cyw43439 wifi on=23 dio=24 cs=25 clk=29 \
-    ap1=TarteletteNet,wpa2,hunter22,-45,6 ap2=FreeCafe,open,-70,11";
+const BOARD: &str = r#"
+[parts.wifi]
+kind = "cyw43439"
+on = 23
+dio = 24
+cs = 25
+clk = 29
+aps = [
+  { ssid = "TarteletteNet", security = "wpa2", passphrase = "hunter22", rssi = -45, channel = 6 },
+  { ssid = "FreeCafe", rssi = -70, channel = 11 },
+]
+"#;
 
 fn swap16(x: u32) -> u32 {
     x.rotate_left(16)
@@ -775,16 +785,17 @@ fn dhcp_and_udp_echo_over_the_data_channel() {
 #[test]
 fn board_file_errors() {
     let e = |t: &str| Board::parse_with(t, &crate::registry()).unwrap_err().msg;
-    let base = "cyw43439 w on=23 dio=24 cs=25 clk=29";
-    assert!(Board::parse_with(base, &crate::registry()).is_ok());
-    assert_eq!(e("cyw43439 w dio=24 cs=25 clk=29"), "missing on=N");
-    assert!(e(&format!("{base} mac=1:2:3")).starts_with("mac must be"));
-    assert!(e(&format!("{base} ap1=x,wpa2")).contains("passphrase"));
-    assert!(e(&format!("{base} ap1=x,wpa2,short")).contains("8..63"));
-    assert!(e(&format!("{base} ap1=x,sort")).contains("open or wpa2"));
-    assert!(e(&format!("{base} ap1=x,open,-70,99")).contains("channel"));
-    assert!(e(&format!("{base} ap1=x,open ap2=x,open")).contains("listed twice"));
-    assert_eq!(e(&format!("{base} ap9=x,open")), "unknown parameter ap9");
+    let w = |extra: &str| format!("parts.w = {{ kind = \"cyw43439\", on = 23, dio = 24, cs = 25, clk = 29{extra} }}");
+    assert!(Board::parse_with(&w(""), &crate::registry()).is_ok());
+    assert_eq!(e("parts.w = { kind = \"cyw43439\", dio = 24, cs = 25, clk = 29 }"), "missing on (WL_ON: power and reset)");
+    assert!(e(&w(", mac = \"1:2:3\"")).starts_with("w: mac must be"));
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"wpa2\" }]")), "w: aps[0]: a wpa2 network needs a passphrase");
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"wpa2\", passphrase = \"short\" }]")), "w: aps[0]: passphrase must be 8..63 characters");
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\", passphrase = \"long enough\" }]")), "w: aps[0]: an open network has no passphrase");
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"sort\" }]")), "aps[0]: security must be open or wpa2");
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\", channel = 99 }]")), "aps[0]: channel must be 1..14");
+    assert_eq!(e(&w(", aps = [{ ssid = \"x\" }, { ssid = \"x\" }]")), "w: aps[1]: SSID \"x\" is listed twice");
+    assert_eq!(e(&w(", ap1 = \"x\"")), "unknown parameter ap1 (did you mean aps?)");
 }
 
 // ---- Bluetooth, the way `cyw43`'s bluetooth.rs drives it ----

@@ -1,13 +1,13 @@
 [package]
-name = "ble-test"
+name = "pico-w-ble"
 version = "0.1.0"
 edition = "2021"
 
-# Standalone (not part of the emulator workspace): Pico W firmware running
-# trouble's example apps (trouble `main`) over Embassy's cyw43 Bluetooth, to
-# exercise the emulated CYW43439's Bluetooth side. Build with
-#   CYW43_FIRMWARE_DIR=/path/to/cyw43-firmware cargo build --release
-# The Embassy revision is the one trouble's own rp-pico-w examples pin.
+# Standalone (not part of the emulator workspace). trouble's example apps
+# (trouble `main`) on the Pico W over Embassy's cyw43 Bluetooth; see
+# ../README.md. The emulator's tests run them against the emulated CYW43439
+# (crates/tartelette/tests/ble_firmware.rs). The Embassy revision is the one
+# trouble's own rp-pico-w examples pin.
 
 [workspace]
 

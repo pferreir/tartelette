@@ -1,5 +1,4 @@
-//! `ws2812 <name> gpio=N [count=8] [order=grb|rgb] [reset_us=50] [mhz=125]`:
-//! a chain of WS2812 / SK6812 LEDs on one data pin.
+//! A chain of WS2812 / SK6812 LEDs on one data pin.
 //!
 //! The data line is decoded from pulse widths alone, the way the LEDs do it:
 //! a high pulse shorter than 0.5 us is a 0 bit, longer a 1 bit; 24 bits per
@@ -10,8 +9,8 @@
 //! clock, to turn time into cycles.
 //!
 //! A `latch` event (value = LEDs updated) is emitted at each latch.
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
-use pcb::{Device, Io, Params};
+use alloc::{boxed::Box, vec, vec::Vec};
+use pcb::{Device, Io, Kind, Param};
 
 pub struct Ws2812 {
     pin: usize,
@@ -30,30 +29,35 @@ pub struct Ws2812 {
     pub frames: u32,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let pin = p.pin("gpio")?;
-    let count = p.opt_int("count", 1, 4096)?.unwrap_or(8) as usize;
-    let grb = match p.opt_str("order") {
-        None | Some("grb") => true,
-        Some("rgb") => false,
-        Some(_) => return Err("order must be grb or rgb".into()),
-    };
-    let reset_us = p.opt_int("reset_us", 1, 10_000)?.unwrap_or(50) as u64;
-    let mhz = p.opt_int("mhz", 1, 1000)?.unwrap_or(125) as u64;
-    Ok(Box::new(Ws2812 {
-        pin,
-        grb,
-        reset_cycles: reset_us * mhz,
-        threshold: mhz / 2,
-        bits: Vec::new(),
-        rose_at: None,
-        fell_at: 0,
-        leds: vec![[0; 3]; count],
-        frames: 0,
-    }))
-}
+pub const KIND: Kind = Kind {
+    name: "ws2812",
+    summary: "WS2812 / SK6812 LED chain decoded from the data line",
+    bus: None,
+    params: &[
+        Param::pin("gpio", "the data line"),
+        Param::int("count", 1, 4096, "LEDs in the chain").default_int(8),
+        Param::choice("order", &["grb", "rgb"], "colour order on the wire").default_str("grb"),
+        Param::int("reset_us", 1, 10_000, "low time that latches the colours, in microseconds").default_int(50),
+        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+    ],
+    build: |p| Ok(Box::new(Ws2812::new(p.pin("gpio"), p.int("count") as usize, p.str("order") == "grb", p.int("reset_us") as u64, p.int("mhz") as u64))),
+};
 
 impl Ws2812 {
+    fn new(pin: usize, count: usize, grb: bool, reset_us: u64, mhz: u64) -> Self {
+        Ws2812 {
+            pin,
+            grb,
+            reset_cycles: reset_us * mhz,
+            threshold: mhz / 2,
+            bits: Vec::new(),
+            rose_at: None,
+            fell_at: 0,
+            leds: vec![[0; 3]; count],
+            frames: 0,
+        }
+    }
+
     /// Latched colours (RGB) of every LED in the chain.
     pub fn leds(&self) -> &[[u8; 3]] {
         &self.leds
@@ -115,7 +119,8 @@ mod tests {
 
     impl Rig {
         fn new(extra: &str) -> Self {
-            let text = alloc::format!("ws2812 strip gpio={PIN} {extra}");
+            let sep = if extra.is_empty() { "" } else { ", " };
+            let text = alloc::format!("parts.strip = {{ kind = \"ws2812\", gpio = {PIN}{sep}{extra} }}");
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             board.attach(&mut pins);
@@ -157,7 +162,7 @@ mod tests {
 
     #[test]
     fn decodes_pulse_widths_and_latches_after_the_reset_gap() {
-        let mut r = Rig::new("count=2");
+        let mut r = Rig::new("count = 2");
         for b in [0x10, 0x20, 0x30, 0xFF, 0x00, 0x80] {
             r.byte(b);
         }
@@ -174,14 +179,14 @@ mod tests {
 
     #[test]
     fn rgb_order_extra_data_and_partial_leds() {
-        let mut r = Rig::new("count=1 order=rgb");
+        let mut r = Rig::new("count = 1, order = \"rgb\"");
         for b in [1, 2, 3, 9, 9, 9, 7] {
             r.byte(b); // a second LED's worth (not in the chain) and a partial one: dropped
         }
         r.idle_since_fall(10_000);
         assert_eq!(r.strip().leds(), [[1, 2, 3]]);
         // A short frame leaves later LEDs alone: only whole LEDs update.
-        let mut r = Rig::new("count=3");
+        let mut r = Rig::new("count = 3");
         for b in [1, 2, 3, 4, 5] {
             r.byte(b);
         }
@@ -191,7 +196,7 @@ mod tests {
 
     #[test]
     fn a_new_frame_after_the_latch_starts_from_the_first_led() {
-        let mut r = Rig::new("count=1");
+        let mut r = Rig::new("count = 1");
         for b in [0, 0, 255] {
             r.byte(b);
         }
@@ -207,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_gap_inside_the_frame_shorter_than_reset_does_not_latch() {
-        let mut r = Rig::new("count=1 reset_us=50");
+        let mut r = Rig::new("count = 1, reset_us = 50");
         r.byte(0x11);
         r.now += 1000; // 8 us: a pause between bytes
         r.byte(0x22);
@@ -221,7 +226,7 @@ mod tests {
     fn timing_parameters_scale_with_the_clock() {
         // At 4 cycles/us a 1 bit must be high for at least 2 cycles; the rig's
         // 110-cycle pulses are 27 us long, so every bit is a 1.
-        let mut r = Rig::new("count=1 mhz=4 reset_us=10");
+        let mut r = Rig::new("count = 1, mhz = 4, reset_us = 10");
         r.byte(0x00);
         r.byte(0x00);
         r.byte(0x00);
@@ -232,8 +237,8 @@ mod tests {
     #[test]
     fn factory_rejects_bad_parameters() {
         let reg = crate::registry();
-        assert!(Board::parse_with("ws2812 s gpio=1 order=bgr", &reg).is_err());
-        assert!(Board::parse_with("ws2812 s count=2", &reg).is_err(), "gpio is required");
-        assert!(Board::parse_with("ws2812 s gpio=1 count=0", &reg).is_err());
+        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", gpio = 1, order = \"bgr\" }", &reg).is_err());
+        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", count = 2 }", &reg).is_err(), "gpio is required");
+        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", gpio = 1, count = 0 }", &reg).is_err());
     }
 }

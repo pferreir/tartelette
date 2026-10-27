@@ -19,8 +19,8 @@ fn us(cycles: u64) -> f64 {
 pub fn run(args: &RunArgs) -> Result<(), String> {
     let h = &args.headless_opts;
     let fw = Source::from_file(args.firmware.as_deref().expect("clap requires a firmware with --headless"))?;
-    let board = args.board.as_deref().map(Source::from_file).transpose()?;
-    let mut s = Session::new(&fw, board.as_ref(), &args.network())?;
+    let board = args.board()?;
+    let mut s = Session::new(&fw, board.as_ref(), &args.shields()?, &args.network())?;
     let board = &mut s.sys.board;
 
     // Reject anything aimed at parts that don't exist before running anything.
@@ -76,6 +76,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 "on" | "off" | "pressed" | "released" => writeln!(err, "[{t:>10.1} us] {name} {}", e.label),
                 _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
             };
+        }
+        for w in std::mem::take(&mut sys.warnings) {
+            let _ = writeln!(err, "[{:>10.1} us] warning: {w}", us(sys.cycles()));
         }
         if h.log {
             let t = us(s.sys.cycles());

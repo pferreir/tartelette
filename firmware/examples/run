@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Cargo runner for the examples (see README.md): runs the firmware in the
+# emulator, or flashes it to a real board.
+#
+#   run BOARD [EMULATOR OPTIONS...] -- ELF [ARGS...]
+#
+# Each example's .cargo/config.toml gives everything before `--`; cargo adds
+# the ELF and whatever follows `cargo run --`. TARTELETTE_RUNNER picks what
+# happens:
+#
+#   emulator (default)  tartelette ELF --board BOARD [EMULATOR OPTIONS] [ARGS]
+#                       ARGS are tartelette options (`--headless --log`, ...)
+#                       and override the example's own
+#   probe-rs            probe-rs run --chip RP2040 ELF [ARGS], over a debug
+#                       probe (SWD), which also shows the defmt log
+#   picotool            picotool load -v -x -t elf ELF [ARGS], to a board held
+#                       in BOOTSEL mode over USB (no log)
+#
+# The emulator is the workspace's own, built as needed, unless TARTELETTE
+# names a binary (e.g. TARTELETTE=tartelette for an installed one).
+set -euo pipefail
+
+board=$1
+shift
+defaults=()
+while [[ $1 != -- ]]; do
+    defaults+=("$1")
+    shift
+done
+shift
+elf=$1
+shift
+
+case ${TARTELETTE_RUNNER:-emulator} in
+emulator)
+    if [[ -z ${TARTELETTE:-} ]]; then
+        root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+        # From the workspace root, out of reach of the example's .cargo/config.toml.
+        (cd "$root" && env -u DEFMT_LOG cargo build --release -p tartelette)
+        TARTELETTE=$root/target/release/tartelette
+    fi
+    exec "$TARTELETTE" "$elf" --board "$board" "${defaults[@]}" "$@"
+    ;;
+probe-rs)
+    exec probe-rs run --chip RP2040 "$elf" "$@"
+    ;;
+picotool)
+    exec picotool load -v -x -t elf "$elf" "$@"
+    ;;
+*)
+    echo "TARTELETTE_RUNNER=$TARTELETTE_RUNNER: expected emulator, probe-rs or picotool" >&2
+    exit 2
+    ;;
+esac

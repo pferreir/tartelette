@@ -1,14 +1,11 @@
-//! `cyw43439 <name> on=N dio=N cs=N clk=N [mac=AA:BB:..] [mhz=125]
-//! [ap1=SSID,open[,RSSI[,CHAN]]] [ap2=SSID,wpa2,PASS[,RSSI[,CHAN]]] ...`:
-//! the Infineon CYW43439 Wi-Fi chip on a Raspberry Pi Pico W, modelled at
+//! The Infineon CYW43439 Wi-Fi chip on a Raspberry Pi Pico W, modelled at
 //! the pins so unmodified Embassy `cyw43` firmware (with `cyw43-pio`) runs,
 //! Wi-Fi and Bluetooth.
 //!
 //! Wiring (Pico W): `on` is WL_ON (power/reset), `dio` the bidirectional
 //! data line that doubles as the host interrupt, `cs` the active-low chip
-//! select, `clk` the serial clock. `ap1`..`ap8` list the mock access points
-//! (SSIDs and passphrases can't contain spaces or commas); they are what a
-//! scan finds and what a join can succeed against.
+//! select, `clk` the serial clock. `aps` lists up to eight mock access
+//! points; they are what a scan finds and what a join can succeed against.
 //!
 //! The model has these layers:
 //!
@@ -52,7 +49,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use bt::Bt;
 use chip::Chip;
 use gspi::Gspi;
-use pcb::{Device, Io, Params};
+use pcb::{Device, Io, Kind, Param, Params};
 pub use whd::{Ap, Link};
 use whd::Whd;
 
@@ -93,57 +90,66 @@ fn parse_mac(s: &str) -> Result<[u8; 6], String> {
     Ok(mac)
 }
 
-fn parse_ap(spec: &str, index: usize) -> Result<Ap, String> {
-    let mut f = spec.split(',');
-    let ssid = f.next().filter(|s| !s.is_empty() && s.len() <= 32).ok_or("ap: SSID must be 1..32 characters")?;
-    let wpa2 = match f.next() {
-        Some("open") => false,
-        Some("wpa2") => true,
-        _ => return Err("ap: security must be open or wpa2 (SSID,open[,RSSI[,CHAN]] or SSID,wpa2,PASS[,RSSI[,CHAN]])".into()),
-    };
-    let pass = if wpa2 {
-        let p = f.next().ok_or("ap: wpa2 needs a passphrase")?;
-        if !(8..=63).contains(&p.len()) {
-            return Err("ap: passphrase must be 8..63 characters".into());
-        }
-        p
-    } else {
-        ""
-    };
-    let rssi = match f.next() {
-        Some(r) => r.parse::<i16>().ok().filter(|r| (-120..=0).contains(r)).ok_or("ap: RSSI must be -120..0")?,
-        None => -50,
-    };
-    let chan = match f.next() {
-        Some(c) => c.parse::<u8>().ok().filter(|c| (1..=14).contains(c)).ok_or("ap: channel must be 1..14")?,
-        None => 6,
-    };
-    if f.next().is_some() {
-        return Err("ap: too many fields".into());
+fn ap(p: &mut Params, index: usize) -> Result<Ap, String> {
+    let ssid = String::from(p.str("ssid"));
+    if !(1..=32).contains(&ssid.len()) {
+        return Err("ssid must be 1..32 bytes".into());
     }
-    Ok(Ap { ssid: ssid.into(), wpa2, pass: pass.into(), rssi, chan, bssid: [0x02, 0x1A, 0x2B, 0x00, 0x00, index as u8 + 1] })
+    let wpa2 = p.str("security") == "wpa2";
+    let pass = match (wpa2, p.opt_str("passphrase")) {
+        (true, Some(pass)) if (8..=63).contains(&pass.len()) => String::from(pass),
+        (true, Some(_)) => return Err("passphrase must be 8..63 characters".into()),
+        (true, None) => return Err("a wpa2 network needs a passphrase".into()),
+        (false, Some(_)) => return Err("an open network has no passphrase".into()),
+        (false, None) => String::new(),
+    };
+    let (rssi, chan) = (p.int("rssi") as i16, p.int("channel") as u8);
+    Ok(Ap { ssid, wpa2, pass, rssi, chan, bssid: [0x02, 0x1A, 0x2B, 0x00, 0x00, index as u8 + 1] })
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let (on, dio, cs, clk) = (p.pin("on")?, p.pin("dio")?, p.pin("cs")?, p.pin("clk")?);
-    let mac = match p.opt_str("mac") {
-        Some(m) => parse_mac(m)?,
-        None => [0x28, 0xCD, 0xC1, 0x00, 0x00, 0x01],
-    };
-    let cycles_per_us = p.opt_int("mhz", 1, 1000)?.unwrap_or(125) as u64;
-    let mut aps = Vec::new();
-    for i in 1..=MAX_APS {
-        let key = alloc::format!("ap{i}");
-        if let Some(spec) = p.opt_str(&key) {
-            let ap = parse_ap(spec, aps.len()).map_err(|e| alloc::format!("{key}: {e}"))?;
-            if aps.iter().any(|a: &Ap| a.ssid == ap.ssid) {
-                return Err(alloc::format!("{key}: SSID {:?} is listed twice", ap.ssid));
+pub const KIND: Kind = Kind {
+    name: "cyw43439",
+    summary: "Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link",
+    bus: None,
+    params: &[
+        Param::pin("on", "WL_ON: power and reset"),
+        Param::pin("dio", "data in/out, also the host interrupt"),
+        Param::pin("cs", "chip select, active low"),
+        Param::pin("clk", "serial clock"),
+        Param::str("mac", "MAC address, six hex bytes like 28:cd:c1:00:00:01").default_str("28:cd:c1:00:00:01"),
+        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+        Param::tables(
+            "aps",
+            &[
+                Param::str("ssid", "network name, 1..32 bytes"),
+                Param::choice("security", &["open", "wpa2"], "how a station joins").default_str("open"),
+                Param::str("passphrase", "WPA2 passphrase, 8..63 characters").optional(),
+                Param::int("rssi", -120, 0, "signal strength in dBm").default_int(-50),
+                Param::int("channel", 1, 14, "2.4 GHz channel").default_int(6),
+            ],
+            "the mock access points a scan finds (up to 8)",
+        )
+        .optional(),
+    ],
+    build: |p| {
+        let (on, dio, cs, clk) = (p.pin("on"), p.pin("dio"), p.pin("cs"), p.pin("clk"));
+        let mac = parse_mac(p.str("mac"))?;
+        let cycles_per_us = p.int("mhz") as u64;
+        let tables = p.tables("aps");
+        if tables.len() > MAX_APS {
+            return Err(alloc::format!("at most {MAX_APS} access points"));
+        }
+        let mut aps: Vec<Ap> = Vec::new();
+        for (i, mut t) in tables.into_iter().enumerate() {
+            let ap = ap(&mut t, i).map_err(|e| alloc::format!("aps[{i}]: {e}"))?;
+            if aps.iter().any(|a| a.ssid == ap.ssid) {
+                return Err(alloc::format!("aps[{i}]: SSID {:?} is listed twice", ap.ssid));
             }
             aps.push(ap);
         }
-    }
-    Ok(Box::new(Cyw43439::new(on, dio, cs, clk, mac, aps, cycles_per_us)))
-}
+        Ok(Box::new(Cyw43439::new(on, dio, cs, clk, mac, aps, cycles_per_us)))
+    },
+};
 
 impl Cyw43439 {
     pub fn new(on: usize, dio: usize, cs: usize, clk: usize, mac: [u8; 6], aps: Vec<Ap>, cycles_per_us: u64) -> Self {

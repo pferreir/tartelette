@@ -1,5 +1,5 @@
 //! THE DAILY BIT: a Pico W on a Pimoroni Pico Display Pack 2.0
-//! (`boards/pico-w-display.board`) that reads a few things off the internet
+//! (`--board pico-w --shield pico-display-2`) that reads a few things off the internet
 //! over Wi-Fi and prints them, newspaper-style, on an MXW01 "cat printer"
 //! over Bluetooth LE.
 //!

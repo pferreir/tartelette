@@ -1,0 +1,24 @@
+#:schema ./board.schema.json
+# Raspberry Pi Pico W: the CYW43439 Wi-Fi chip on GPIO23 (WL_ON), 24 (DIO, also
+# the chip's interrupt), 25 (CS) and 29 (CLK), driven by a PIO state machine.
+# Its LED is on the Wi-Fi chip, not on a GPIO. Its Bluetooth goes where --bt
+# says: nowhere (the default), mock devices, or a real adapter (hciN).
+#
+# Add-on boards go on top with --shield (see shields/).
+name = "Pico-W"
+
+[parts.wifi]
+kind = "cyw43439"
+on = 23
+dio = 24
+cs = 25
+clk = 29
+mac = "28:cd:c1:00:00:01"
+# What a scan finds and a join can succeed against.
+aps = [
+  { ssid = "TarteletteNet", security = "wpa2", passphrase = "hunter22", rssi = -45, channel = 6 },
+  { ssid = "FreeCafe", rssi = -70, channel = 11 },
+]
+
+[panel]
+wifi = { at = [0, 0], span = [3, 2], label = "Wi-Fi" }

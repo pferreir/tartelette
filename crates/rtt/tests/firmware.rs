@@ -12,7 +12,7 @@ fn decodes_the_log_of_the_btl_os() {
     let mut rtt = rtt::Rtt::new(&elf).unwrap().expect("firmware has RTT and defmt");
     let mut sys = System::new();
     sys.load_elf(&elf).unwrap();
-    let board = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.board")).unwrap();
+    let board = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.toml")).unwrap();
     sys.set_board(pcb::Board::parse_with(&board, &pcb_devices::registry()).unwrap());
 
     let mut lines = Vec::new();

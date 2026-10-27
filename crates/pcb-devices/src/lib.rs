@@ -1,6 +1,6 @@
 //! The stock device models. Each lives in its own file and exposes a
-//! `factory` for the registry; [`register_builtin`] lists them all, so adding
-//! a device is one new file plus one line here. Chip-independent: they only
+//! [`pcb::Kind`] (`KIND`) declaring its board-file keys; [`register_builtin`]
+//! lists them all, so adding a device is one new file plus one entry here. Chip-independent: they only
 //! use the [`pcb`] framework.
 //!
 //! | kind       | what                                                   |
@@ -38,15 +38,9 @@ pub mod hci;
 pub use led::is_lit;
 
 pub fn register_builtin(r: &mut Registry) {
-    r.register("led", led::factory);
-    r.register("button", button::factory);
-    r.register("mcp23008", mcp23008::factory);
-    r.register("st7789", st7789::factory);
-    r.register("ws2812", ws2812::factory);
-    r.register("dac8165", dac8165::factory);
-    r.register("encoder", encoder::factory);
-    r.register("sdcard", sdcard::factory);
-    r.register("cyw43439", cyw43439::factory);
+    for kind in [led::KIND, button::KIND, mcp23008::KIND, st7789::KIND, ws2812::KIND, dac8165::KIND, encoder::KIND, sdcard::KIND, cyw43439::KIND] {
+        r.register(kind);
+    }
 }
 
 /// A registry holding every stock device kind.
@@ -103,21 +97,34 @@ mod board_tests {
     use crate::testutil::FakePins;
     use crate::{is_lit, led::Led, registry};
     use alloc::{boxed::Box, string::String, vec::Vec};
-    use pcb::{Board, BusDecl, Device, I2cTarget, InputResult, Params, ParseError, Pins};
+    use pcb::{Board, Device, I2cTarget, InputResult, ParseError, Pins};
 
     fn parse(text: &str) -> Result<Board, ParseError> {
         Board::parse_with(text, &registry())
     }
 
-    const SAMPLE: &str = "\
+    const SAMPLE: &str = r#"
 # demo
-board my pcb
-led status gpio=25   # on-board
-led err gpio=16 active=low
+name = "my pcb"
 
-button user gpio=2
-button wake gpio=3 active=high
-";
+[parts.status]
+kind = "led"
+gpio = 25   # on-board
+
+[parts.err]
+kind = "led"
+gpio = 16
+active = "low"
+
+[parts.user]
+kind = "button"
+gpio = 2
+
+[parts.wake]
+kind = "button"
+gpio = 3
+active = "high"
+"#;
 
     #[test]
     fn parses_parts_and_defaults() {
@@ -129,54 +136,70 @@ button wake gpio=3 active=high
     }
 
     #[test]
-    fn reports_errors_with_line_numbers() {
+    fn reports_errors_with_their_place() {
         let e = |t: &str| parse(t).unwrap_err();
-        assert_eq!(e("led a gpio=1\nfoo b").line, 2);
-        assert_eq!(e("foo b").msg, "unknown device kind \"foo\"");
-        assert_eq!(e("led").msg, "missing part name");
-        assert_eq!(e("led a").msg, "missing gpio=N");
-        assert_eq!(e("led a gpio=x").msg, "gpio must be a number");
-        assert_eq!(e("led a gpio=30").msg, "gpio must be 0..29");
-        assert_eq!(e("led a gpio=1 active=up").msg, "active must be high or low");
-        assert_eq!(e("led a gpio=1 colour=red").msg, "unknown parameter colour");
-        assert_eq!(e("led a gpio=1\nbutton a gpio=2").msg, "duplicate part name");
+        let at = e("parts.a = { kind = \"led\", gpio = 1 }\nparts.b = { kind = \"lde\", gpio = 2 }");
+        assert_eq!((at.line, at.col, at.msg.as_str()), (2, 20, "unknown device kind \"lde\" (did you mean led?)"));
+        assert_eq!(e("parts.a = { kind = \"led\" }").msg, "missing gpio (the pin it hangs off)");
+        assert_eq!(e("parts.a = { kind = \"led\", gpio = 1, active = \"up\" }").msg, "active must be high or low");
+        assert_eq!(e("parts.a = { kind = \"led\", gpio = 1, colour = \"red\" }").msg, "unknown parameter colour (led takes gpio, active)");
+        assert_eq!(e("parts.a = { kind = \"button\", gpio = 1 }\nparts.b = { kind = \"button\", gpio = 1 }").msg, "GPIO 1 is already used by a.gpio");
+        assert_eq!(e("buses.i2c0 = { sda = 0, scl = 1 }\nparts.a = { kind = \"led\", gpio = 1, bus = \"i2c0\" }").msg, "led does not sit on a bus");
+        assert_eq!(e("parts.a = { kind = \"mcp23008\", bus = \"i2c0\" }").msg, "bus i2c0 is not declared: add it under [buses] with its pins");
+    }
+
+    /// Every declared key of every kind, with a value the kind accepts.
+    fn sample_table(params: &[pcb::Param], next_pin: &mut usize) -> String {
+        use pcb::{Need, Ty};
+        let fields: Vec<String> = params
+            .iter()
+            .map(|p| {
+                let v = match (p.ty, p.need) {
+                    (Ty::Pin | Ty::SharedPin, _) => {
+                        *next_pin += 1;
+                        alloc::format!("{next_pin}")
+                    }
+                    (Ty::Int { .. }, Need::DefaultInt(d)) => alloc::format!("{d}"),
+                    (Ty::Int { min, .. }, _) => alloc::format!("{min}"),
+                    (Ty::Choice(options), _) => alloc::format!("{:?}", options[options.len() - 1]),
+                    (Ty::Str, Need::DefaultStr(d)) => alloc::format!("{d:?}"),
+                    (Ty::Str, _) => "\"xxxxxxxx\"".into(),
+                    (Ty::Tables(inner), _) => alloc::format!("[{}]", sample_table(inner, next_pin)),
+                };
+                alloc::format!("{} = {v}", p.key)
+            })
+            .collect();
+        alloc::format!("{{ {} }}", fields.join(", "))
     }
 
     #[test]
-    fn bus_lines_and_bus_attachment() {
-        let b = parse("i2c1 sda=2 scl=3\nspi0 sck=18 mosi=19\nmcp23008 x bus=i2c1 addr=0x21").unwrap();
-        assert_eq!(b.buses[0], BusDecl { name: "i2c1".into(), pins: [("sda".into(), 2), ("scl".into(), 3)].into() });
-        assert_eq!(b.buses[1].pins.len(), 2);
-        let e = |t: &str| parse(t).unwrap_err().msg;
-        assert_eq!(e("i2c1 sda=2\ni2c1 sda=4"), "bus i2c1 declared twice");
-        assert_eq!(e("i2c1 sdx=2"), "unknown parameter sdx");
-        assert_eq!(e("led a gpio=1 bus=i2c0"), "this device is not an I2C device (bus=i2c0)");
-        assert_eq!(e("mcp23008 a bus=i2c9"), "unknown bus \"i2c9\" (expected i2c0, i2c1, spi0 or spi1)");
-        assert_eq!(
-            e("mcp23008 a bus=i2c0\nmcp23008 b bus=i2c0"),
-            "address 0x20 is already used on i2c0"
-        );
-        // Same address on different controllers is fine.
-        assert!(parse("mcp23008 a bus=i2c0\nmcp23008 b bus=i2c1").is_ok());
-    }
-
-    fn dummy(_: &mut Params) -> Result<Box<dyn Device>, String> {
-        struct Nop;
-        impl Device for Nop {}
-        Ok(Box::new(Nop))
+    fn every_kind_builds_with_every_key_it_declares() {
+        // The board checks (in debug builds) that a device reads every key it was given.
+        let r = registry();
+        let mut pin = 0;
+        let mut text = String::new();
+        for k in r.kinds() {
+            let t = sample_table(k.params, &mut pin);
+            text += &alloc::format!("parts.{} = {{ kind = {:?}, {}\n", k.name, k.name, &t[2..]);
+        }
+        let b = Board::parse_with(&text, &r).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        assert_eq!(b.parts.len(), r.kinds().count());
     }
 
     #[test]
     fn custom_kinds_can_be_registered_and_overridden() {
+        const WIDGET: pcb::Kind = pcb::Kind { name: "widget", summary: "does nothing", bus: None, params: &[], build: |_| Ok(Box::new(Nop)) };
+        struct Nop;
+        impl Device for Nop {}
         let mut r = registry();
-        assert!(Board::parse_with("widget w", &r).is_err());
-        r.register("widget", dummy);
-        let b = Board::parse_with("widget w", &r).unwrap();
+        assert!(Board::parse_with("parts.w = { kind = \"widget\" }", &r).is_err());
+        r.register(WIDGET);
+        let b = Board::parse_with("parts.w = { kind = \"widget\" }", &r).unwrap();
         assert_eq!(b.parts[0].kind, "widget");
         assert!(b.device::<Led>("w").is_none());
-        r.register("led", dummy); // override a built-in
-        assert!(Board::parse_with("led a", &r).is_ok());
-        assert!(r.kinds().any(|k| k == "widget"));
+        r.register(pcb::Kind { name: "led", ..WIDGET }); // override a built-in
+        assert!(Board::parse_with("parts.a = { kind = \"led\" }", &r).is_ok());
+        assert!(r.kinds().any(|k| k.name == "widget"));
     }
 
     fn drive_pin(g: &mut FakePins, pin: usize, high: bool) {
@@ -186,7 +209,7 @@ button wake gpio=3 active=high
     #[test]
     fn leds_follow_pins_and_queue_events() {
         let mut g = FakePins::default();
-        let mut b = parse("led a gpio=5\nled b gpio=6 active=low").unwrap();
+        let mut b = parse("parts.a = { kind = \"led\", gpio = 5 }\nparts.b = { kind = \"led\", gpio = 6, active = \"low\" }").unwrap();
         b.attach(&mut g);
         // Pins idle low through the default pull-down.
         assert_eq!((is_lit(&b, "a"), is_lit(&b, "b")), (Some(false), Some(true)));
@@ -210,7 +233,7 @@ button wake gpio=3 active=high
     #[test]
     fn buttons_drive_pins() {
         let mut g = FakePins::default();
-        let mut b = parse("button up gpio=2\nbutton hi gpio=3 active=high\nled l gpio=2").unwrap();
+        let mut b = parse("parts.up = { kind = \"button\", gpio = 2 }\nparts.hi = { kind = \"button\", gpio = 3, active = \"high\" }\nparts.l = { kind = \"led\", gpio = 2 }").unwrap();
         g.floating |= 1 << 2; // pull-up
         b.attach(&mut g);
         assert!(g.level(2));
@@ -231,7 +254,7 @@ button wake gpio=3 active=high
     #[test]
     fn i2c_transactions_span_bus_handles_and_route_by_controller() {
         let mut g = FakePins::default();
-        let mut b = parse("mcp23008 e bus=i2c0 addr=0x22").unwrap();
+        let mut b = parse("buses.i2c0 = { sda = 0, scl = 1 }\nparts.e = { kind = \"mcp23008\", bus = \"i2c0\", addr = 0x22 }").unwrap();
         b.attach(&mut g);
         // Each handle is short-lived (one per instruction); the transaction isn't.
         assert!(b.i2c_bus(0, &mut g, 0).start(0x22, false));
@@ -252,7 +275,7 @@ button wake gpio=3 active=high
     #[test]
     fn input_reports_why_it_failed() {
         let mut g = FakePins::default();
-        let mut b = parse("led l gpio=1\nbutton b gpio=2").unwrap();
+        let mut b = parse("parts.l = { kind = \"led\", gpio = 1 }\nparts.b = { kind = \"button\", gpio = 2 }").unwrap();
         assert_eq!(b.input(&mut g, "x", "press", 0, 0), InputResult::NoSuchPart);
         assert_eq!(b.input(&mut g, "l", "press", 0, 0), InputResult::Unsupported);
         assert_eq!(b.input(&mut g, "b", "wiggle", 0, 0), InputResult::Unsupported);

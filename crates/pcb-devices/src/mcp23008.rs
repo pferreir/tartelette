@@ -1,5 +1,4 @@
-//! `mcp23008 <name> bus=i2cN [addr=0x20..0x27] [int=N]`: Microchip MCP23008
-//! 8-bit I2C port expander.
+//! Microchip MCP23008 8-bit I2C port expander.
 //!
 //! Modelled: all eleven registers, the address pointer (with byte mode via
 //! `IOCON.SEQOP` and wrap-around), input polarity, pull-ups, interrupt-on-
@@ -10,8 +9,8 @@
 //! Host actions: `gp0`..`gp7` with value 1 / 0 drive the pin high / low from
 //! outside (a switch, a sensor), -1 releases it. A `pins` event (value = the
 //! eight pin voltages) is emitted whenever any pin voltage changes.
-use pcb::{Device, I2cDevice, Io, Params};
-use alloc::{boxed::Box, string::String};
+use pcb::{BusType, Device, I2cDevice, Io, Kind, Param};
+use alloc::boxed::Box;
 
 const IODIR: u8 = 0x00;
 const IPOL: u8 = 0x01;
@@ -56,32 +55,41 @@ pub struct Mcp23008 {
     expect_ptr: bool,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let addr = p.opt_int("addr", 0x20, 0x27)?.unwrap_or(0x20) as u8;
-    let int_pin = p.opt_pin("int")?;
-    Ok(Box::new(Mcp23008 {
-        addr,
-        int_pin,
-        iodir: 0xFF,
-        ipol: 0,
-        gpinten: 0,
-        defval: 0,
-        intcon: 0,
-        iocon: 0,
-        gppu: 0,
-        intf: 0,
-        intcap: 0,
-        olat: 0,
-        ext_drive: 0,
-        ext_level: 0,
-        prev: 0,
-        reported: 0,
-        ptr: 0,
-        expect_ptr: false,
-    }))
-}
+pub const KIND: Kind = Kind {
+    name: "mcp23008",
+    summary: "8-bit I2C port expander with interrupt output",
+    bus: Some(BusType::I2c),
+    params: &[
+        Param::hex("addr", 0x20, 0x27, "I2C address (A2..A0 pins)").default_int(0x20),
+        Param::shared_pin("int", "the GPIO its INT output drives (open drain can be shared)").optional(),
+    ],
+    build: |p| Ok(Box::new(Mcp23008::new(p.int("addr") as u8, p.opt_pin("int")))),
+};
 
 impl Mcp23008 {
+    fn new(addr: u8, int_pin: Option<usize>) -> Self {
+        Mcp23008 {
+            addr,
+            int_pin,
+            iodir: 0xFF,
+            ipol: 0,
+            gpinten: 0,
+            defval: 0,
+            intcon: 0,
+            iocon: 0,
+            gppu: 0,
+            intf: 0,
+            intcap: 0,
+            olat: 0,
+            ext_drive: 0,
+            ext_level: 0,
+            prev: 0,
+            reported: 0,
+            ptr: 0,
+            expect_ptr: false,
+        }
+    }
+
     /// Voltage on each pin: outputs show OLAT, inputs whatever drives them,
     /// else the pull-up (or nothing: low).
     pub fn pin_levels(&self) -> u8 {
@@ -261,11 +269,10 @@ mod tests {
 
     impl Rig {
         fn new(extra: &str) -> Self {
-            let mut p = Params::new("mcp23008", "x").with_words(extra.split_whitespace()).unwrap();
-            let boxed = factory(&mut p).unwrap();
-            p.finish().unwrap();
-            // The factory returns a trait object; rebuild a concrete one for direct access.
-            let any: Box<dyn core::any::Any> = boxed;
+            let sep = if extra.is_empty() { "" } else { ", " };
+            let text = alloc::format!("parts.x = {{ kind = \"mcp23008\"{sep}{extra} }}");
+            // Take the device off the board, as a concrete one for direct access.
+            let any: Box<dyn core::any::Any> = pcb::Board::parse_with(&text, &crate::registry()).unwrap().parts.remove(0).device;
             let dev = *any.downcast::<Mcp23008>().unwrap();
             let mut r = Rig { gpio: FakePins::default(), events: Vec::new(), dev };
             let mut io = Io::new(&mut r.gpio, 0, &mut r.events, 0, true);
@@ -316,7 +323,7 @@ mod tests {
 
     #[test]
     fn pointer_auto_increments_wraps_and_byte_mode_holds() {
-        let mut r = Rig::new("addr=0x25");
+        let mut r = Rig::new("addr = 0x25");
         assert_eq!(r.dev.address(), 0x25);
         let (d, mut io) = r.io();
         d.start(&mut io, false);
@@ -365,7 +372,7 @@ mod tests {
 
     #[test]
     fn interrupt_on_change_captures_and_clears_on_read() {
-        let mut r = Rig::new("int=16");
+        let mut r = Rig::new("int = 16");
         // Idle: active-low push-pull driver, INT high.
         assert!(r.gpio.level(16));
         r.write(GPPU, 0xFF);
@@ -391,7 +398,7 @@ mod tests {
 
     #[test]
     fn interrupt_against_defval_and_int_output_modes() {
-        let mut r = Rig::new("int=5");
+        let mut r = Rig::new("int = 5");
         r.write(GPPU, 0xFF);
         r.write(DEFVAL, 0xFF);
         r.write(INTCON, 0xFF);
@@ -429,9 +436,8 @@ mod tests {
 
     #[test]
     fn factory_rejects_bad_parameters() {
-        let mut p = Params::new("mcp23008", "x").with_words(["addr=0x28"].into_iter()).unwrap();
-        assert!(factory(&mut p).is_err());
-        let mut p = Params::new("mcp23008", "x").with_words(["int=40"].into_iter()).unwrap();
-        assert!(factory(&mut p).is_err());
+        let e = |t: &str| pcb::Board::parse_with(t, &crate::registry()).unwrap_err().msg;
+        assert_eq!(e("parts.x = { kind = \"mcp23008\", addr = 0x28 }"), "addr must be 0x20..0x27");
+        assert_eq!(e("parts.x = { kind = \"mcp23008\", int = 40 }"), "int must be a GPIO, 0..29");
     }
 }

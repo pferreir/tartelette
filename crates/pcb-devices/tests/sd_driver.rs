@@ -115,7 +115,7 @@ impl TimeSource for FixedTime {
 }
 
 fn bench_with_image(image: Vec<u8>) -> Rc<RefCell<Bench>> {
-    let text = format!("sdcard sd bus=spi1 cs={CS} size_mb={IMAGE_MB}");
+    let text = format!("buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = {IMAGE_MB} }}");
     let mut board = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
     let mut pins = TestPins::default();
     pins.chip[CS] = true;

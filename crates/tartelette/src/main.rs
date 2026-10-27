@@ -26,6 +26,11 @@ fn main() -> std::process::ExitCode {
     let cli = cli::Cli::parse();
     let result = match &cli.command {
         Some(cli::Command::Mkdisk(args)) => mkdisk::run(args),
+        Some(cli::Command::Parts(args)) => cli::parts(args),
+        Some(cli::Command::Schema) => {
+            print!("{}", cli::schema());
+            Ok(())
+        }
         None if cli.run.headless => headless::run(&cli.run),
         None => window(&cli.run),
     };
@@ -42,8 +47,8 @@ fn main() -> std::process::ExitCode {
 fn window(args: &cli::RunArgs) -> Result<(), String> {
     use session::Source;
     let firmware = args.firmware.as_deref().map(Source::from_file).transpose()?;
-    let board = args.board.as_deref().map(Source::from_file).transpose()?;
-    let mut app = app::App::new(firmware, board, args.network());
+    let board = args.board()?;
+    let mut app = app::App::new(firmware, board, args.shields()?, args.network());
     for (name, file) in &args.sd {
         if !app.load_sd_card(name, Source::from_file(file)?.bytes) {
             return Err(format!("--sd: no SD card named {name:?} on the board"));
@@ -66,7 +71,7 @@ fn main() {
             .and_then(|e| e.dyn_into::<eframe::web_sys::HtmlCanvasElement>().ok())
             .expect("no <canvas id=\"app\"> on the page");
         let start = eframe::WebRunner::new()
-            .start(canvas, eframe::WebOptions::default(), Box::new(|_| Ok(Box::new(app::App::new(None, None, Default::default())))))
+            .start(canvas, eframe::WebOptions::default(), Box::new(|_| Ok(Box::new(app::App::new(None, None, Vec::new(), Default::default())))))
             .await;
         if let Err(e) = start {
             files::log(&format!("failed to start: {e:?}"));

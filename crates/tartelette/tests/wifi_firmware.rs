@@ -1,4 +1,4 @@
-//! Real Pico W firmware (Embassy `cyw43` + `cyw43-pio`, `firmware/wifi-test`)
+//! Real Pico W firmware (Embassy `cyw43` + `cyw43-pio`, `firmware/examples/pico-w-wifi`)
 //! against the emulated CYW43439. Opt-in: the radio firmware blobs are not in
 //! this repository, so set `CYW43_FIRMWARE_DIR` to a directory holding
 //! `43439A0.bin` and `43439A0_clm.bin` (Embassy's `cyw43-firmware/`). The first
@@ -20,10 +20,10 @@ fn build(bin: &str) -> Option<Vec<u8>> {
                 return None;
             };
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let target_dir = root.join("target/firmware/wifi-test");
+            let target_dir = root.join("target/firmware/pico-w-wifi");
             let status = Command::new(env!("CARGO"))
                 .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
-                .arg(root.join("firmware/wifi-test/Cargo.toml"))
+                .arg(root.join("firmware/examples/pico-w-wifi/Cargo.toml"))
                 .arg("--target-dir")
                 .arg(&target_dir)
                 .env("CYW43_FIRMWARE_DIR", fw_dir)
@@ -53,7 +53,7 @@ fn run_with(elf: &[u8], network: bool, ms: u64, batching: bool) -> Run {
     let mut sys = System::new();
     sys.batching = batching;
     sys.load_elf(elf).unwrap();
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.board")).unwrap();
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.toml")).unwrap();
     let mut board = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
     if network {
         board.device_mut::<Cyw43439>("wifi").unwrap().set_backend(LoopbackBackend::boxed());

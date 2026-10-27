@@ -68,8 +68,8 @@ pub enum Request {
 }
 
 impl Layout {
-    /// The board's panel layout, or an automatic one if it has no `panel`
-    /// lines. Returns messages for widget options that were ignored.
+    /// The board's panel layout, or an automatic one if it has no `[panel]`
+    /// section. Returns messages for widget options that were ignored.
     pub fn new(board: &Board) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
         let mut items = Vec::new();
@@ -89,7 +89,7 @@ impl Layout {
                 let p = &board.parts[it.part];
                 let mut opts = it.options.iter().map(|(k, v)| (k.as_str(), v.as_str()));
                 let widget = widget_for(&p.kind, &mut opts).unwrap_or_else(|e| {
-                    warnings.push(format!("line {}: {e} (ignored)", it.line));
+                    warnings.push(format!("panel.{}: {e} (ignored)", p.name));
                     widget_for(&p.kind, &mut std::iter::empty()).unwrap_or(Widget::Other)
                 });
                 let label = it.label.clone().unwrap_or_else(|| p.name.clone());
@@ -642,19 +642,19 @@ mod tests {
 
     #[test]
     fn explicit_layout_uses_panel_lines_and_reports_bad_options() {
-        let b = board("led a gpio=1\nbutton b gpio=2\nst7789 s bus=spi0 cs=9 dc=13\npanel s at=0,0 span=3,4 rotate=90\npanel a at=3,0 color=00ff00\npanel b at=3,1 key=Nope\n");
+        let b = board("buses.spi0 = { sck = 18, mosi = 19 }\nparts.a = { kind = \"led\", gpio = 1 }\nparts.b = { kind = \"button\", gpio = 2 }\nparts.s = { kind = \"st7789\", bus = \"spi0\", cs = 9, dc = 13 }\npanel.s = { at = [0, 0], span = [3, 4], rotate = 90 }\npanel.a = { at = [3, 0], color = \"00ff00\" }\npanel.b = { at = [3, 1], key = \"Nope\" }");
         let (l, warnings) = Layout::new(&b);
         assert_eq!((l.cols, l.rows), (4, 4));
         assert_eq!(l.items.len(), 3);
         assert!(matches!(l.items[0].widget, Widget::Screen { rotate: 90 }));
         assert!(matches!(l.items[1].widget, Widget::Led { color } if color == Color32::from_rgb(0, 255, 0)));
         assert!(matches!(l.items[2].widget, Widget::Button { key: None }));
-        assert_eq!(warnings, ["line 6: unknown key \"Nope\" (ignored)"]);
+        assert_eq!(warnings, ["panel.b: unknown key \"Nope\" (ignored)"]);
     }
 
     #[test]
     fn automatic_layout_packs_every_part_without_overlap() {
-        let b = board(include_str!("../../../boards/btl-01.board"));
+        let b = board(include_str!("../../../boards/btl-01.toml"));
         let (l, warnings) = Layout::new(&b);
         assert!(warnings.is_empty());
         assert_eq!(l.items.len(), b.parts.len());
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn the_pico_w_board_lays_out_and_its_wifi_widget_reports_state() {
-        let b = board(include_str!("../../../boards/pico-w.board"));
+        let b = board(include_str!("../../../boards/pico-w.toml"));
         let (l, warnings) = Layout::new(&b);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(matches!(l.items[0].widget, Widget::Wifi));

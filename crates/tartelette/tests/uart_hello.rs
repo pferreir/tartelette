@@ -14,7 +14,7 @@ fn build_named(name: &str) -> PathBuf {
     let target_dir = root.join("target/firmware");
     let status = Command::new(env!("CARGO"))
         .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
-        .arg(root.join(format!("firmware/{name}/Cargo.toml")))
+        .arg(root.join(format!("firmware/tests/{name}/Cargo.toml")))
         .arg("--target-dir")
         .arg(target_dir.join(name))
         .status()
@@ -73,7 +73,7 @@ fn board(text: &str) -> pcb::Board {
     pcb::Board::parse_with(text, &pcb_devices::registry()).unwrap()
 }
 
-const BOARD: &str = "board test\nled status gpio=25\nbutton user gpio=2\n";
+const BOARD: &str = "name = \"test\"\nparts.status = { kind = \"led\", gpio = 25 }\nparts.user = { kind = \"button\", gpio = 2 }";
 
 #[test]
 fn button_drives_led_through_the_board() {
@@ -105,7 +105,7 @@ fn cli_logs_board_events_and_honours_press_schedule() {
     let elf = build_named("button-led");
     let dir = std::env::temp_dir().join(format!("rp2040-headless-board-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let board = dir.join("test.board");
+    let board = dir.join("test.toml");
     std::fs::write(&board, BOARD).unwrap();
 
     let run = |extra: &[&str]| {
@@ -136,10 +136,10 @@ fn cli_logs_board_events_and_honours_press_schedule() {
 
     // Unknown buttons and bad board files are rejected up front.
     assert!(!run(&["--press", "nope@1"]).status.success());
-    std::fs::write(&board, "led x gpio=99").unwrap();
+    std::fs::write(&board, "parts.x = { kind = \"led\", gpio = 99 }").unwrap();
     let bad = run(&[]);
     assert!(!bad.status.success());
-    assert!(String::from_utf8_lossy(&bad.stderr).contains("test.board:1: gpio must be 0..29"));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("test.toml:1:34: gpio must be a GPIO, 0..29"));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -148,7 +148,7 @@ fn i2c_controller_talks_to_expander_and_its_interrupt_reaches_the_firmware() {
     let elf = std::fs::read(build_named("i2c-test")).unwrap();
     let mut sys = System::new();
     sys.load_elf(&elf).unwrap();
-    sys.set_board(board("i2c1 sda=2 scl=3\nmcp23008 expander bus=i2c1 addr=0x20 int=16\n"));
+    sys.set_board(board("buses.i2c1 = { sda = 2, scl = 3 }\nparts.expander = { kind = \"mcp23008\", bus = \"i2c1\", addr = 0x20, int = 16 }"));
 
     // Runs until the firmware sleeps waiting for the expander's interrupt.
     assert_eq!(sys.run(10_000_000), StopReason::Sleeping);
@@ -164,13 +164,13 @@ fn i2c_controller_talks_to_expander_and_its_interrupt_reaches_the_firmware() {
 
 #[test]
 fn btl01_board_file_parses() {
-    let text = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/btl-01.board")).unwrap();
+    let text = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../boards/btl-01.toml")).unwrap();
     let b = board(&text);
     assert_eq!(b.name, "BTL-01");
     assert_eq!(b.parts.len(), 8);
 }
 
-const SCREEN_BOARD: &str = "board test\nspi0 sck=18 mosi=19 miso=16\nst7789 screen bus=spi0 cs=9 dc=13 rst=17\n";
+const SCREEN_BOARD: &str = "name = \"test\"\nbuses.spi0 = { sck = 18, mosi = 19, miso = 16 }\nparts.screen = { kind = \"st7789\", bus = \"spi0\", cs = 9, dc = 13, rst = 17 }";
 
 #[test]
 fn spi_and_dma_draw_on_the_display() {
@@ -257,12 +257,12 @@ fn second_core_launches_and_both_cores_run_together() {
     assert!(sys.cores[1].sleeping && sys.cores[1].wfe);
 }
 
-const PIO_BOARD: &str = "\
-board test
-dac8165 dac sdi=4 cs=5 clk=6 rst=7 vref_mv=1250
-ws2812 leds gpio=14 count=8
-encoder knob clk=22 dt=21
-";
+const PIO_BOARD: &str = r#"
+name = "test"
+parts.dac = { kind = "dac8165", sdi = 4, cs = 5, clk = 6, rst = 7, vref_mv = 1250 }
+parts.leds = { kind = "ws2812", gpio = 14, count = 8 }
+parts.knob = { kind = "encoder", clk = 22, dt = 21 }
+"#;
 
 #[test]
 fn pio_drives_the_dac_and_led_chain_and_reads_the_encoder() {
@@ -321,7 +321,8 @@ fn spi_and_dma_talk_to_an_sd_card() {
     let elf = std::fs::read(build_named("sd-test")).unwrap();
     let mut sys = System::new();
     sys.load_elf(&elf).unwrap();
-    sys.set_board(Board::parse_with("sdcard sd bus=spi1 cs=8 size_mb=1", &pcb_devices::registry()).unwrap());
+    let board = "buses.spi1 = { sck = 10, mosi = 11, miso = 12 }\nparts.sd = { kind = \"sdcard\", bus = \"spi1\", cs = 8, size_mb = 1 }";
+    sys.set_board(Board::parse_with(board, &pcb_devices::registry()).unwrap());
     // Block 0 holds the pattern the firmware expects.
     let mut image = vec![0u8; 2048 * BLOCK];
     for (i, b) in image[..BLOCK].iter_mut().enumerate() {
@@ -350,8 +351,8 @@ fn cli_loads_an_sd_image_and_saves_what_the_firmware_wrote() {
     let elf = build_named("sd-test");
     let dir = std::env::temp_dir().join(format!("rp2040-headless-sd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let (board, img) = (dir.join("sd.board"), dir.join("card.img"));
-    std::fs::write(&board, "spi1 sck=10 mosi=11 miso=12\nsdcard sd bus=spi1 cs=8 size_mb=1\n").unwrap();
+    let (board, img) = (dir.join("sd.toml"), dir.join("card.img"));
+    std::fs::write(&board, "buses.spi1 = { sck = 10, mosi = 11, miso = 12 }\nparts.sd = { kind = \"sdcard\", bus = \"spi1\", cs = 8, size_mb = 1 }\n").unwrap();
     let mut image = vec![0u8; 1024 * BLOCK];
     for (i, b) in image[..BLOCK].iter_mut().enumerate() {
         *b = (i as u8).wrapping_mul(3);
@@ -369,6 +370,7 @@ fn cli_loads_an_sd_image_and_saves_what_the_firmware_wrote() {
     };
     let out = run(&format!("sd={}", img.display()));
     assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("warning"), "the board's SPI1 wiring is what the firmware uses");
     assert!(String::from_utf8_lossy(&out.stdout).ends_with("verify ok\nsd done\n"), "{}", String::from_utf8_lossy(&out.stdout));
     let saved = std::fs::read(&img).unwrap();
     assert_eq!(saved.len(), image.len());

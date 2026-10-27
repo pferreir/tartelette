@@ -1,5 +1,5 @@
 //! Real Pico W Bluetooth firmware (trouble's example apps over Embassy
-//! `cyw43`, `firmware/ble-test`) against the emulated CYW43439 and the
+//! `cyw43`, `firmware/examples/pico-w-ble`) against the emulated CYW43439 and the
 //! virtual controller's mock devices. Opt-in like the Wi-Fi tests:
 //! `CYW43_FIRMWARE_DIR` must hold `43439A0.bin`, `43439A0_clm.bin`,
 //! `43439A0_btfw.bin` and `nvram_rp2040.bin` (Embassy's `cyw43-firmware/`).
@@ -25,10 +25,10 @@ fn build(bin: &str) -> Option<Vec<u8>> {
                 return None;
             }
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-            let target_dir = root.join("target/firmware/ble-test");
+            let target_dir = root.join("target/firmware/pico-w-ble");
             let status = Command::new(env!("CARGO"))
                 .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
-                .arg(root.join("firmware/ble-test/Cargo.toml"))
+                .arg(root.join("firmware/examples/pico-w-ble/Cargo.toml"))
                 .arg("--target-dir")
                 .arg(&target_dir)
                 .env("CYW43_FIRMWARE_DIR", fw_dir)
@@ -59,7 +59,7 @@ fn run_with(elf: &[u8], mock: bool, ms: u64, batching: bool) -> Run {
     let mut sys = System::new();
     sys.batching = batching;
     sys.load_elf(elf).unwrap();
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.board")).unwrap();
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.toml")).unwrap();
     let mut board = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
     if mock {
         let chip = board.device_mut::<Cyw43439>("wifi").unwrap();

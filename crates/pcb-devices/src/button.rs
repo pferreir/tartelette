@@ -1,8 +1,7 @@
-//! `button <name> gpio=N [active=high|low]`: momentary switch between the pin
-//! and GND (`active=low`, the default) or 3V3. Host actions: `press`,
-//! `release`.
-use pcb::{Device, Io, Params};
-use alloc::{boxed::Box, string::String};
+//! A momentary switch between the pin and GND (`active = "low"`, the
+//! default) or 3V3. Host actions: `press`, `release`.
+use pcb::{Device, Io, Kind, Param};
+use alloc::boxed::Box;
 
 pub struct Button {
     pub pin: usize,
@@ -10,11 +9,16 @@ pub struct Button {
     pub pressed: bool,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
-    let pin = p.pin("gpio")?;
-    let active_high = p.opt_level("active")?.unwrap_or(false);
-    Ok(Box::new(Button { pin, active_high, pressed: false }))
-}
+pub const KIND: Kind = Kind {
+    name: "button",
+    summary: "momentary switch to GND or 3V3",
+    bus: None,
+    params: &[
+        Param::pin("gpio", "the pin the switch pulls"),
+        Param::choice("active", &["high", "low"], "the level it pulls the pin to when pressed").default_str("low"),
+    ],
+    build: |p| Ok(Box::new(Button { pin: p.pin("gpio"), active_high: p.str("active") == "high", pressed: false })),
+};
 
 impl Device for Button {
     fn attach(&mut self, io: &mut Io) {

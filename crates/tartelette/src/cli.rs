@@ -1,6 +1,6 @@
 //! Command line (native only): one set of options for the front panel and for
 //! headless runs, plus the `mkdisk` tool.
-use crate::session::{BtMode, NetMode, Network};
+use crate::session::{BtMode, NetMode, Network, Source};
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 /// microseconds. With a window, the firmware and board reload when their
 /// files change.
 #[derive(Parser, Debug)]
-#[command(version, args_conflicts_with_subcommands = true)]
+#[command(version, args_conflicts_with_subcommands = true, args_override_self = true)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -24,6 +24,19 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     Mkdisk(MkdiskArgs),
+    Parts(PartsArgs),
+    /// Print a JSON Schema for board files, for editors (the repository keeps
+    /// it as `boards/board.schema.json`; board files point at it with a
+    /// `#:schema` comment, which VS Code's Even Better TOML and taplo follow)
+    Schema,
+}
+
+/// List the device kinds a board file can use, or describe one: its keys,
+/// their types and defaults
+#[derive(Args, Debug)]
+pub struct PartsArgs {
+    /// The kind to describe (all of them if left out)
+    pub kind: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -31,9 +44,16 @@ pub struct RunArgs {
     /// Firmware ELF to run (with a window, it can also be opened later)
     #[arg(required_if_eq("headless", "true"))]
     pub firmware: Option<PathBuf>,
-    /// Board description file
-    #[arg(long, value_name = "FILE")]
+    /// Board description file (TOML), or the name of a built-in board: btl-01
+    /// or pico-w (as in the repository's `boards/`); `tartelette parts` lists
+    /// what a board can have on it
+    #[arg(long, value_name = "FILE|NAME")]
     pub board: Option<PathBuf>,
+    /// Put a shield (an add-on board) on the board: a file in the board format,
+    /// or a built-in one: pico-display-2 (as in `boards/shields/`). May be
+    /// given several times, stacking in order
+    #[arg(long, value_name = "FILE|NAME")]
+    pub shield: Vec<PathBuf>,
     /// Load a disk image into the SD card part NAME; headless, it is saved
     /// back at the end if the firmware wrote to it (the card needs at least
     /// 512 KiB, so a smaller image file grows)
@@ -58,7 +78,39 @@ pub struct RunArgs {
     pub headless_opts: Headless,
 }
 
+/// The boards in the repository's `boards/`, built in so that an installed
+/// `tartelette` has them too.
+const BOARDS: &[(&str, &str)] = &[("btl-01", include_str!("../../../boards/btl-01.toml")), ("pico-w", include_str!("../../../boards/pico-w.toml"))];
+
+/// The shields in `boards/shields/`.
+const SHIELDS: &[(&str, &str)] = &[("pico-display-2", include_str!("../../../boards/shields/pico-display-2.toml"))];
+
+/// A file, or else the built-in one of that name.
+fn file_or_builtin(path: &std::path::Path, builtin: &[(&str, &str)], option: &str) -> Result<Source, String> {
+    if path.exists() {
+        return Source::from_file(path);
+    }
+    let name = path.to_string_lossy();
+    match builtin.iter().find(|(n, _)| *n == name) {
+        Some((n, text)) => Ok(Source::new(format!("{n}.toml"), text.as_bytes().to_vec())),
+        None => {
+            let names: Vec<_> = builtin.iter().map(|(n, _)| *n).collect();
+            Err(format!("{option} {name}: no such file, nor a built-in one ({})", names.join(", ")))
+        }
+    }
+}
+
 impl RunArgs {
+    /// The `--board` file, or else the built-in board of that name.
+    pub fn board(&self) -> Result<Option<Source>, String> {
+        self.board.as_deref().map(|p| file_or_builtin(p, BOARDS, "--board")).transpose()
+    }
+
+    /// The `--shield` files, or built-in shields, in order.
+    pub fn shields(&self) -> Result<Vec<Source>, String> {
+        self.shield.iter().map(|p| file_or_builtin(p, SHIELDS, "--shield")).collect()
+    }
+
     pub fn network(&self) -> Network {
         Network { mode: self.net, bt: self.bt, forwards: self.forward.clone() }
     }
@@ -113,6 +165,33 @@ impl Headless {
         v.sort_by_key(|i| i.cycle);
         v
     }
+}
+
+/// `tartelette parts [KIND]`.
+pub fn parts(args: &PartsArgs) -> Result<(), String> {
+    let registry = pcb_devices::registry();
+    match &args.kind {
+        Some(name) => {
+            let kind = registry.get(name).ok_or_else(|| {
+                let names: Vec<_> = registry.kinds().map(|k| k.name).collect();
+                format!("no device kind {name:?} (there are {})", names.join(", "))
+            })?;
+            print!("{}", pcb::board::spec::describe(kind));
+        }
+        None => {
+            let width = registry.kinds().map(|k| k.name.len()).max().unwrap_or(0);
+            for k in registry.kinds() {
+                println!("{:width$}  {}", k.name, k.summary);
+            }
+            println!("\n`tartelette parts KIND` describes one; a part is `[parts.NAME]` with `kind = \"KIND\"` and its keys.");
+        }
+    }
+    Ok(())
+}
+
+/// `tartelette schema`.
+pub fn schema() -> String {
+    pcb::board::spec::json_schema(&pcb_devices::registry())
 }
 
 /// Make a blank SD card image: an MBR with one empty FAT16 partition, as the
@@ -232,5 +311,39 @@ mod tests {
         assert!(bt("hcix").is_err() && bt("usb").is_err());
         assert_eq!(input("wifi:midi=0x903C64@5").unwrap().value, 0x903C64);
         assert!(matches!(Cli::try_parse_from(["x", "mkdisk", "a.img", "--dir", "data"]).unwrap().command, Some(Command::Mkdisk(_))));
+        // A later option wins, so `cargo run -- ...` can override an example's runner options.
+        assert_eq!(Cli::try_parse_from(["x", "fw", "--bt", "mock", "--bt", "hci0"]).unwrap().run.bt, BtMode::Adapter(0));
+    }
+
+    #[test]
+    fn boards_and_shields_are_files_or_built_in() {
+        let board = |b: &str| Cli::try_parse_from(["x", "fw", "--board", b]).unwrap().run.board();
+        for (name, _) in BOARDS {
+            let b = board(name).unwrap().unwrap();
+            crate::session::parse_board(Some(&b), &[]).unwrap();
+            assert!(b.path.is_none());
+        }
+        let file = board(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.toml")).unwrap().unwrap();
+        assert!(file.path.is_some());
+        assert!(board("pico").err().unwrap().contains("btl-01, pico-w"));
+        assert!(Cli::try_parse_from(["x", "fw"]).unwrap().run.board().unwrap().is_none());
+
+        // Every shield fits on every board, and on none.
+        let run = Cli::try_parse_from(["x", "fw", "--shield", "pico-display-2"]).unwrap().run;
+        let shields = run.shields().unwrap();
+        assert_eq!(shields[0].name, "pico-display-2.toml");
+        for (name, _) in BOARDS.iter().filter(|(n, _)| *n != "btl-01") {
+            let b = crate::session::parse_board(Some(&board(name).unwrap().unwrap()), &shields).unwrap().unwrap();
+            assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
+        }
+        assert!(crate::session::parse_board(None, &shields).unwrap().is_some());
+        assert!(Cli::try_parse_from(["x", "fw", "--shield", "hat"]).unwrap().run.shields().err().unwrap().contains("pico-display-2"));
+    }
+
+    #[test]
+    fn the_committed_schema_is_up_to_date() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/board.schema.json");
+        let committed = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(committed == schema(), "boards/board.schema.json is stale: run `cargo run -p tartelette -- schema > boards/board.schema.json`");
     }
 }

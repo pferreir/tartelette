@@ -105,16 +105,19 @@ pub struct Session {
     /// none when the firmware has no log or it cannot be decoded.
     pub log: VecDeque<LogEntry>,
     pub log_note: Option<String>,
+    /// Wiring problems the emulator spotted, since the UI last took them.
+    pub warnings: Vec<String>,
     rtt: Option<rtt::Rtt>,
 }
 
 impl Session {
-    /// Build a run from a firmware ELF and an optional board file.
-    pub fn new(firmware: &Source, board: Option<&Source>, net: &Network) -> Result<Self, String> {
+    /// Build a run from a firmware ELF, an optional board file and the
+    /// shields on top of it.
+    pub fn new(firmware: &Source, board: Option<&Source>, shields: &[Source], net: &Network) -> Result<Self, String> {
         let mut sys = System::new();
         sys.load_elf(&firmware.bytes).map_err(|e| format!("{}: cannot load ELF: {e:?}", firmware.name))?;
-        if let Some(b) = board {
-            sys.set_board(parse_board(b)?);
+        if let Some(b) = parse_board(board, shields)? {
+            sys.set_board(b);
         }
         connect_network(&mut sys.board, net)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
@@ -122,7 +125,7 @@ impl Session {
             Ok(None) => (None, Some("this firmware has no defmt-over-RTT log".to_string())),
             Err(e) => (None, Some(e)),
         };
-        Ok(Self { sys, halted: None, uart: Default::default(), rx: Default::default(), events: Vec::new(), log: VecDeque::new(), log_note, rtt })
+        Ok(Self { sys, halted: None, uart: Default::default(), rx: Default::default(), events: Vec::new(), log: VecDeque::new(), log_note, warnings: Vec::new(), rtt })
     }
 
     /// Emulated seconds since power-up.
@@ -187,6 +190,7 @@ impl Session {
             }
         }
         self.events.append(&mut self.sys.board.events);
+        self.warnings.append(&mut self.sys.warnings);
         let lines = self.poll_log();
         let at = self.seconds();
         self.log.extend(lines.into_iter().map(|line| LogEntry { at, line }));
@@ -274,9 +278,23 @@ fn connect_bluetooth(board: &mut Board, bt: BtMode) -> Result<(), String> {
 }
 
 
-pub fn parse_board(b: &Source) -> Result<Board, String> {
-    let text = std::str::from_utf8(&b.bytes).map_err(|_| format!("{}: not a text file", b.name))?;
-    Board::parse_with(text, &pcb_devices::registry()).map_err(|e| format!("{}:{}: {}", b.name, e.line, e.msg))
+/// Build the board from its file and the shields on top, with the RP2040's
+/// pin rules for buses. None if there is neither.
+pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Option<Board>, String> {
+    if board.is_none() && shields.is_empty() {
+        return Ok(None);
+    }
+    let mut registry = pcb_devices::registry();
+    registry.set_pin_check(rp2040_core::pinmux::check_bus_pin);
+    let text = |s: &Source| std::str::from_utf8(&s.bytes).map(str::to_owned).map_err(|_| format!("{}: not a text file", s.name));
+    let mut b = match board {
+        Some(s) => Board::parse_with(&text(s)?, &registry).map_err(|e| format!("{}:{e}", s.name))?,
+        None => Board::new(),
+    };
+    for s in shields {
+        b.add_shield(&text(s)?, &registry).map_err(|e| format!("{}:{e}", s.name))?;
+    }
+    Ok(Some(b))
 }
 
 /// Paces a run against the wall clock.
@@ -419,13 +437,13 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    /// Build one of the test firmwares in `firmware/` (as the CLI tests do).
+    /// Build one of the test firmwares in `firmware/tests/` (as the CLI tests do).
     fn firmware(name: &str) -> Source {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let target_dir = root.join("target/firmware").join(name);
         let status = Command::new(env!("CARGO"))
             .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
-            .arg(root.join(format!("firmware/{name}/Cargo.toml")))
+            .arg(root.join(format!("firmware/tests/{name}/Cargo.toml")))
             .arg("--target-dir")
             .arg(&target_dir)
             .status()
@@ -441,8 +459,8 @@ mod tests {
 
     #[test]
     fn steps_inputs_and_halts_like_the_cli() {
-        let board = Source::new("t.board", b"led status gpio=25\nbutton user gpio=2\npanel user at=0,0\n".to_vec());
-        let mut s = Session::new(&firmware("button-led"), Some(&board), &Network::default()).unwrap();
+        let board = Source::new("t.toml", b"parts.status = { kind = \"led\", gpio = 25 }\nparts.user = { kind = \"button\", gpio = 2 }\npanel.user = { at = [0, 0] }".to_vec());
+        let mut s = Session::new(&firmware("button-led"), Some(&board), &[], &Network::default()).unwrap();
         assert_eq!(s.step(125 * 100, far()), 125 * 100);
         assert_eq!(is_lit(&s.sys.board, "status"), Some(false));
 
@@ -466,8 +484,8 @@ mod tests {
     #[test]
     fn sleeping_firmware_still_lets_time_pass() {
         // Waits (asleep) for a button that never comes.
-        let board = Source::new("t.board", b"led status gpio=25\nbutton user gpio=2\n".to_vec());
-        let mut s = Session::new(&firmware("button-led"), Some(&board), &Network::default()).unwrap();
+        let board = Source::new("t.toml", b"parts.status = { kind = \"led\", gpio = 25 }\nparts.user = { kind = \"button\", gpio = 2 }".to_vec());
+        let mut s = Session::new(&firmware("button-led"), Some(&board), &[], &Network::default()).unwrap();
         assert_eq!(s.step(CYCLES_PER_SEC as u64, far()), CYCLES_PER_SEC as u64);
         assert!((s.seconds() - 1.0).abs() < 1e-9);
         assert!(s.halted.is_none());
@@ -475,21 +493,21 @@ mod tests {
 
     #[test]
     fn deadline_cuts_a_step_short() {
-        let mut s = Session::new(&firmware("button-led"), None, &Network::default()).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &[], &Network::default()).unwrap();
         assert!(s.step(u64::MAX / 2, Instant::now()) == 0);
     }
 
     #[test]
     fn bad_inputs_are_reported() {
         let fw = firmware("button-led");
-        let err = |board: &str| Session::new(&fw, Some(&Source::new("x.board", board.as_bytes().to_vec())), &Network::default()).err().unwrap();
-        assert_eq!(err("led a"), "x.board:1: missing gpio=N");
-        assert!(Session::new(&Source::new("junk.elf", vec![1, 2, 3]), None, &Network::default()).err().unwrap().starts_with("junk.elf: cannot load ELF"));
+        let err = |board: &str| Session::new(&fw, Some(&Source::new("x.toml", board.as_bytes().to_vec())), &[], &Network::default()).err().unwrap();
+        assert_eq!(err("parts.a = { kind = \"led\" }"), "x.toml:1:7: missing gpio (the pin it hangs off)");
+        assert!(Session::new(&Source::new("junk.elf", vec![1, 2, 3]), None, &[], &Network::default()).err().unwrap().starts_with("junk.elf: cannot load ELF"));
     }
 
     #[test]
     fn uart_text_is_kept_bounded() {
-        let mut s = Session::new(&firmware("button-led"), None, &Network::default()).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &[], &Network::default()).unwrap();
         s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
         s.drain();
         assert!(s.uart[0].len() <= UART_KEEP);
@@ -507,8 +525,8 @@ mod log_tests {
             eprintln!("BTL_FIRMWARE not set: skipped");
             return;
         };
-        let board = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.board")).unwrap();
-        let mut s = Session::new(&Source::new("fw", std::fs::read(path).unwrap()), Some(&Source::new("board", board)), &Network::default()).unwrap();
+        let board = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.toml")).unwrap();
+        let mut s = Session::new(&Source::new("fw", std::fs::read(path).unwrap()), Some(&Source::new("board", board)), &[], &Network::default()).unwrap();
         assert_eq!(s.log_note, None);
         s.step(125_000_000, Instant::now() + Duration::from_secs(60));
         assert!(s.log.iter().any(|e| e.line.text.contains("Entering main loop")), "{:?}", s.log.iter().map(|e| &e.line.text).collect::<Vec<_>>());
@@ -527,8 +545,8 @@ mod bench {
     #[ignore]
     fn bench_headless_slices() {
         let fw = std::fs::read("../../../btl_01/software/os-embedded/target/thumbv6m-none-eabi/release/btl_os_embedded").unwrap();
-        let board = std::fs::read("../../boards/btl-01.board").unwrap();
-        let mut s = Session::new(&Source::new("fw", fw), Some(&Source::new("board", board)), &Network::default()).unwrap();
+        let board = std::fs::read("../../boards/btl-01.toml").unwrap();
+        let mut s = Session::new(&Source::new("fw", fw), Some(&Source::new("board", board)), &[], &Network::default()).unwrap();
         let t0 = Instant::now();
         let mut slices = 0;
         while s.sys.cycles() < 125_000_000 {

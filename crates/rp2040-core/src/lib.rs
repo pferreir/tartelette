@@ -10,4 +10,5 @@ pub use armv6m::{bus, cpu, ppb};
 
 pub mod elf;
 pub mod periph;
+pub mod pinmux;
 pub mod system;

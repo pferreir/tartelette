@@ -1,5 +1,4 @@
-//! `dac8165 <name> sdi=N cs=N clk=N [rst=N] [vref_mv=2500]`: Texas
-//! Instruments DAC8165, a quad 14-bit voltage DAC, on a bit-banged serial
+//! Texas Instruments DAC8165, a quad 14-bit voltage DAC, on a bit-banged serial
 //! link (the board drives it from a PIO machine, so the pins are watched
 //! directly instead of sitting on an SPI controller).
 //!
@@ -16,8 +15,8 @@
 //!
 //! Events: `dac` with value `channel << 16 | code` whenever an output
 //! changes. [`Dac8165::millivolts`] gives `vref * code / 16384`.
-use alloc::{boxed::Box, string::String};
-use pcb::{Device, Io, Params};
+use alloc::boxed::Box;
+use pcb::{Device, Io, Kind, Param};
 
 pub struct Dac8165 {
     sdi: usize,
@@ -39,13 +38,27 @@ pub struct Dac8165 {
     pub unsupported: u32,
 }
 
-pub fn factory(p: &mut Params) -> Result<Box<dyn Device>, String> {
+pub const KIND: Kind = Kind {
+    name: "dac8165",
+    summary: "quad 14-bit DAC on a bit-banged serial link",
+    bus: None,
+    params: &[
+        Param::pin("sdi", "serial data in"),
+        Param::pin("cs", "sync (chip select), active low"),
+        Param::pin("clk", "serial clock"),
+        Param::pin("rst", "reset, active low").optional(),
+        Param::int("vref_mv", 1, 10_000, "reference voltage in millivolts: the full-scale output").default_int(2500),
+    ],
+    build: build_dac,
+};
+
+fn build_dac(p: &mut pcb::Params) -> Result<Box<dyn Device>, alloc::string::String> {
     Ok(Box::new(Dac8165 {
-        sdi: p.pin("sdi")?,
-        cs: p.pin("cs")?,
-        clk: p.pin("clk")?,
-        rst: p.opt_pin("rst")?,
-        vref_mv: p.opt_int("vref_mv", 1, 10_000)?.unwrap_or(2500) as u32,
+        sdi: p.pin("sdi"),
+        cs: p.pin("cs"),
+        clk: p.pin("clk"),
+        rst: p.opt_pin("rst"),
+        vref_mv: p.int("vref_mv") as u32,
         shift: 0,
         count: 0,
         cs_high: true,
@@ -164,7 +177,8 @@ mod tests {
 
     impl Rig {
         fn new(extra: &str) -> Self {
-            let text = alloc::format!("dac8165 dac sdi={SDI} cs={CS} clk={CLK} rst={RST} {extra}");
+            let sep = if extra.is_empty() { "" } else { ", " };
+            let text = alloc::format!("parts.dac = {{ kind = \"dac8165\", sdi = {SDI}, cs = {CS}, clk = {CLK}, rst = {RST}{sep}{extra} }}");
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             pins.set_chip(CS, true);
@@ -238,7 +252,7 @@ mod tests {
 
     #[test]
     fn millivolts_follow_the_reference() {
-        let mut r = Rig::new("vref_mv=1250");
+        let mut r = Rig::new("vref_mv = 1250");
         r.send(word(0, 0x8000), 24);
         assert_eq!(r.dac().millivolts(0), 625);
         r.send(word(0, 0xFFFC), 24);
@@ -275,7 +289,7 @@ mod tests {
     #[test]
     fn factory_requires_the_serial_pins() {
         let reg = crate::registry();
-        assert!(Board::parse_with("dac8165 d sdi=1 cs=2", &reg).is_err());
-        assert!(Board::parse_with("dac8165 d sdi=1 cs=2 clk=3", &reg).is_ok());
+        assert!(Board::parse_with("parts.d = { kind = \"dac8165\", sdi = 1, cs = 2 }", &reg).is_err());
+        assert!(Board::parse_with("parts.d = { kind = \"dac8165\", sdi = 1, cs = 2, clk = 3 }", &reg).is_ok());
     }
 }

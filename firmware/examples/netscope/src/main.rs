@@ -1,5 +1,5 @@
 //! NETSCOPE: an internet sonar for a Pico W on a Pimoroni Pico Display Pack
-//! 2.0 (`boards/pico-w-display.board`: 320x240 ST7789 on SPI0, buttons A/B/X/Y).
+//! 2.0 (`boards/shields/pico-display-2.toml`: 320x240 ST7789 on SPI0, buttons A/B/X/Y).
 //!
 //! It joins Wi-Fi, gets a DHCP lease, then keeps probing the real internet:
 //! DNS, an NTP query (which sets a clock), an HTTP GET and a TCP handshake

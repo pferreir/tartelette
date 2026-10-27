@@ -152,6 +152,11 @@ impl Gpio {
         self.changed != 0
     }
 
+    /// The function routed to `pin` (its FUNCSEL).
+    pub fn funcsel(&self, pin: usize) -> u32 {
+        self.ctrl[pin] & 0x1F
+    }
+
     /// Level of the IO_IRQ_BANK0 line towards core 0.
     pub fn irq(&self) -> bool {
         self.irq_for(PROC0)

@@ -4,12 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 # Standalone (not part of the emulator workspace): THE DAILY BIT, a Pico W on
-# a Pico Display Pack 2.0 (`boards/pico-w-display.board`) that gathers a few
+# a Pico Display Pack 2.0 (`boards/shields/pico-display-2.toml`) that gathers a few
 # things from the internet over Wi-Fi and prints them as a receipt on an
-# MXW01 "cat printer" over Bluetooth LE. Build with
-#   CYW43_FIRMWARE_DIR=/path/to/cyw43-firmware cargo build --release
-# Embassy at 10592165 (cyw43 waits for the chip's interrupt with Bluetooth on
-# instead of busy-polling it), trouble `main` as in `firmware/ble-test`.
+# MXW01 "cat printer" over Bluetooth LE; see ../README.md. Embassy at
+# 10592165 (cyw43 waits for the chip's interrupt with Bluetooth on instead of
+# busy-polling it), trouble `main` as in ../pico-w-ble.
 
 [workspace]
 

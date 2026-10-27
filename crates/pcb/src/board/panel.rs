@@ -1,19 +1,21 @@
-//! `panel` lines: where a host UI puts each part's controls.
+//! The `[panel]` section: where a host UI puts each part's controls.
 //!
-//! ```text
-//! panel <part> at=COL,ROW [span=W,H] [label=Some_text] [option=value...]
+//! ```toml
+//! [panel]
+//! screen = { at = [0, 0], span = [4, 3], rotate = 90 }
+//! knob = { at = [4, 0], span = [2, 2], keys = ["Left", "Right"] }
+//! expander = [{ at = [0, 3], label = "Inputs" }, { at = [0, 4], label = "Outputs" }]
 //! ```
 //!
 //! The panel is a grid of equal cells; `at` is the top-left cell (0-based)
-//! and `span` how many cells the part covers (default 1,1). Underscores in a
-//! `label` become spaces. Items may not overlap. A part may have several
-//! items (e.g. a port expander's inputs and outputs shown apart), each with
-//! its own options. Any other `key=value` is a widget option, kept as given for the
-//! host to interpret (e.g. `rotate=90` for a display); the host reports the
-//! ones it doesn't know, using [`PanelItem::line`].
+//! and `span` how many cells the part covers (default `[1, 1]`). Items may
+//! not overlap. A part may have several items (an array), each with its own
+//! options. Any other key is a widget option, kept as text for the host to
+//! interpret (`rotate = 90` for a display, arrays joined with commas); the
+//! host reports the ones it doesn't know.
 //!
 //! The board has no opinion on what a part looks like: this is only layout.
-use super::Params;
+use super::doc::{self, Node, V};
 use alloc::{format, string::String, vec::Vec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,8 +29,6 @@ pub struct PanelItem {
     pub label: Option<String>,
     /// Widget options, in board-file order.
     pub options: Vec<(String, String)>,
-    /// 1-based board-file line, for host-side error messages.
-    pub line: usize,
 }
 
 impl PanelItem {
@@ -37,7 +37,7 @@ impl PanelItem {
         self.options.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
-    fn overlaps(&self, o: &PanelItem) -> bool {
+    pub(super) fn overlaps(&self, o: &PanelItem) -> bool {
         self.col < o.col + o.cols && o.col < self.col + self.cols && self.row < o.row + o.rows && o.row < self.row + self.rows
     }
 }
@@ -45,27 +45,70 @@ impl PanelItem {
 /// Grid positions and sizes are capped so a typo can't ask for a huge grid.
 const MAX_CELLS: u16 = 64;
 
-/// `key=N,M`, both within `min..MAX_CELLS + min` (positions from 0, sizes from 1).
-fn pair(p: &mut Params, key: &str, min: u16) -> Result<Option<(u16, u16)>, String> {
-    let Some(v) = p.opt_str(key) else { return Ok(None) };
-    let err = || format!("{key} must be N,M");
-    let (a, b) = v.split_once(',').ok_or_else(err)?;
-    let (a, b): (u16, u16) = (a.parse().map_err(|_| err())?, b.parse().map_err(|_| err())?);
+/// `[N, M]`, both within `min..MAX_CELLS + min` (positions from 0, sizes from 1).
+fn pair(key: &str, node: &Node, min: u16) -> Result<(u16, u16), doc::Error> {
     let max = MAX_CELLS - 1 + min;
-    if !(min..=max).contains(&a) || !(min..=max).contains(&b) {
-        return Err(format!("{key} values must be {min}..{max}"));
+    let err = || doc::err(&node.span, format!("{key} must be [N, M], each {min}..{max}"));
+    let V::Array(items) = &node.v else { return Err(err()) };
+    match items.as_slice() {
+        [a, b] => {
+            let get = |n: &Node| match n.v {
+                V::Int(v) if (min as i64..=max as i64).contains(&v) => Ok(v as u16),
+                _ => Err(err()),
+            };
+            Ok((get(a)?, get(b)?))
+        }
+        _ => Err(err()),
     }
-    Ok(Some((a, b)))
 }
 
-/// Parse the words after `panel` into an item for part index `part`.
-pub(super) fn parse_item(mut p: Params, part: usize, line: usize, existing: &[PanelItem]) -> Result<PanelItem, String> {
-    let (col, row) = pair(&mut p, "at", 0)?.ok_or("missing at=COL,ROW")?;
-    let (cols, rows) = pair(&mut p, "span", 1)?.unwrap_or((1, 1));
-    let label = p.opt_str("label").map(|l| l.replace('_', " "));
-    let item = PanelItem { part, col, row, cols, rows, label, options: p.into_unused(), line };
-    if let Some(o) = existing.iter().find(|o| o.overlaps(&item)) {
-        return Err(format!("overlaps the panel item on line {}", o.line));
+/// An option value as text: scalars as written, arrays of them joined with commas.
+fn text(key: &str, node: &Node) -> Result<String, doc::Error> {
+    match &node.v {
+        V::Int(n) => Ok(format!("{n}")),
+        V::Str(s) => Ok(s.clone()),
+        V::Bool(b) => Ok(format!("{b}")),
+        V::Array(items) => Ok(items.iter().map(|i| text(key, i)).collect::<Result<Vec<_>, _>>()?.join(",")),
+        v => Err(doc::err(&node.span, format!("{key} must be a number, string, true/false or an array of them, not {}", v.what()))),
+    }
+}
+
+/// The items for part index `part` from its `[panel]` value: a table or an
+/// array of tables.
+pub(super) fn parse_items(part: usize, node: Node) -> Result<Vec<PanelItem>, doc::Error> {
+    let tables = match node.v {
+        V::Table(_) => alloc::vec![node],
+        V::Array(items) => items,
+        v => return Err(doc::err(&node.span, format!("a panel item must be a table or an array of tables, not {}", v.what()))),
+    };
+    tables.into_iter().map(|t| parse_item(part, t)).collect()
+}
+
+fn parse_item(part: usize, node: Node) -> Result<PanelItem, doc::Error> {
+    let V::Table(entries) = node.v else {
+        return Err(doc::err(&node.span, format!("a panel item must be a table, not {}", node.v.what())));
+    };
+    let mut item = PanelItem { part, col: 0, row: 0, cols: 1, rows: 1, label: None, options: Vec::new() };
+    let mut at = false;
+    for (key, value) in entries {
+        match key.name.as_str() {
+            "at" => {
+                (item.col, item.row) = pair("at", &value, 0)?;
+                at = true;
+            }
+            "span" => (item.cols, item.rows) = pair("span", &value, 1)?,
+            "label" => match value.v {
+                V::Str(s) => item.label = Some(s),
+                v => return Err(doc::err(&value.span, format!("label must be a string, not {}", v.what()))),
+            },
+            _ => {
+                let t = text(&key.name, &value)?;
+                item.options.push((key.name, t));
+            }
+        }
+    }
+    if !at {
+        return Err(doc::err(&node.span, "missing at = [COLUMN, ROW]"));
     }
     Ok(item)
 }

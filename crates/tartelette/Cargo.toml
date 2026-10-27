@@ -1,5 +1,6 @@
 [package]
 name = "tartelette"
+description = "An RP2040 emulator that runs firmware on an emulated board, with a front panel or headless"
 version.workspace = true
 edition.workspace = true
 

@@ -18,6 +18,8 @@ pub struct App {
     logo: Option<Logo>,
     firmware: Option<Source>,
     board: Option<Source>,
+    /// Add-on boards on top of `board`, from the command line.
+    shields: Vec<Source>,
     net: Network,
     run: Option<Shared>,
     layout: Option<Layout>,
@@ -36,11 +38,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(firmware: Option<Source>, board: Option<Source>, net: Network) -> Self {
+    pub fn new(firmware: Option<Source>, board: Option<Source>, shields: Vec<Source>, net: Network) -> Self {
         let mut app = Self {
             logo: None,
             firmware,
             board,
+            shields,
             net,
             run: None,
             layout: None,
@@ -75,9 +78,9 @@ impl App {
         self.panel = PanelState::default();
         self.errors.clear();
         #[cfg(not(target_arch = "wasm32"))]
-        self.watch.track(self.firmware.as_ref(), self.board.as_ref());
+        self.watch.track(self.firmware.iter().chain(&self.board).chain(&self.shields));
         let Some(fw) = &self.firmware else { return };
-        match Session::new(fw, self.board.as_ref(), &self.net) {
+        match Session::new(fw, self.board.as_ref(), &self.shields, &self.net) {
             Ok(mut s) => {
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);
@@ -167,7 +170,7 @@ impl App {
             ui.separator();
             self.midi.ui(ui);
             ui.separator();
-            let names: Vec<&str> = [&self.firmware, &self.board].into_iter().flatten().map(|s| s.name.as_str()).collect();
+            let names: Vec<&str> = self.firmware.iter().chain(&self.board).chain(&self.shields).map(|s| s.name.as_str()).collect();
             ui.label(RichText::new(names.join(" + ")).weak());
             if let Some(Run { session: s, clock }) = run.as_deref() {
                 ui.separator();
@@ -267,7 +270,7 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         files::take_dropped(&ctx, &self.inbox);
         #[cfg(not(target_arch = "wasm32"))]
-        if self.watch.changed(&mut self.firmware, &mut self.board) {
+        if self.watch.changed(self.firmware.iter_mut().chain(&mut self.board).chain(&mut self.shields)) {
             self.restart();
         }
         self.take_files();
@@ -286,6 +289,7 @@ impl eframe::App for App {
         if let Some(r) = guard.as_deref_mut() {
             self.panel.absorb(&r.session.events, ctx.input(|i| i.time));
             r.session.events.clear();
+            self.errors.extend(r.session.warnings.drain(..).map(|w| format!("warning: {w}")));
         }
 
         let mut reset = false;
@@ -309,7 +313,7 @@ impl eframe::App for App {
                 (Some(r), Some(layout)) => panel::show(ui, layout, &mut self.panel, &r.session),
                 _ => {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("Drop a firmware ELF and a .board file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
+                        ui.label(RichText::new("Drop a firmware ELF and a board .toml file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
                     });
                     Vec::new()
                 }
