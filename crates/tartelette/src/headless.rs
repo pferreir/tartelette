@@ -92,6 +92,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         } else {
             sys.run(n)
         };
+        if matches!(reason, StopReason::Breakpoint(_)) {
+            sys.drain_uarts();
+        }
 
         let _ = out.write_all(&std::mem::take(&mut sys.bus.uart[0].tx));
         let _ = err.write_all(&std::mem::take(&mut sys.bus.uart[1].tx));

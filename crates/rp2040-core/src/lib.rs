@@ -12,3 +12,4 @@ pub mod elf;
 pub mod periph;
 pub mod pinmux;
 pub mod system;
+pub mod uf2;

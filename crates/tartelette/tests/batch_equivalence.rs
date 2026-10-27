@@ -115,6 +115,11 @@ fn uart_firmware_matches_unbatched_with_large_chunks() {
     compare("uart-hello", 2_000_000, &[250_000]);
 }
 
+#[test]
+fn timed_uart_matches_unbatched() {
+    compare("uart-hello", 600_000, SPACING);
+}
+
 /// The core never sleeps; alarms are re-armed from handlers with changing
 /// delays and SysTick fires while it spins. Catches a stale event horizon.
 #[test]

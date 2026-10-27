@@ -15,9 +15,6 @@ pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
 /// Cycles per `System::run` call: small enough to stay responsive to the
 /// host-time budget, large enough to keep the per-call overhead down.
 const CHUNK: u64 = 250_000;
-/// While bytes are waiting for a UART receiver: about one byte time at
-/// 115200 baud, so the 32-byte FIFO is fed gradually instead of overflowing.
-const RX_CHUNK: u64 = 11_000;
 /// Never keep more than this much UART text per port.
 const UART_KEEP: usize = 256 * 1024;
 /// Never keep more than this many log messages.
@@ -107,8 +104,6 @@ pub struct Session {
     pub halted: Option<StopReason>,
     /// Everything each UART has sent, as text.
     pub uart: [String; 2],
-    /// Host -> firmware bytes not yet handed to each UART.
-    rx: [VecDeque<u8>; 2],
     /// Board events since the UI last took them.
     pub events: Vec<BoardEvent>,
     /// The firmware's defmt-over-RTT log, oldest first, and why there is
@@ -121,7 +116,7 @@ pub struct Session {
 }
 
 impl Session {
-    /// Build a run from a firmware ELF, an optional board file and the
+    /// Build a run from a firmware ELF or UF2, an optional board file and the
     /// shields on top of it.
     pub fn new(
         firmware: &Source,
@@ -130,13 +125,20 @@ impl Session {
         net: &Network,
     ) -> Result<Self, String> {
         let mut sys = System::new();
-        sys.load_elf(&firmware.bytes)
-            .map_err(|e| format!("{}: cannot load ELF: {e:?}", firmware.name))?;
+        let uf2 = rp2040_core::uf2::is_uf2(&firmware.bytes);
+        sys.load_firmware(&firmware.bytes).map_err(|e| {
+            let kind = if uf2 { "UF2" } else { "ELF" };
+            format!("{}: cannot load {kind}: {e:?}", firmware.name)
+        })?;
         if let Some(b) = parse_board(board, shields)? {
             sys.set_board(b);
         }
         connect_network(&mut sys.board, net)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
+            _ if uf2 => (
+                None,
+                Some("a UF2 has no symbols, so no defmt log: run the ELF for that".to_string()),
+            ),
             Ok(Some(r)) => (Some(r), None),
             Ok(None) => (
                 None,
@@ -148,7 +150,6 @@ impl Session {
             sys,
             halted: None,
             uart: Default::default(),
-            rx: Default::default(),
             events: Vec::new(),
             log: VecDeque::new(),
             log_note,
@@ -162,9 +163,10 @@ impl Session {
         self.sys.cycles() as f64 / CYCLES_PER_SEC
     }
 
-    /// Queue text for the firmware to receive on UART `n`.
+    /// Queue text for the firmware to receive on UART `n`, at the firmware's
+    /// baud rate.
     pub fn send(&mut self, n: usize, bytes: &[u8]) {
-        self.rx[n].extend(bytes);
+        self.sys.send_uart(n, bytes);
     }
 
     /// Do something to a board part (see each device's docs for actions).
@@ -180,30 +182,21 @@ impl Session {
         let start = self.sys.cycles();
         let end = start + cycles;
         while self.halted.is_none() && self.sys.cycles() < end && Instant::now() < deadline {
-            self.feed_rx();
-            let chunk = if self.rx.iter().any(|q| !q.is_empty()) {
-                RX_CHUNK
-            } else {
-                CHUNK
-            };
-            let target = self.sys.cycles() + (end - self.sys.cycles()).min(chunk);
+            let target = self.sys.cycles() + (end - self.sys.cycles()).min(CHUNK);
             match self.sys.run(target - self.sys.cycles()) {
                 StopReason::CycleLimit => {}
                 // Nothing can wake the cores except the host: let the time pass.
                 StopReason::Sleeping => self.sys.idle_until(target),
-                r => self.halted = Some(r),
+                r => {
+                    if matches!(r, StopReason::Breakpoint(_)) {
+                        self.sys.drain_uarts();
+                    }
+                    self.halted = Some(r);
+                }
             }
             self.drain();
         }
         self.sys.cycles() - start
-    }
-
-    fn feed_rx(&mut self) {
-        for n in 0..2 {
-            if let Some(b) = self.rx[n].pop_front() {
-                self.sys.bus.uart[n].push_rx(b);
-            }
-        }
     }
 
     /// Move UART output and board events out of the emulator.

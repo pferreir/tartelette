@@ -109,6 +109,7 @@ pub extern "C" fn reset() -> ! {
             puts(&*(&raw const DST));
         }
     }
+    while rd(UART0 + 0x18) & (1 << 3) != 0 {} // BUSY: let the FIFO drain
     unsafe { asm!("bkpt #1") };
     loop {}
 }

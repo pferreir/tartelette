@@ -12,6 +12,7 @@ pub mod psm;
 pub mod resets;
 pub mod sio;
 pub mod spi;
+pub mod ssi;
 pub mod timer;
 pub mod uart;
 
@@ -24,7 +25,8 @@ pub trait Peripheral {
 /// Placeholder for peripherals that are not modelled yet: writes are stored
 /// and read back, except for bits in `forced` which always read as 1. The
 /// forced bits are the "ready/locked/stable" status flags that SDK start-up
-/// code would otherwise spin on forever.
+/// code would otherwise spin on forever. [`RegStub::with_reset`] sets the
+/// registers whose reset value firmware looks at.
 pub struct RegStub {
     regs: Vec<u32>,
     forced: &'static [(u32, u32)],
@@ -36,6 +38,17 @@ impl RegStub {
             regs: alloc::vec![0; 0x400],
             forced,
         }
+    }
+}
+
+impl RegStub {
+    /// The same, with `(offset, value)` reset values.
+    pub fn with_reset(forced: &'static [(u32, u32)], reset: &[(u32, u32)]) -> Self {
+        let mut s = Self::new(forced);
+        for &(off, val) in reset {
+            s.write(off, val);
+        }
+        s
     }
 }
 
@@ -72,5 +85,13 @@ mod tests {
         assert_eq!(s.read(0x18), 0);
         s.write(0xFFC, 5); // last register in the 4 KiB window
         assert_eq!(s.read(0xFFC), 5);
+    }
+
+    #[test]
+    fn regstub_reset_values_read_back_until_written() {
+        let mut s = RegStub::with_reset(&[], &[(0x0C, 0x1F)]);
+        assert_eq!(s.read(0x0C), 0x1F);
+        s.write(0x0C, 3);
+        assert_eq!(s.read(0x0C), 3);
     }
 }

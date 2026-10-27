@@ -48,8 +48,8 @@ fn dialog(slot: &Slot) -> rfd::AsyncFileDialog {
     }
     match slot {
         Slot::Firmware => d
-            .set_title("Open firmware ELF")
-            .add_filter("ELF", &["elf", ""])
+            .set_title("Open firmware")
+            .add_filter("Firmware", &["elf", "uf2", ""])
             .add_filter("Any", &["*"]),
         Slot::Board => d
             .set_title("Open board file")

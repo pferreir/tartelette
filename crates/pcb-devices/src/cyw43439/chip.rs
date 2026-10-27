@@ -21,8 +21,12 @@ const F1_WINDOW_LOW: usize = 0x0A;
 const F1_WINDOW_MID: usize = 0x0B;
 const F1_WINDOW_HIGH: usize = 0x0C;
 const F1_CLOCK_CSR: usize = 0x0E;
+const F1_SLEEP_CSR: usize = 0x1F;
+const SLEEP_CSR_KSO: u8 = 0x01;
+const SLEEP_CSR_DEVICE_ON: u8 = 0x02;
 
 const CTRL_WORD_32: u8 = 0x01;
+const CTRL_ENDIAN_BIG: u8 = 0x02;
 const CTRL_IRQ_HIGH: u8 = 0x20;
 
 const IRQ_DATA_UNAVAILABLE: u16 = 0x0001;
@@ -31,6 +35,26 @@ const IRQ_F1_INTR: u16 = 0x2000;
 
 const STATUS_F2_RX_READY: u32 = 0x20;
 const STATUS_F2_PKT_AVAILABLE: u32 = 0x100;
+
+/// See [`Chip::framing`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Framing {
+    Swapped16,
+    Word32,
+    BigEndian,
+}
+
+impl Framing {
+    /// Turn a word as shifted on the wire into the value it stands for, or
+    /// back (each layout is its own inverse).
+    pub fn wire(self, w: u32) -> u32 {
+        match self {
+            Framing::Swapped16 => w.rotate_left(16),
+            Framing::Word32 => w,
+            Framing::BigEndian => w.swap_bytes(),
+        }
+    }
+}
 
 /// One bus transaction, for debugging.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,10 +116,17 @@ impl Chip {
             .is_some_and(|t| self.now >= t + 20 * self.cycles_per_ms)
     }
 
-    /// Until the host writes the bus control register the chip talks in
-    /// 16-bit words with the halves swapped.
-    pub fn swapped(&self) -> bool {
-        self.bus_ctrl[0] & CTRL_WORD_32 == 0
+    /// How 32-bit words are laid out on the wire. Until the host writes the
+    /// bus control register the chip talks in 16-bit words, which puts the
+    /// halves of each word in swapped order. In 32-bit mode a word goes out
+    /// most significant bit first; big-endian mode (pico-sdk's driver, whose
+    /// DMA byte-swaps every word) sends its bytes in the opposite order.
+    pub fn framing(&self) -> Framing {
+        match self.bus_ctrl[0] {
+            c if c & CTRL_WORD_32 == 0 => Framing::Swapped16,
+            c if c & CTRL_ENDIAN_BIG != 0 => Framing::BigEndian,
+            _ => Framing::Word32,
+        }
     }
 
     /// Whether the firmware is running and the WLAN function accepts frames.
@@ -278,6 +309,15 @@ impl Chip {
         let Some(&stored) = self.f1.get(off) else {
             return 0;
         };
+        // Keep-SDIO-on: the chip never sleeps, so it is on whenever asked.
+        if off == F1_SLEEP_CSR {
+            let on = if stored & SLEEP_CSR_KSO != 0 {
+                SLEEP_CSR_DEVICE_ON
+            } else {
+                0
+            };
+            return stored | on;
+        }
         if off != F1_CLOCK_CSR {
             return stored;
         }

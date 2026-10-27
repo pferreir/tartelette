@@ -1,11 +1,12 @@
 //! The chip against a host that bit-bangs the gSPI protocol the way
 //! Embassy's `cyw43-pio` program does, and talks the WHD protocol the way
-//! `cyw43`'s runner and control do.
+//! `cyw43`'s runner and control do (or, with [`Host::big_endian`], with the
+//! bus in big-endian mode as pico-sdk's driver sets it).
 use alloc::{format, vec};
 
 use pcb::{Board, Pins};
 
-use super::*;
+use super::{chip::Framing, *};
 use crate::{
     net::{self, LoopbackBackend},
     testutil::FakePins,
@@ -29,10 +30,6 @@ aps = [
 ]
 "#;
 
-fn swap16(x: u32) -> u32 {
-    x.rotate_left(16)
-}
-
 fn cmd_word(write: bool, func: u32, addr: u32, len: usize) -> u32 {
     (write as u32) << 31 | 1 << 30 | func << 28 | (addr & 0x1FFFF) << 11 | (len as u32 & 0x7FF)
 }
@@ -49,7 +46,9 @@ struct Host {
     board: Board,
     pins: FakePins,
     now: u64,
-    swapped: bool,
+    framing: Framing,
+    /// Ask for big-endian words when setting up the bus.
+    big_endian: bool,
     bp_pad: usize,
     status: u32,
     window: u32,
@@ -77,7 +76,8 @@ impl Host {
             board,
             pins,
             now: 0,
-            swapped: true,
+            framing: Framing::Swapped16,
+            big_endian: false,
             bp_pad: 0,
             status: 0,
             window: 0xAAAA_AAAA,
@@ -162,14 +162,11 @@ impl Host {
     }
 
     fn read(&mut self, func: u32, addr: u32, len: usize) -> Vec<u8> {
-        let mut cmd = cmd_word(false, func, addr, len);
-        if self.swapped {
-            cmd = swap16(cmd);
-        }
+        let cmd = self.framing.wire(cmd_word(false, func, addr, len));
         let pad = if func == 1 { self.bp_pad } else { 0 };
         let n = len.div_ceil(4);
         let words = self.xfer(&[cmd], pad + n + 1);
-        let w = |x: u32| if self.swapped { swap16(x) } else { x };
+        let w = |x: u32| self.framing.wire(x);
         self.status = w(words[pad + n]);
         let mut bytes: Vec<u8> = words[pad..pad + n]
             .iter()
@@ -186,13 +183,11 @@ impl Host {
             b[..c.len()].copy_from_slice(c);
             u32::from_le_bytes(b)
         }));
-        if self.swapped {
-            for w in &mut words {
-                *w = swap16(*w);
-            }
+        for w in &mut words {
+            *w = self.framing.wire(*w);
         }
         let st = self.xfer(&words, 1)[0];
-        self.status = if self.swapped { swap16(st) } else { st };
+        self.status = self.framing.wire(st);
     }
 
     fn read32(&mut self, func: u32, addr: u32) -> u32 {
@@ -283,10 +278,15 @@ impl Host {
         self.write32(0, 0x18, 0x1234_5678);
         assert_eq!(self.read32(0, 0x18), 0x1234_5678);
         // 32-bit words, high speed, IRQ high, wake up, 4 byte response delay, status enable
-        let ctrl = 0x1 | 0x10 | 0x20 | 0x80 | 0x4 << 8 | 0x3 << 16;
+        let big = (self.big_endian as u32) << 1;
+        let ctrl = 0x1 | big | 0x10 | 0x20 | 0x80 | 0x4 << 8 | 0x3 << 16;
         self.write32(0, 0, ctrl);
-        self.swapped = false;
-        assert_eq!(self.read8(0, 0), 0xB1);
+        self.framing = if self.big_endian {
+            Framing::BigEndian
+        } else {
+            Framing::Word32
+        };
+        assert_eq!(self.read8(0, 0), 0xB1 | big as u8);
         assert_eq!(self.read32(0, 0x14), 0xFEED_BEAD);
         assert_eq!(self.read32(0, 0x18), 0x1234_5678);
         self.write8(0, 0x1D, 4);
@@ -404,6 +404,9 @@ impl Host {
                 }
             }
             1 => {
+                let eth_at = f[7] as usize + 4 + 4 * p[3] as usize;
+                // pico-sdk's driver needs the event message at 2 mod 4.
+                assert_eq!((eth_at + 24) % 4, 2, "event message alignment");
                 let bdc = &p[4 + 4 * p[3] as usize..];
                 assert_eq!(&bdc[12..14], &[0x88, 0x6C]);
                 assert_eq!(&bdc[14..16], &[0x80, 0x01]);
@@ -593,6 +596,17 @@ fn bring_up_reaches_f2_ready() {
 }
 
 #[test]
+fn big_endian_bus_reaches_f2_ready() {
+    let mut h = Host::new(BOARD);
+    h.big_endian = true;
+    h.bring_up();
+    assert!(h.chip().firmware_running());
+    // Keep-SDIO-on reads back as on, which pico-sdk's driver waits for.
+    h.write8(1, 0x1001F, 1);
+    assert_eq!(h.read8(1, 0x1001F), 0x03);
+}
+
+#[test]
 fn chip_does_not_answer_until_powered_and_settled() {
     let mut h = Host::new(BOARD);
     assert_eq!(h.read32(0, 0x14), 0, "unpowered chip answered");
@@ -678,6 +692,24 @@ fn scan_lists_the_configured_networks() {
     assert_eq!(
         u32::from_le_bytes(found[0].data[4..8].try_into().unwrap()),
         109
+    );
+    // The IEs, where pico-sdk's driver finds them: wl_bss_info_t laid out
+    // with natural alignment (ie_offset at 116, ie_length at 120).
+    let ies = |e: &Event| {
+        let b = &e.data[12..];
+        let off = u16::from_le_bytes([b[116], b[117]]) as usize;
+        let len = u32::from_le_bytes(b[120..124].try_into().unwrap()) as usize;
+        assert!(off + len <= u32::from_le_bytes(b[4..8].try_into().unwrap()) as usize);
+        b[off..off + len].to_vec()
+    };
+    let wpa2 = ies(found[0]);
+    assert_eq!(wpa2[..2], [0, 13]);
+    assert_eq!(&wpa2[2..15], b"TarteletteNet");
+    assert_eq!(wpa2[15], 0x30, "RSN element");
+    assert_eq!(
+        ies(found[1])[2..],
+        *b"FreeCafe",
+        "an open network has no RSN"
     );
     assert_eq!(ev.last().unwrap().status, 0);
 }

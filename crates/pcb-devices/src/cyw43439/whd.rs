@@ -20,6 +20,11 @@ const CONTROL: u8 = 0;
 const EVENT: u8 = 1;
 const DATA: u8 = 2;
 const SDPCM_HEADER: usize = 12;
+/// Padding after the SDPCM header of a frame with a payload. With it (and a
+/// word of BDC options on events) every Ethernet header starts at 2 mod 4,
+/// as on the real chip: pico-sdk's driver moves event data back by two bytes
+/// and then reads it as words, which faults if the data is laid out otherwise.
+const SDPCM_PAD: usize = 2;
 const CDC_HEADER: usize = 16;
 
 // Ioctl numbers.
@@ -49,7 +54,10 @@ const ST_PARTIAL: u32 = 8;
 const WLC_SUP_KEYED: u32 = 6;
 const WLC_SUP_KEYXCHANGE_WAIT_M1: u32 = 4;
 
-const BSS_INFO_SIZE: usize = 124;
+/// `wl_bss_info_t` up to and including SNR, laid out by the firmware's
+/// compiler (natural alignment: `ie_length` at 120, SNR at 124). pico-sdk's
+/// driver reads it that way; Embassy only reads fields before the IEs.
+const BSS_INFO_SIZE: usize = 128;
 const SCAN_RESULTS_SIZE: usize = 12;
 
 /// A mock access point from the board file.
@@ -67,6 +75,22 @@ pub struct Ap {
 struct Frame {
     channel: u8,
     payload: Vec<u8>,
+}
+
+impl Frame {
+    /// SDPCM header and padding. A credit-only frame has no padding: hosts
+    /// recognise it by its bare 12-byte size.
+    fn header_len(&self) -> usize {
+        if self.payload.is_empty() {
+            SDPCM_HEADER
+        } else {
+            SDPCM_HEADER + SDPCM_PAD
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.header_len() + self.payload.len()
+    }
 }
 
 enum Later {
@@ -194,13 +218,13 @@ impl Whd {
 
     /// Length of the next frame (SDPCM header included).
     pub fn next_len(&self) -> Option<usize> {
-        self.rx.front().map(|f| SDPCM_HEADER + f.payload.len())
+        self.rx.front().map(Frame::len)
     }
 
     /// Take the next frame, framed for the bus.
     pub fn pop(&mut self) -> Option<Vec<u8>> {
         let f = self.rx.pop_front()?;
-        let len = SDPCM_HEADER + f.payload.len();
+        let len = f.len();
         let mut v = Vec::with_capacity(len);
         v.extend_from_slice(&(len as u16).to_le_bytes());
         v.extend_from_slice(&(!len as u16).to_le_bytes());
@@ -208,11 +232,12 @@ impl Whd {
         self.tx_seq = self.tx_seq.wrapping_add(1);
         v.push(f.channel);
         v.push(0); // next length
-        v.push(SDPCM_HEADER as u8); // data offset
+        v.push(f.header_len() as u8); // data offset
         v.push(0); // flow control
         self.granted = self.host_seq.wrapping_add(8);
         v.push(self.granted); // credit: the host may send 8 more
         v.extend_from_slice(&[0, 0]);
+        v.resize(f.header_len(), 0);
         v.extend_from_slice(&f.payload);
         Some(v)
     }
@@ -466,7 +491,7 @@ impl Whd {
         data: &[u8],
     ) {
         let mut p = Vec::with_capacity(4 + 72 + data.len());
-        p.extend_from_slice(&[2 << 4, 0, 0, 0]); // BDC
+        p.extend_from_slice(&[2 << 4, 0, 0, 1, 0, 0, 0, 0]); // BDC, one word of options
         // Ethernet header: the tunnelled-event ethertype.
         p.extend_from_slice(&self.mac);
         p.extend_from_slice(&addr);
@@ -525,12 +550,13 @@ impl Whd {
                 .cloned()
                 .collect();
             for ap in &aps {
-                let mut data = Vec::with_capacity(SCAN_RESULTS_SIZE + BSS_INFO_SIZE);
-                data.extend_from_slice(&((SCAN_RESULTS_SIZE + BSS_INFO_SIZE) as u32).to_le_bytes());
+                let bss = bss_info(ap);
+                let mut data = Vec::with_capacity(SCAN_RESULTS_SIZE + bss.len());
+                data.extend_from_slice(&((SCAN_RESULTS_SIZE + bss.len()) as u32).to_le_bytes());
                 data.extend_from_slice(&109u32.to_le_bytes());
                 data.extend_from_slice(&sync_id.to_le_bytes());
                 data.extend_from_slice(&1u16.to_le_bytes());
-                data.extend_from_slice(&bss_info(ap));
+                data.extend_from_slice(&bss);
                 self.event(at, E_ESCAN_RESULT, ST_PARTIAL, 0, 0, 0, ap.bssid, &data);
                 at += self.ms(4);
                 found += 1;
@@ -651,17 +677,31 @@ fn split_name(data: &[u8]) -> (&str, &[u8]) {
 }
 
 /// A `wl_bss_info_t` for `ap`.
-fn bss_info(ap: &Ap) -> [u8; BSS_INFO_SIZE] {
-    let mut b = [0u8; BSS_INFO_SIZE];
+/// The BSS info of a scan result, followed by the beacon's information
+/// elements: the SSID and, for WPA2, an RSN element (CCMP, PSK), which is
+/// what pico-sdk's driver tells the security mode from.
+fn bss_info(ap: &Ap) -> Vec<u8> {
+    let ssid = ap.ssid.as_bytes();
+    let n = ssid.len().min(32);
+    let mut ies = vec![0, n as u8];
+    ies.extend_from_slice(&ssid[..n]);
+    if ap.wpa2 {
+        ies.extend_from_slice(&[
+            0x30, 20, 1, 0, // RSN, version 1
+            0x00, 0x0F, 0xAC, 4, // group cipher CCMP
+            1, 0, 0x00, 0x0F, 0xAC, 4, // one pairwise cipher: CCMP
+            1, 0, 0x00, 0x0F, 0xAC, 2, // one AKM: PSK
+            0, 0, // capabilities
+        ]);
+    }
+    let mut b = vec![0u8; BSS_INFO_SIZE];
     let put16 = |b: &mut [u8], at: usize, v: u16| b[at..at + 2].copy_from_slice(&v.to_le_bytes());
     let put32 = |b: &mut [u8], at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
     put32(&mut b, 0, 109); // version
-    put32(&mut b, 4, BSS_INFO_SIZE as u32);
+    put32(&mut b, 4, (BSS_INFO_SIZE + ies.len()) as u32);
     b[8..14].copy_from_slice(&ap.bssid);
     put16(&mut b, 14, 100); // beacon period
     put16(&mut b, 16, 0x0001 | if ap.wpa2 { 0x0010 } else { 0 }); // ESS, privacy
-    let ssid = ap.ssid.as_bytes();
-    let n = ssid.len().min(32);
     b[18] = n as u8;
     b[19..19 + n].copy_from_slice(&ssid[..n]);
     put32(&mut b, 52, 8); // rateset count
@@ -677,8 +717,9 @@ fn bss_info(ap: &Ap) -> [u8; BSS_INFO_SIZE] {
     b[80] = (-92i8) as u8; // noise
     b[81] = 1; // n_cap
     b[88] = ap.chan; // control channel
-    put16(&mut b, 116, BSS_INFO_SIZE as u16); // IEs start after the struct...
-    put32(&mut b, 118, 0); // ...and there are none
-    put16(&mut b, 122, (ap.rssi + 92) as u16); // SNR
+    put16(&mut b, 116, BSS_INFO_SIZE as u16); // IEs start right after
+    put32(&mut b, 120, ies.len() as u32);
+    put16(&mut b, 124, (ap.rssi + 92) as u16); // SNR
+    b.extend_from_slice(&ies);
     b
 }

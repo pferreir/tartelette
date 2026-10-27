@@ -4,7 +4,8 @@
 //! but only core 1 executes it at reset (it waits there for the launch
 //! handshake, exactly as on the chip). Core 0 boot is "HLE": the ELF is loaded
 //! straight into flash/SRAM and core 0 starts at the program's vector table, as
-//! if boot2 had already run. Not modelled yet: XIP control, PIO/USB.
+//! if boot2 had already run. The XIP SSI answers flash commands (see
+//! [`Ssi`]); XIP control and USB are not modelled.
 use alloc::{string::String, vec::Vec};
 
 use pcb::{Board, InputResult};
@@ -24,10 +25,12 @@ use crate::{
         resets::Resets,
         sio::Sio,
         spi::Spi,
+        ssi::Ssi,
         timer::Timer,
         uart::Uart,
     },
     ppb::Ppb,
+    uf2::{self, Uf2Error},
 };
 
 /// While the core sleeps with DMA running, time advances in slices of this
@@ -42,6 +45,7 @@ pub const BOOTROM_SIZE: u32 = 0x4000;
 /// RP2040 B2 bootrom, see `bootrom/README.md`.
 static BOOTROM_B2: &[u8; BOOTROM_SIZE as usize] = include_bytes!("../bootrom/b2.bin");
 pub const XIP_BASE: u32 = 0x1000_0000;
+pub const XIP_SSI_BASE: u32 = 0x1800_0000;
 pub const SRAM_BASE: u32 = 0x2000_0000;
 pub const SRAM_SIZE: u32 = 0x42000; // 264 KiB
 pub const APB_BASE: u32 = 0x4000_0000;
@@ -60,8 +64,13 @@ const APB_CLOCKS: u32 = 2;
 const APB_PSM: u32 = 4;
 const APB_RESETS: u32 = 3;
 const APB_IO_BANK0: u32 = 5;
+const APB_IO_QSPI: u32 = 6;
+/// IO_QSPI GPIO_QSPI_SS_CTRL: its OUTOVER field forces the flash chip select.
+const QSPI_SS_CTRL: u32 = 0x0C;
 const APB_PADS_BANK0: u32 = 7;
 const APB_XOSC: u32 = 9;
+const APB_BUSCTRL: u32 = 12;
+const APB_ROSC: u32 = 24;
 const APB_PLL_SYS: u32 = 10;
 const APB_PLL_USB: u32 = 11;
 const APB_TIMER: u32 = 21;
@@ -122,6 +131,11 @@ const fn reset_bit(block: u32) -> Option<u32> {
 // Status bits that init code spins on, forced to "ready".
 const XOSC_FORCED: &[(u32, u32)] = &[(0x04, 1 << 31)]; // STATUS.STABLE
 const PLL_FORCED: &[(u32, u32)] = &[(0x00, 1 << 31)]; // CS.LOCK
+// The ring oscillator runs from power-up (pico_rand asserts it does).
+const ROSC_FORCED: &[(u32, u32)] = &[(0x18, 1 << 31 | 1 << 12)]; // STATUS.STABLE, ENABLED
+// PERFSEL0..3 reset to 0x1F ("none"): pico_rand claims a free counter by
+// looking for that value, and hard-asserts if none is left.
+const BUSCTRL_RESET: &[(u32, u32)] = &[(0x0C, 0x1F), (0x14, 0x1F), (0x1C, 0x1F), (0x24, 0x1F)];
 
 pub struct SystemBus {
     pub bootrom: Ram,
@@ -131,6 +145,7 @@ pub struct SystemBus {
     pub uart: [Uart; 2],
     pub i2c: [I2c; 2],
     pub spi: [Spi; 2],
+    pub ssi: Ssi,
     pub dma: Dma,
     pub pio: [Pio; 2],
     pub timer: Timer,
@@ -168,11 +183,17 @@ impl SystemBus {
     pub fn new() -> Self {
         let stubs = (0..APB_BLOCKS as u32)
             .map(|b| {
-                RegStub::new(match b {
+                let forced = match b {
                     APB_XOSC => XOSC_FORCED,
                     APB_PLL_SYS | APB_PLL_USB => PLL_FORCED,
+                    APB_ROSC => ROSC_FORCED,
                     _ => &[],
-                })
+                };
+                let reset = match b {
+                    APB_BUSCTRL => BUSCTRL_RESET,
+                    _ => &[],
+                };
+                RegStub::with_reset(forced, reset)
             })
             .collect();
         Self {
@@ -187,6 +208,7 @@ impl SystemBus {
             uart: [Uart::new(), Uart::new()],
             i2c: [I2c::new(), I2c::new()],
             spi: [Spi::new(), Spi::new()],
+            ssi: Ssi::new(),
             dma: Dma::new(),
             pio: [Pio::new(), Pio::new()],
             timer: Timer::new(),
@@ -206,8 +228,8 @@ impl SystemBus {
         }
     }
 
-    /// Bring the devices that keep time on their own (timer, SysTick, PIO
-    /// dividers) up to the cycle the running instruction starts at. Needed
+    /// Bring the devices that keep time on their own (timer, SysTick, UARTs,
+    /// PIO dividers) up to the cycle the running instruction starts at. Needed
     /// before an access that can see or react to them, when a batch of quiet
     /// instructions has run ahead of them.
     #[inline]
@@ -224,6 +246,20 @@ impl SystemBus {
             for ppb in &mut self.ppb {
                 ppb.advance(to - from);
             }
+            self.update_uarts(to);
+        }
+    }
+
+    /// Run the UART lines up to `to`. A character that moved can raise an
+    /// interrupt or a DMA request, so everything gets a full sync.
+    fn update_uarts(&mut self, to: u64) {
+        let mut changed = false;
+        for uart in &mut self.uart {
+            changed |= uart.update(to);
+        }
+        if changed {
+            self.lines_dirty = true;
+            self.touched = true;
         }
     }
 
@@ -275,6 +311,9 @@ impl SystemBus {
             0xD if Sio::handles(addr - SIO_BASE) => self.sio.read(self.core, addr - SIO_BASE),
             0xE => self.ppb_read(addr),
             0x4 => self.apb_read(addr),
+            0x1 if addr & 0xFF00_0000 == XIP_SSI_BASE => {
+                self.ssi.read(addr & 0xFF, &mut self.flash.data)
+            }
             0x5 if addr - DMA_BASE < 0x4000 && !self.resets.in_reset(RESET_DMA) => {
                 self.dma.read(addr & 0xFFF)
             }
@@ -302,6 +341,9 @@ impl SystemBus {
             }
             0xE => self.ppb_write(addr, val),
             0x4 => self.apb_write(addr, val),
+            0x1 if addr & 0xFF00_0000 == XIP_SSI_BASE => {
+                self.ssi.write(addr & 0xFF, val, &mut self.flash.data)
+            }
             0x5 if addr - DMA_BASE < 0x4000 => {
                 if self.resets.in_reset(RESET_DMA) {
                     return;
@@ -456,6 +498,12 @@ impl SystemBus {
             self.timer.cycles_to_event(),
             self.ppb[0].cycles_to_event(),
             self.ppb[1].cycles_to_event(),
+            self.uart[0]
+                .next_event()
+                .map(|t| t.saturating_sub(self.time)),
+            self.uart[1]
+                .next_event()
+                .map(|t| t.saturating_sub(self.time)),
         ]
         .into_iter()
         .flatten()
@@ -511,6 +559,11 @@ impl SystemBus {
             };
             p.write(off, val)
         });
+        let rel = addr.wrapping_sub(APB_BASE);
+        if rel >> 14 == APB_IO_QSPI && rel & 0xFFF == QSPI_SS_CTRL {
+            let outover = self.stubs[APB_IO_QSPI as usize].read(QSPI_SS_CTRL) >> 8 & 3;
+            self.ssi.set_cs_override(outover, &mut self.flash.data);
+        }
     }
 
     fn read_word(&mut self, addr: u32) -> u32 {
@@ -576,13 +629,22 @@ impl Bus for SystemBus {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LoadError {
     Elf(ElfError),
+    Uf2(Uf2Error),
     /// A segment targets an address outside flash / SRAM.
     Unmapped(u32),
+    /// A UF2 image has no vector table after boot2 or at the start of SRAM.
+    NoVectorTable,
 }
 
 impl From<ElfError> for LoadError {
     fn from(e: ElfError) -> Self {
         LoadError::Elf(e)
+    }
+}
+
+impl From<Uf2Error> for LoadError {
+    fn from(e: Uf2Error) -> Self {
+        LoadError::Uf2(e)
     }
 }
 
@@ -683,6 +745,42 @@ impl System {
         self.cores[1].cycles = self.bus.time;
     }
 
+    /// Load an ELF or UF2 image, whichever `bytes` is, and reset the core
+    /// into it.
+    pub fn load_firmware(&mut self, bytes: &[u8]) -> Result<(), LoadError> {
+        if uf2::is_uf2(bytes) {
+            self.load_uf2(bytes)
+        } else {
+            self.load_elf(bytes)
+        }
+    }
+
+    /// Load a UF2 image and reset the core into it. A UF2 has no entry
+    /// point: start from the vector table the bootrom would use, after boot2
+    /// in flash, or at the start of SRAM for a RAM-only image.
+    pub fn load_uf2(&mut self, bytes: &[u8]) -> Result<(), LoadError> {
+        let blocks = uf2::parse(bytes)?;
+        for b in &blocks {
+            if !self.bus.load(b.addr, b.data) {
+                return Err(LoadError::Unmapped(b.addr));
+            }
+        }
+        let in_flash = blocks
+            .iter()
+            .any(|b| b.addr >= XIP_BASE && b.addr < SRAM_BASE);
+        let vt = if in_flash {
+            XIP_BASE + BOOT2_SIZE
+        } else {
+            SRAM_BASE
+        };
+        let ram = SRAM_BASE..=SRAM_BASE + SRAM_SIZE;
+        if !ram.contains(&self.bus.read32(vt)) {
+            return Err(LoadError::NoVectorTable);
+        }
+        self.reset_from_vector_table(vt);
+        Ok(())
+    }
+
     /// Load an ELF image and reset the core into it.
     pub fn load_elf(&mut self, bytes: &[u8]) -> Result<(), LoadError> {
         let elf = elf::parse(bytes)?;
@@ -707,6 +805,17 @@ impl System {
         for vt in candidates {
             let (sp, pc) = (self.bus.read32(vt), self.bus.read32(vt + 4));
             if pc & !1 == entry && ram.contains(&sp) {
+                self.reset_from_vector_table(vt);
+                return Ok(());
+            }
+        }
+        // pico-sdk flash images: the entry is `_entry_point`, which re-enters
+        // through the bootrom, while the table after boot2 holds
+        // `_reset_handler`. Start from that table, as the bootrom would.
+        if base == XIP_BASE {
+            let vt = XIP_BASE + BOOT2_SIZE;
+            let (sp, pc) = (self.bus.read32(vt), self.bus.read32(vt + 4));
+            if pc & 1 == 1 && (XIP_BASE..SRAM_BASE).contains(&pc) && ram.contains(&sp) {
                 self.reset_from_vector_table(vt);
                 return Ok(());
             }
@@ -744,6 +853,15 @@ impl System {
         r == InputResult::Done
     }
 
+    /// Host -> firmware: put bytes on UART `n`'s RX line. They arrive at the
+    /// baud rate the firmware set (see [`Uart::receive`]).
+    pub fn send_uart(&mut self, n: usize, bytes: &[u8]) {
+        self.bus.uart[n].receive(bytes);
+        self.bus.lines_dirty = true;
+        self.quiet = false;
+        self.refresh_core_views();
+    }
+
     /// Press or release a board button. False if there is no such button.
     pub fn set_button(&mut self, name: &str, down: bool) -> bool {
         self.input(name, if down { "press" } else { "release" }, 0)
@@ -765,6 +883,20 @@ impl System {
             self.bus.lines_dirty = true;
             self.bus.touched = true;
             self.advance_to(cycle);
+        }
+    }
+
+    /// Let the UARTs send what the firmware left in their TX FIFOs, as they
+    /// keep doing on the chip after the cores stop (pico-sdk's `_exit` is a
+    /// `bkpt` right after `main` returns, often with the last line still
+    /// queued). Device time moves on; the cores stay where they are.
+    pub fn drain_uarts(&mut self) {
+        // At most a FIFO plus the shift register each.
+        for _ in 0..2 * 34 {
+            match self.bus.uart.iter().filter_map(Uart::tx_event).min() {
+                Some(t) => self.idle_until(t),
+                None => break,
+            }
         }
     }
 
@@ -940,8 +1072,8 @@ impl System {
         self.quiet = self.is_quiet();
     }
 
-    /// The part of a device sync that never goes idle: timer, SysTick, and
-    /// the clocks of sleeping cores.
+    /// The part of a device sync that never goes idle: timer, SysTick, the
+    /// UART lines, and the clocks of sleeping cores.
     fn advance_clocks(&mut self, from: u64, to: u64) {
         let timer_lines = self.bus.timer.irq_lines();
         self.bus.timer.update(to);
@@ -951,6 +1083,7 @@ impl System {
         for ppb in &mut self.bus.ppb {
             ppb.advance(to - from);
         }
+        self.bus.update_uarts(to);
         // A sleeping core's clock keeps pace with real time.
         for (cpu, held) in self.cores.iter_mut().zip(self.held) {
             if cpu.sleeping && !held {
@@ -1290,7 +1423,7 @@ mod tests {
         bus.write32(RESETS, 0);
         bus.write32(UART0 + 0x30, 0x301 | 1 << 9);
         assert_eq!(bus.read32(UART0 + 0x18) & 0x10, 0x10); // RXFE
-        bus.uart[0].push_rx(b'a');
+        bus.uart[0].receive(b"a");
         assert_eq!(bus.read32(UART0 + 0x18) & 0x10, 0);
         assert_eq!(bus.read8(UART0), b'a');
         assert_eq!(bus.read32(UART0 + 0x18) & 0x10, 0x10);
@@ -1408,9 +1541,14 @@ mod tests {
         let mut bus = SystemBus::new();
         bus.resets.reset = 0;
         assert_eq!(bus.irq_lines(0), 0);
-        bus.write32(UART0 + 0x38, 1 << 5); // TX interrupt unmasked
+        for base in [UART0, UART0 + 0x4000] {
+            bus.write32(base + 0x30, 0x301 | 1 << 9);
+            bus.write32(base + 0x38, 1 << 4); // RX interrupt unmasked
+        }
+        assert_eq!(bus.irq_lines(0), 0);
+        bus.uart[0].receive(b"a");
         assert_eq!(bus.irq_lines(0), 1 << IRQ_UART0);
-        bus.write32(UART0 + 0x4000 + 0x38, 1 << 5);
+        bus.uart[1].receive(b"b");
         assert_eq!(bus.irq_lines(0), 1 << IRQ_UART0 | 1 << IRQ_UART1);
         bus.write32(TIMER + 0x38, 1 << 2);
         bus.write32(TIMER + 0x3C, 1 << 2); // force alarm 2
@@ -1495,6 +1633,80 @@ mod tests {
             sys.load_elf(&build(0, &[(end - 4, &[1], 16)])),
             Err(LoadError::Unmapped(end - 4))
         );
+    }
+
+    // ---- UF2 loading ------------------------------------------------------
+
+    use crate::uf2::testutil::{build as build_uf2, rp2040};
+
+    #[test]
+    fn load_uf2_boots_from_vector_table_after_boot2() {
+        let mut table = alloc::vec::Vec::new();
+        table.extend_from_slice(&(SRAM_BASE + 0x1000).to_le_bytes());
+        table.extend_from_slice(&(XIP_BASE + 0x1C1).to_le_bytes());
+        let mut sys = System::new();
+        sys.load_firmware(&build_uf2(&[
+            rp2040(XIP_BASE, &[0xAA; 256]),
+            rp2040(XIP_BASE + 0x100, &table),
+        ]))
+        .unwrap();
+        assert_eq!(
+            (sys.cores[0].msp, sys.cores[0].pc, sys.bus.vtor[0]),
+            (SRAM_BASE + 0x1000, XIP_BASE + 0x1C0, XIP_BASE + 0x100)
+        );
+        assert_eq!(sys.bus.read32(XIP_BASE), 0xAAAA_AAAA);
+    }
+
+    #[test]
+    fn load_uf2_ram_image() {
+        let mut table = alloc::vec::Vec::new();
+        table.extend_from_slice(&(SRAM_BASE + 0x800).to_le_bytes());
+        table.extend_from_slice(&(SRAM_BASE + 0x41).to_le_bytes());
+        let mut sys = System::new();
+        sys.load_firmware(&build_uf2(&[rp2040(SRAM_BASE, &table)]))
+            .unwrap();
+        assert_eq!(
+            (sys.cores[0].msp, sys.cores[0].pc, sys.bus.vtor[0]),
+            (SRAM_BASE + 0x800, SRAM_BASE + 0x40, SRAM_BASE)
+        );
+    }
+
+    #[test]
+    fn load_uf2_reports_errors() {
+        let mut sys = System::new();
+        assert_eq!(
+            sys.load_firmware(&build_uf2(&[rp2040(0x3000_0000, &[1])])),
+            Err(LoadError::Unmapped(0x3000_0000))
+        );
+        assert_eq!(
+            sys.load_firmware(&build_uf2(&[rp2040(XIP_BASE, &[0; 0x108])])),
+            Err(LoadError::NoVectorTable)
+        );
+        // Not UF2: falls through to the ELF loader.
+        assert_eq!(
+            sys.load_firmware(b"nope"),
+            Err(LoadError::Elf(ElfError::TooShort))
+        );
+    }
+
+    #[test]
+    fn drain_uarts_sends_what_is_left_after_a_breakpoint() {
+        const UART0: u32 = APB_BASE + 0x34000;
+        let mut sys = System::new();
+        sys.bus.resets.reset = 0;
+        sys.bus.write32(UART0 + 0x24, 67); // IBRD/FBRD: 115200 baud at 125 MHz
+        sys.bus.write32(UART0 + 0x28, 52);
+        sys.bus.write32(UART0 + 0x2C, 3 << 5 | 1 << 4); // 8N1, FIFOs on
+        sys.bus.write32(UART0 + 0x30, 0x301); // UARTEN | TXE | RXE
+        for &b in b"bye\n" {
+            sys.bus.write32(UART0, b as u32);
+        }
+        assert!(sys.bus.uart[0].tx.len() < 4);
+        let t = sys.cycles();
+        sys.drain_uarts();
+        assert_eq!(sys.bus.uart[0].tx, b"bye\n");
+        assert!(sys.cycles() > t, "the line takes time");
+        assert_eq!(sys.bus.uart[0].tx_event(), None);
     }
 
     // ---- stepping, sleep and interrupt delivery ---------------------------

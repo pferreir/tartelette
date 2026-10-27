@@ -7,7 +7,7 @@ use rp2040_core::system::CYCLES_PER_US;
 
 use crate::session::{BtMode, NetMode, Network, Source};
 
-/// Tartelette, an RP2040 emulator: runs a firmware ELF on an emulated board, with a front
+/// Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on an emulated board, with a front
 /// panel window or headless.
 ///
 /// Headless, UART0 output goes to stdout and UART1 output to stderr, with the
@@ -47,7 +47,7 @@ pub struct PartsArgs {
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Firmware ELF to run (with a window, it can also be opened later)
+    /// Firmware ELF or UF2 to run (with a window, it can also be opened later)
     #[arg(required_if_eq("headless", "true"))]
     pub firmware: Option<PathBuf>,
     /// Board description file (TOML), or the name of a built-in board: btl-01

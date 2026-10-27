@@ -12,7 +12,7 @@
 //! backplane function) and finally one status word.
 use alloc::vec::Vec;
 
-use super::chip::Chip;
+use super::chip::{Chip, Framing};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -110,11 +110,8 @@ impl Gspi {
         )
     }
 
-    fn word(&mut self, mut w: u32, chip: &mut Chip) {
-        let swapped = chip.swapped();
-        if swapped {
-            w = w.rotate_left(16);
-        }
+    fn word(&mut self, w: u32, chip: &mut Chip) {
+        let w = chip.framing().wire(w);
         match self.state {
             State::Command => {
                 let write = w >> 31 != 0;
@@ -153,26 +150,21 @@ impl Gspi {
             u32::from_le_bytes(b)
         }));
         words.push(chip.status());
-        self.start_output(words, chip.swapped());
+        self.start_output(words, chip.framing());
     }
 
     fn finish_write(&mut self, chip: &mut Chip) {
-        let swapped = chip.swapped();
+        let framing = chip.framing();
         let mut bytes: Vec<u8> = self.words_in.iter().flat_map(|w| w.to_le_bytes()).collect();
         bytes.truncate(self.cmd.len);
         chip.write(self.cmd.func, self.cmd.addr, &bytes);
         // The status word of this transaction goes out in the framing the
         // host used for it (a write to the bus control register can change that).
-        self.start_output(alloc::vec![chip.status()], swapped);
+        self.start_output(alloc::vec![chip.status()], framing);
     }
 
-    fn start_output(&mut self, mut words: Vec<u32>, swapped: bool) {
-        if swapped {
-            for w in &mut words {
-                *w = w.rotate_left(16);
-            }
-        }
-        self.out = words;
+    fn start_output(&mut self, words: Vec<u32>, framing: Framing) {
+        self.out = words.into_iter().map(|w| framing.wire(w)).collect();
         self.out_pos = 0;
         self.state = State::Output;
     }

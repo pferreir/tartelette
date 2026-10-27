@@ -48,6 +48,10 @@ tartelette mkdisk card.img --dir data   # a blank FAT16 SD card image
 cd crates/tartelette && trunk serve --release   # web: open the page, then open/drop the files
 ```
 
+The firmware can be an ELF or a UF2 (as dragged onto a Pico in BOOTSEL mode).
+An ELF is better when you have one: a UF2 has no symbols, so there is no defmt
+log.
+
 From the checkout, `cargo run --release -p tartelette --` does the same as
 `tartelette`. See `tartelette --help` for every option. Headless, UART0 goes to stdout and
 UART1, board events and the firmware log to stderr.

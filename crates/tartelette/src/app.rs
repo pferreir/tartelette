@@ -418,7 +418,7 @@ impl eframe::App for App {
                 (Some(r), Some(layout)) => panel::show(ui, layout, &mut self.panel, &r.session),
                 _ => {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("Drop a firmware ELF and a board .toml file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
+                        ui.label(RichText::new("Drop a firmware ELF or UF2 and a board .toml file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
                     });
                     Vec::new()
                 }

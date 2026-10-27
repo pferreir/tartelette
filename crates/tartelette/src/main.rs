@@ -1,4 +1,4 @@
-//! Tartelette, an RP2040 emulator: runs a firmware ELF on the emulated board, either with a
+//! Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on the emulated board, either with a
 //! front panel that shows the board's parts (screen, LEDs, buttons, knobs,
 //! ...) as an interface, or headless (`--headless`) for scripts and tests.
 //! See `--help` for the options.
