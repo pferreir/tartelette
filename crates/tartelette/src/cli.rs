@@ -67,6 +67,11 @@ impl RunArgs {
 #[derive(Args, Debug)]
 #[command(next_help_heading = "Headless")]
 pub struct Headless {
+    /// Pace the run against the wall clock: 1 is real time. By default it
+    /// runs as fast as it can, which can make the firmware's timeouts expire
+    /// before real network replies arrive (with `--net user`)
+    #[arg(long, value_name = "X", requires = "headless")]
+    pub speed: Option<f64>,
     /// Stop after N cycles (125 per microsecond)
     #[arg(long, value_name = "N", requires = "headless")]
     pub max_cycles: Option<u64>,

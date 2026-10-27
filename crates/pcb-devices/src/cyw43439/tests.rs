@@ -366,6 +366,8 @@ impl Host {
         }
         let p = &f[f[7] as usize..];
         match ch {
+            // A frame with no payload only carries credit.
+            0 if p.is_empty() => {}
             0 => {
                 let len = u32::from_le_bytes(p[4..8].try_into().unwrap()) as usize;
                 let id = u16::from_le_bytes([p[10], p[11]]);
@@ -587,6 +589,21 @@ fn credits_keep_the_host_sending() {
     for _ in 0..40 {
         h.get_var("cur_etheraddr", 6);
     }
+}
+
+#[test]
+fn a_host_out_of_credit_gets_more_without_asking() {
+    // Data frames get no answer (the link is down, so they go nowhere); once
+    // the host spends its last credit the chip sends an empty frame with more,
+    // so a driver that only reads on the interrupt doesn't stall.
+    let mut h = booted(BOARD);
+    let eth = [0u8; 4 + 14];
+    while h.credit() {
+        h.send_frame(2, 14, &eth);
+    }
+    assert!(h.wait_irq(10_000), "the chip asks for attention");
+    h.service_irq();
+    assert!(h.credit(), "credit came back");
 }
 
 #[test]

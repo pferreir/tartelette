@@ -84,6 +84,9 @@ pub struct Whd {
     cycles_per_us: u64,
     /// Sequence number of the last frame the host sent (the credit base).
     host_seq: u8,
+    /// The credit last given to the host: it may send up to (not
+    /// including) this sequence number.
+    granted: u8,
     tx_seq: u8,
     rx: VecDeque<Frame>,
     later: Vec<(u64, Later)>,
@@ -142,6 +145,7 @@ impl Whd {
             backend: None,
             cycles_per_us,
             host_seq: 0,
+            granted: 1,
             tx_seq: 0,
             rx: VecDeque::new(),
             later: Vec::new(),
@@ -197,7 +201,8 @@ impl Whd {
         v.push(0); // next length
         v.push(SDPCM_HEADER as u8); // data offset
         v.push(0); // flow control
-        v.push(self.host_seq.wrapping_add(8)); // credit: the host may send 8 more
+        self.granted = self.host_seq.wrapping_add(8);
+        v.push(self.granted); // credit: the host may send 8 more
         v.extend_from_slice(&[0, 0]);
         v.extend_from_slice(&f.payload);
         Some(v)
@@ -269,6 +274,13 @@ impl Whd {
             CONTROL => self.ioctl(now, payload),
             DATA => self.data(payload),
             _ => {}
+        }
+        // That was its last credit and nothing is on its way to it: a frame
+        // with no payload hands out more, as the chip does when it frees
+        // buffers (a driver that waits for the interrupt would stall).
+        let coming = !self.rx.is_empty() || self.later.iter().any(|l| matches!(l.1, Later::Frame(_)));
+        if !coming && self.host_seq.wrapping_add(1) == self.granted {
+            self.rx.push_back(Frame { channel: CONTROL, payload: Vec::new() });
         }
     }
 

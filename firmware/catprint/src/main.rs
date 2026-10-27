@@ -27,7 +27,9 @@ use cyw43::{aligned_bytes, Cyw43439, JoinOptions};
 use cyw43_pio::PioSpi;
 use defmt::{info, unwrap};
 use embassy_executor::Spawner;
-use embassy_net::{Config, HardwareAddress, Stack, StackResources};
+use embassy_net::iface::Iface;
+use embassy_net::wire::HardwareAddress;
+use embassy_net::{Stack, StackStorage};
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
@@ -275,7 +277,7 @@ async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
@@ -285,7 +287,7 @@ async fn ble_task(controller: ExternalController<cyw43::bluetooth::BtDriver<'sta
 }
 
 #[embassy_executor::task]
-async fn app_task(mut control: cyw43::Control<'static>, stack: Stack<'static>) {
+async fn app_task(mut control: cyw43::Control<'static>, stack: Stack<'static>, iface: Iface<'static>) {
     set(Stage::Wifi, Step::Run);
     loop {
         log(&fmt::<40>(format_args!("wifi: joining {SSID}")));
@@ -302,14 +304,16 @@ async fn app_task(mut control: cyw43::Control<'static>, stack: Stack<'static>) {
     }
     set(Stage::Wifi, Step::Ok);
     set(Stage::Dhcp, Step::Run);
-    stack.wait_config_up().await;
-    let cfg = unwrap!(stack.config_v4());
+    iface.wait_config_up().await;
+    let lease = unwrap!(iface.dhcpv4_lease());
     static REPORT: StaticCell<Report> = StaticCell::new();
     let report = REPORT.init(Report::new(SSID));
-    report.lan_ip = fmt(format_args!("{}", cfg.address.address()));
-    report.gateway = cfg.gateway.map(|g| fmt(format_args!("{g}"))).unwrap_or_default();
-    let HardwareAddress::Ethernet(mac) = stack.hardware_address();
-    report.mac = mac.0;
+    report.lan_ip = fmt(format_args!("{}", lease.address.address()));
+    report.gateway = lease.router.map(|g| fmt(format_args!("{g}"))).unwrap_or_default();
+    #[allow(irrefutable_let_patterns)]
+    if let HardwareAddress::Ethernet(mac) = iface.hardware_addr() {
+        report.mac = mac.0;
+    }
     log(&fmt::<40>(format_args!("dhcp: {}", report.lan_ip)));
     with(|s| s.ip = report.lan_ip.clone());
     set(Stage::Dhcp, Step::Ok);
@@ -422,9 +426,9 @@ async fn main(spawner: Spawner) {
 
     // Screen first, so the boot is visible.
     let mut cfg = spi::Config::default();
-    cfg.frequency = 31_250_000;
+    cfg.frequency = embassy_rp::time::Hertz(31_250_000);
     let mut lcd = Lcd {
-        spi: Spi::new_blocking_txonly(p.SPI0, p.PIN_18, p.PIN_19, cfg),
+        spi: unwrap!(Spi::new_blocking_txonly(p.SPI0, p.PIN_18, p.PIN_19, cfg).ok()),
         cs: Output::new(p.PIN_9, Level::High),
         dc: Output::new(p.PIN_13, Level::Low),
     };
@@ -457,10 +461,13 @@ async fn main(spawner: Spawner) {
     control.init(clm).await;
     control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
 
-    static RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
-    let (stack, net_runner) = embassy_net::new(net_device, Config::dhcpv4(Default::default()), RESOURCES.init(StackResources::new()), 0xca7_f00d_0b17_0001);
+    static STACK: StaticCell<StackStorage<'static>> = StaticCell::new();
+    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), 0xca7_f00d_0b17_0001);
+    static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
+    let iface = unwrap!(stack.add_iface(DEVICE.init(net_device)).ok());
+    iface.set_dhcpv4(Some(Default::default()));
     spawner.spawn(unwrap!(net_task(net_runner)));
-    spawner.spawn(unwrap!(app_task(control, stack)));
+    spawner.spawn(unwrap!(app_task(control, stack, iface)));
     spawner.spawn(unwrap!(ble_task(ExternalController::new(bt_device))));
 
     let mut prev = [false; 4];

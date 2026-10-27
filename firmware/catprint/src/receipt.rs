@@ -261,6 +261,7 @@ fn weather(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
     let (rise, set) = (minutes(w.get(8)), minutes(w.get(9)));
     let label: String<48> = s(format_args!("daylight {} - {}", hhmm(rise.unwrap_or(0) as i64 * 60), hhmm(set.unwrap_or(0) as i64 * 60)));
     p.line_text(&label, SMALL);
+    p.gap(4);
     let (y0, h) = (p.y, 18);
     if let (Some(a), Some(b)) = (rise, set) {
         p.shade(a * 16 / 60, y0, (b - a) * 16 / 60, h, 5);
@@ -280,7 +281,8 @@ fn weather(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
     if let Some(t) = unix {
         let now = (t + offset as i64).rem_euclid(86_400) as i32 / 60;
         let x = now * 16 / 60;
-        p.fill(x - 1, y0 - 4, 3, h + 9, true);
+        // Within the bar, clear of the label above and the hours below.
+        p.fill(x - 1, y0 - 2, 3, h + 4, true);
         let lx = if x > W - 24 { x - 22 } else { x + 4 };
         p.fill(lx - 1, y0 + 2, 20, 11, false);
         p.text(lx, y0 + 3, "NOW", SMALL, 1, true);

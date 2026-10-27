@@ -47,7 +47,14 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let end = h.max_cycles.unwrap_or(u64::MAX); // the core starts at cycle 0
     let mut pending = inputs.into_iter().peekable();
+    let started = std::time::Instant::now();
     let reason = loop {
+        if let Some(speed) = h.speed {
+            let due = std::time::Duration::from_secs_f64(us(s.sys.cycles()) / 1e6 / speed);
+            if let Some(wait) = due.checked_sub(started.elapsed()) {
+                std::thread::sleep(wait);
+            }
+        }
         let sys = &mut s.sys;
         while let Some(i) = pending.next_if(|i| i.cycle <= sys.cycles()) {
             if !sys.input(&i.part, &i.action, i.value) {
@@ -97,6 +104,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     }
     for (name, file) in &h.dump_paper {
         match board.device::<Cyw43439>(name).and_then(|c| c.bt_backend().paper()) {
+            Some([]) => eprintln!("--dump-paper: {name:?}'s printer has printed nothing yet"),
             Some(paper) => save_paper(paper, file)?,
             None => eprintln!("--dump-paper: no cat printer in range of {name:?} (it needs --bt mock)"),
         }

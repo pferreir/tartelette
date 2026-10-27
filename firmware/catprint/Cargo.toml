@@ -8,7 +8,8 @@ edition = "2024"
 # things from the internet over Wi-Fi and prints them as a receipt on an
 # MXW01 "cat printer" over Bluetooth LE. Build with
 #   CYW43_FIRMWARE_DIR=/path/to/cyw43-firmware cargo build --release
-# Same Embassy and trouble revisions as `firmware/ble-test`.
+# Embassy at 10592165 (cyw43 waits for the chip's interrupt with Bluetooth on
+# instead of busy-polling it), trouble `main` as in `firmware/ble-test`.
 
 [workspace]
 
@@ -16,7 +17,7 @@ edition = "2024"
 embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "defmt", "executor-interrupt"] }
 embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { version = "0.10", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
-embassy-net = { version = "0.9", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4"] }
+embassy-net = { version = "0.9", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet", "dns", "ipv4"] }
 embassy-sync = "0.8"
 embassy-futures = "0.1.2"
 trouble-host = { git = "https://github.com/embassy-rs/trouble.git", branch = "main", features = ["defmt", "scan", "default-packet-pool-mtu-128"] }
@@ -36,15 +37,14 @@ heapless = "0.9"
 libm = "0.2"
 
 [patch.crates-io]
-cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-net-driver = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
 
 [profile.release]
 debug = 2

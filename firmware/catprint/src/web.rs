@@ -4,8 +4,9 @@ use core::fmt::Write as _;
 
 use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
-use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Stack};
+use embassy_net::Stack;
+use embassy_net::udp::UdpSocket;
+use embassy_net::wire::{IpAddress, IpEndpoint, Ipv4Address};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_io_async::Write;
 use heapless::String;
@@ -26,20 +27,16 @@ pub async fn resolve(stack: Stack<'_>, name: &str) -> Option<Ipv4Address> {
 /// Unix time in seconds, and the round trip in µs.
 pub async fn ntp(stack: Stack<'_>, server: &str) -> Option<(u64, u32)> {
     let ip = resolve(stack, server).await?;
-    let mut rx_meta = [PacketMetadata::EMPTY; 2];
-    let mut rx_buf = [0; 128];
-    let mut tx_meta = [PacketMetadata::EMPTY; 2];
-    let mut tx_buf = [0; 128];
-    let mut sock = UdpSocket::new(stack, &mut rx_meta, &mut rx_buf, &mut tx_meta, &mut tx_buf);
+    let mut sock = UdpSocket::new(stack).ok()?;
     sock.bind(40123).ok()?;
     let mut pkt = [0u8; 48];
     pkt[0] = 0x1B; // LI 0, version 3, client
     let t = Instant::now();
     sock.send_to(&pkt, IpEndpoint::new(ip.into(), 123)).await.ok()?;
-    let mut buf = [0u8; 64];
-    let (n, _) = with_timeout(Duration::from_secs(4), sock.recv_from(&mut buf)).await.ok()?.ok()?;
+    let reply = with_timeout(Duration::from_secs(4), sock.recv()).await.ok()?.ok()?;
     let us = t.elapsed().as_micros() as u32;
-    if n < 48 {
+    let buf: &[u8] = &reply;
+    if buf.len() < 48 {
         return None;
     }
     let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as u64;
@@ -80,7 +77,7 @@ async fn fetch(stack: Stack<'_>, host: &str, path: &str, buf: &mut [u8], probe: 
     let ip = resolve(stack, host).await?;
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 512];
-    let mut sock = TcpSocket::new(stack, &mut rx, &mut tx);
+    let mut sock = TcpSocket::new(stack, &mut rx, &mut tx).ok()?;
     sock.set_timeout(Some(Duration::from_secs(10)));
     sock.connect(IpEndpoint::new(ip.into(), 80)).await.ok()?;
     let mut req: String<384> = String::new();

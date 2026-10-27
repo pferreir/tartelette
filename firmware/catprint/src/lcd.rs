@@ -3,7 +3,8 @@
 use core::convert::Infallible;
 
 use embassy_rp::gpio::Output;
-use embassy_rp::spi::{Blocking, Spi};
+use embassy_rp::mode::Blocking;
+use embassy_rp::spi::Spi;
 use embassy_time::Timer;
 use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
 use embedded_graphics::pixelcolor::raw::RawU16;
