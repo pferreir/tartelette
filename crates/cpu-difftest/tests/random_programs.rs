@@ -14,7 +14,7 @@ const PROGRAM_LEN: usize = 160;
 fn random_insn(rng: &mut fastrand::Rng) -> u16 {
     loop {
         let hw = match rng.u8(..10) {
-            0..=7 => rng.u16(0..0xB000),  // everything up to the misc group
+            0..=7 => rng.u16(0..0xB000),     // everything up to the misc group
             8 => 0xB000 | rng.u16(..0x1000), // misc: SP adjust, extend, push/pop, rev, hints
             _ => 0xD000 | rng.u16(..0x1000), // conditional branches, B
         };
@@ -53,7 +53,8 @@ fn random_programs() {
                 continue 'program;
             }
             let hw = u16::from_le_bytes([pair.bus.mem[off], pair.bus.mem[off + 1]]);
-            let hw2 = is_wide(hw).then(|| u16::from_le_bytes([pair.bus.mem[off + 2], pair.bus.mem[off + 3]]));
+            let hw2 = is_wide(hw)
+                .then(|| u16::from_le_bytes([pair.bus.mem[off + 2], pair.bus.mem[off + 3]]));
             if unpredictable(hw) || not_comparable(hw, hw2, &before) {
                 *ended.entry("unpredictable insn".into()).or_default() += 1;
                 continue 'program;
@@ -92,10 +93,17 @@ fn random_programs() {
         *ended.entry("max steps".into()).or_default() += 1;
     }
 
-    eprintln!("{programs} programs, {steps_ok} lock-step instructions compared, {deviations} ended on a known deviation");
+    eprintln!(
+        "{programs} programs, {steps_ok} lock-step instructions compared, {deviations} ended on a known deviation"
+    );
     eprintln!("chains ended by: {ended:?}");
     for f in &failures {
         eprintln!("{f}");
     }
-    assert!(failures.is_empty(), "{} diverging programs (first {} shown)", failures.len(), failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} diverging programs (first {} shown)",
+        failures.len(),
+        failures.len()
+    );
 }

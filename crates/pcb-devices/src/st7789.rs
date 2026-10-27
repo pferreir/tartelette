@@ -14,6 +14,7 @@
 //! the glass shows. A `update` event (value = pixels written) is emitted
 //! when chip select is released after pixel data.
 use alloc::{boxed::Box, vec, vec::Vec};
+
 use pcb::{BusType, Device, Io, Kind, Param, SpiDevice};
 
 // Commands
@@ -83,17 +84,35 @@ pub const KIND: Kind = Kind {
         Param::pin("dc", "data/command select"),
         Param::pin("rst", "reset, active low").optional(),
         Param::pin("bl", "backlight enable").optional(),
-        Param::int("width", 1, 480, "panel width in pixels, in its native orientation").default_int(240),
+        Param::int(
+            "width",
+            1,
+            480,
+            "panel width in pixels, in its native orientation",
+        )
+        .default_int(240),
         Param::int("height", 1, 480, "panel height in pixels").default_int(320),
     ],
     build: |p| {
         let (w, h) = (p.int("width") as usize, p.int("height") as usize);
-        Ok(Box::new(St7789::new(w, h, p.pin("dc"), p.opt_pin("rst"), p.opt_pin("bl"))))
+        Ok(Box::new(St7789::new(
+            w,
+            h,
+            p.pin("dc"),
+            p.opt_pin("rst"),
+            p.opt_pin("bl"),
+        )))
     },
 };
 
 impl St7789 {
-    pub fn new(width: usize, height: usize, dc: usize, rst: Option<usize>, bl: Option<usize>) -> Self {
+    pub fn new(
+        width: usize,
+        height: usize,
+        dc: usize,
+        rst: Option<usize>,
+        bl: Option<usize>,
+    ) -> Self {
         let mut d = Self {
             width,
             height,
@@ -185,7 +204,11 @@ impl St7789 {
         let bgr = self.madctl & BGR != 0;
         for (i, &w) in self.ram.iter().enumerate() {
             let w = w ^ flip;
-            let (mut r, g, mut b) = ((w >> 11) as u8 & 0x1F, (w >> 5) as u8 & 0x3F, w as u8 & 0x1F);
+            let (mut r, g, mut b) = (
+                (w >> 11) as u8 & 0x1F,
+                (w >> 5) as u8 & 0x3F,
+                w as u8 & 0x1F,
+            );
             if bgr {
                 core::mem::swap(&mut r, &mut b);
             }
@@ -226,7 +249,10 @@ impl St7789 {
                 self.args[self.nargs.min(3)] = byte;
                 self.nargs += 1;
                 if self.nargs == 4 {
-                    let range = (u16::from_be_bytes([self.args[0], self.args[1]]), u16::from_be_bytes([self.args[2], self.args[3]]));
+                    let range = (
+                        u16::from_be_bytes([self.args[0], self.args[1]]),
+                        u16::from_be_bytes([self.args[2], self.args[3]]),
+                    );
                     if self.cmd == CASET {
                         self.cols = range;
                         self.col = range.0;
@@ -268,7 +294,11 @@ impl St7789 {
     /// Put a pixel at the current window position and step the counters.
     fn store(&mut self, word: u16) {
         // The counters walk the window; MADCTL decides where that lands in RAM.
-        let (mut x, mut y) = if self.madctl & MV != 0 { (self.row as usize, self.col as usize) } else { (self.col as usize, self.row as usize) };
+        let (mut x, mut y) = if self.madctl & MV != 0 {
+            (self.row as usize, self.col as usize)
+        } else {
+            (self.col as usize, self.row as usize)
+        };
         if self.madctl & MX != 0 {
             x = (self.width - 1).wrapping_sub(x);
         }
@@ -282,10 +312,18 @@ impl St7789 {
         self.total_pixels += 1;
         // The counters also wrap at the end of RAM, so an out-of-range window
         // end (firmware that sends `width` instead of `width - 1`) is clamped.
-        let (cmax, rmax) = if self.madctl & MV != 0 { (self.height, self.width) } else { (self.width, self.height) };
+        let (cmax, rmax) = if self.madctl & MV != 0 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        };
         if self.col >= self.cols.1.min(cmax as u16 - 1) {
             self.col = self.cols.0;
-            self.row = if self.row >= self.rows.1.min(rmax as u16 - 1) { self.rows.0 } else { self.row + 1 };
+            self.row = if self.row >= self.rows.1.min(rmax as u16 - 1) {
+                self.rows.0
+            } else {
+                self.row + 1
+            };
         } else {
             self.col += 1;
         }
@@ -329,7 +367,11 @@ impl SpiDevice for St7789 {
     fn transfer(&mut self, io: &mut Io, mosi: u16, _bits: u8) -> u16 {
         let byte = mosi as u8;
         if io.level(self.dc) {
-            let reply = if self.reply.is_empty() { 0 } else { self.reply.remove(0) };
+            let reply = if self.reply.is_empty() {
+                0
+            } else {
+                self.reply.remove(0)
+            };
             self.data(byte);
             reply as u16
         } else {
@@ -341,9 +383,10 @@ impl SpiDevice for St7789 {
 
 #[cfg(test)]
 mod tests {
+    use pcb::BoardEvent;
+
     use super::*;
     use crate::testutil::FakePins;
-    use pcb::BoardEvent;
 
     const DC: usize = 13;
     const RST: usize = 17;
@@ -357,13 +400,21 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             // A small panel keeps the expected values readable.
-            let mut r = Rig { pins: FakePins::default(), events: Vec::new(), lcd: St7789::new(8, 6, DC, Some(RST), None) };
+            let mut r = Rig {
+                pins: FakePins::default(),
+                events: Vec::new(),
+                lcd: St7789::new(8, 6, DC, Some(RST), None),
+            };
             r.pins.set_chip(RST, true);
-            r.lcd.select(&mut Io::new(&mut r.pins, 0, &mut r.events, 0, false), true);
+            r.lcd
+                .select(&mut Io::new(&mut r.pins, 0, &mut r.events, 0, false), true);
             r
         }
         fn io(&mut self) -> (&mut St7789, Io<'_>) {
-            (&mut self.lcd, Io::new(&mut self.pins, 5, &mut self.events, 0, false))
+            (
+                &mut self.lcd,
+                Io::new(&mut self.pins, 5, &mut self.events, 0, false),
+            )
         }
         fn cmd(&mut self, c: u8, data: &[u8]) {
             self.pins.set_chip(DC, false);
@@ -398,7 +449,10 @@ mod tests {
         r.pixels(1, 6);
         assert_eq!([at(&r, 2, 1), at(&r, 3, 1), at(&r, 4, 1)], [1, 2, 3]);
         assert_eq!([at(&r, 2, 2), at(&r, 3, 2), at(&r, 4, 2)], [4, 5, 6]);
-        assert_eq!((at(&r, 1, 1), at(&r, 5, 1), at(&r, 2, 0), at(&r, 2, 3)), (0, 0, 0, 0));
+        assert_eq!(
+            (at(&r, 1, 1), at(&r, 5, 1), at(&r, 2, 0), at(&r, 2, 3)),
+            (0, 0, 0, 0)
+        );
         // More data wraps back to the window's start.
         r.cmd(RAMWRC, &[0x00, 0x63]);
         assert_eq!(at(&r, 2, 1), 99);
@@ -495,7 +549,11 @@ mod tests {
         assert!(r.lcd.is_showing());
         assert_eq!(&r.lcd.rgba()[..4], [255, 0, 0, 255]);
         r.cmd(MADCTL, &[BGR]);
-        assert_eq!(&r.lcd.rgba()[..4], [0, 0, 255, 255], "BGR order swaps red and blue");
+        assert_eq!(
+            &r.lcd.rgba()[..4],
+            [0, 0, 255, 255],
+            "BGR order swaps red and blue"
+        );
         r.cmd(INVON, &[]);
         assert_eq!(&r.lcd.rgba()[..4], [255, 255, 0, 255]);
         r.cmd(INVOFF, &[]);
@@ -550,9 +608,17 @@ mod tests {
     #[test]
     fn factory_parses_parameters() {
         let parse = |t: &str| pcb::Board::parse_with(t, &crate::registry());
-        let b = parse("parts.s = { kind = \"st7789\", dc = 13, rst = 17, width = 240, height = 240 }").unwrap();
+        let b =
+            parse("parts.s = { kind = \"st7789\", dc = 13, rst = 17, width = 240, height = 240 }")
+                .unwrap();
         let lcd = b.device::<St7789>("s").unwrap();
-        assert_eq!((lcd.size(), lcd.framebuffer().len()), ((240, 240), 240 * 240));
-        assert_eq!(parse("parts.s = { kind = \"st7789\" }").unwrap_err().msg, "missing dc (data/command select)");
+        assert_eq!(
+            (lcd.size(), lcd.framebuffer().len()),
+            ((240, 240), 240 * 240)
+        );
+        assert_eq!(
+            parse("parts.s = { kind = \"st7789\" }").unwrap_err().msg,
+            "missing dc (data/command select)"
+        );
     }
 }

@@ -1,62 +1,141 @@
+use alloc::vec::Vec;
+
 use super::*;
 use crate::bus::{Bus, Ram};
-use alloc::vec::Vec;
 
 struct TestBus(Ram);
 
 impl Bus for TestBus {
-    fn read8(&mut self, a: u32) -> u8 { self.0.read8(a) }
-    fn read16(&mut self, a: u32) -> u16 { self.0.read16(a) }
-    fn read32(&mut self, a: u32) -> u32 { self.0.read32(a) }
-    fn write8(&mut self, a: u32, v: u8) { self.0.write8(a, v) }
-    fn write16(&mut self, a: u32, v: u16) { self.0.write16(a, v) }
-    fn write32(&mut self, a: u32, v: u32) { self.0.write32(a, v) }
+    fn read8(&mut self, a: u32) -> u8 {
+        self.0.read8(a)
+    }
+    fn read16(&mut self, a: u32) -> u16 {
+        self.0.read16(a)
+    }
+    fn read32(&mut self, a: u32) -> u32 {
+        self.0.read32(a)
+    }
+    fn write8(&mut self, a: u32, v: u8) {
+        self.0.write8(a, v)
+    }
+    fn write16(&mut self, a: u32, v: u16) {
+        self.0.write16(a, v)
+    }
+    fn write32(&mut self, a: u32, v: u32) {
+        self.0.write32(a, v)
+    }
 }
 
 const CODE: u32 = 0x100;
 const STACK: u32 = 0x8000;
 
 // ---- encoders --------------------------------------------------------------
-fn movs(rd: u16, imm: u16) -> u16 { 0x2000 | rd << 8 | imm }
-fn cmp_i(rd: u16, imm: u16) -> u16 { 0x2800 | rd << 8 | imm }
-fn adds_i8(rd: u16, imm: u16) -> u16 { 0x3000 | rd << 8 | imm }
-fn subs_i8(rd: u16, imm: u16) -> u16 { 0x3800 | rd << 8 | imm }
-fn adds(rd: u16, rn: u16, rm: u16) -> u16 { 0x1800 | rm << 6 | rn << 3 | rd }
-fn subs(rd: u16, rn: u16, rm: u16) -> u16 { 0x1A00 | rm << 6 | rn << 3 | rd }
-fn lsls_i(rd: u16, rm: u16, imm: u16) -> u16 { imm << 6 | rm << 3 | rd }
-fn lsrs_i(rd: u16, rm: u16, imm: u16) -> u16 { 0x0800 | imm << 6 | rm << 3 | rd }
-fn asrs_i(rd: u16, rm: u16, imm: u16) -> u16 { 0x1000 | imm << 6 | rm << 3 | rd }
+fn movs(rd: u16, imm: u16) -> u16 {
+    0x2000 | rd << 8 | imm
+}
+fn cmp_i(rd: u16, imm: u16) -> u16 {
+    0x2800 | rd << 8 | imm
+}
+fn adds_i8(rd: u16, imm: u16) -> u16 {
+    0x3000 | rd << 8 | imm
+}
+fn subs_i8(rd: u16, imm: u16) -> u16 {
+    0x3800 | rd << 8 | imm
+}
+fn adds(rd: u16, rn: u16, rm: u16) -> u16 {
+    0x1800 | rm << 6 | rn << 3 | rd
+}
+fn subs(rd: u16, rn: u16, rm: u16) -> u16 {
+    0x1A00 | rm << 6 | rn << 3 | rd
+}
+fn lsls_i(rd: u16, rm: u16, imm: u16) -> u16 {
+    imm << 6 | rm << 3 | rd
+}
+fn lsrs_i(rd: u16, rm: u16, imm: u16) -> u16 {
+    0x0800 | imm << 6 | rm << 3 | rd
+}
+fn asrs_i(rd: u16, rm: u16, imm: u16) -> u16 {
+    0x1000 | imm << 6 | rm << 3 | rd
+}
 /// data-processing group: op in 0..16
-fn alu(op: u16, rdn: u16, rm: u16) -> u16 { 0x4000 | op << 6 | rm << 3 | rdn }
-fn mov_hi(rd: u16, rm: u16) -> u16 { 0x4600 | (rd & 8) << 4 | rm << 3 | (rd & 7) }
-fn bx(rm: u16) -> u16 { 0x4700 | rm << 3 }
-fn blx(rm: u16) -> u16 { 0x4780 | rm << 3 }
-fn ldr_lit(rt: u16, imm4: u16) -> u16 { 0x4800 | rt << 8 | imm4 }
-fn str_i(rt: u16, rn: u16, imm4: u16) -> u16 { 0x6000 | imm4 << 6 | rn << 3 | rt }
-fn ldr_i(rt: u16, rn: u16, imm4: u16) -> u16 { 0x6800 | imm4 << 6 | rn << 3 | rt }
-fn strb_i(rt: u16, rn: u16, imm: u16) -> u16 { 0x7000 | imm << 6 | rn << 3 | rt }
-fn ldrb_i(rt: u16, rn: u16, imm: u16) -> u16 { 0x7800 | imm << 6 | rn << 3 | rt }
-fn ldrh_i(rt: u16, rn: u16, imm2: u16) -> u16 { 0x8800 | imm2 << 6 | rn << 3 | rt }
-fn ldrsb_r(rt: u16, rn: u16, rm: u16) -> u16 { 0x5600 | rm << 6 | rn << 3 | rt }
-fn ldrsh_r(rt: u16, rn: u16, rm: u16) -> u16 { 0x5E00 | rm << 6 | rn << 3 | rt }
-fn str_sp(rt: u16, imm4: u16) -> u16 { 0x9000 | rt << 8 | imm4 }
-fn ldr_sp(rt: u16, imm4: u16) -> u16 { 0x9800 | rt << 8 | imm4 }
-fn add_sp_i(imm4: u16) -> u16 { 0xB000 | imm4 }
-fn sub_sp_i(imm4: u16) -> u16 { 0xB080 | imm4 }
-fn push(list: u16, lr: bool) -> u16 { 0xB400 | (lr as u16) << 8 | list }
-fn pop(list: u16, pc: bool) -> u16 { 0xBC00 | (pc as u16) << 8 | list }
-fn stm(rn: u16, list: u16) -> u16 { 0xC000 | rn << 8 | list }
-fn ldm(rn: u16, list: u16) -> u16 { 0xC800 | rn << 8 | list }
-fn bcond(cond: u16, off: i8) -> u16 { 0xD000 | cond << 8 | (off as u8 as u16) }
-fn b(off: i16) -> u16 { 0xE000 | (off as u16 & 0x7FF) }
-fn svc(imm: u16) -> u16 { 0xDF00 | imm }
+fn alu(op: u16, rdn: u16, rm: u16) -> u16 {
+    0x4000 | op << 6 | rm << 3 | rdn
+}
+fn mov_hi(rd: u16, rm: u16) -> u16 {
+    0x4600 | (rd & 8) << 4 | rm << 3 | (rd & 7)
+}
+fn bx(rm: u16) -> u16 {
+    0x4700 | rm << 3
+}
+fn blx(rm: u16) -> u16 {
+    0x4780 | rm << 3
+}
+fn ldr_lit(rt: u16, imm4: u16) -> u16 {
+    0x4800 | rt << 8 | imm4
+}
+fn str_i(rt: u16, rn: u16, imm4: u16) -> u16 {
+    0x6000 | imm4 << 6 | rn << 3 | rt
+}
+fn ldr_i(rt: u16, rn: u16, imm4: u16) -> u16 {
+    0x6800 | imm4 << 6 | rn << 3 | rt
+}
+fn strb_i(rt: u16, rn: u16, imm: u16) -> u16 {
+    0x7000 | imm << 6 | rn << 3 | rt
+}
+fn ldrb_i(rt: u16, rn: u16, imm: u16) -> u16 {
+    0x7800 | imm << 6 | rn << 3 | rt
+}
+fn ldrh_i(rt: u16, rn: u16, imm2: u16) -> u16 {
+    0x8800 | imm2 << 6 | rn << 3 | rt
+}
+fn ldrsb_r(rt: u16, rn: u16, rm: u16) -> u16 {
+    0x5600 | rm << 6 | rn << 3 | rt
+}
+fn ldrsh_r(rt: u16, rn: u16, rm: u16) -> u16 {
+    0x5E00 | rm << 6 | rn << 3 | rt
+}
+fn str_sp(rt: u16, imm4: u16) -> u16 {
+    0x9000 | rt << 8 | imm4
+}
+fn ldr_sp(rt: u16, imm4: u16) -> u16 {
+    0x9800 | rt << 8 | imm4
+}
+fn add_sp_i(imm4: u16) -> u16 {
+    0xB000 | imm4
+}
+fn sub_sp_i(imm4: u16) -> u16 {
+    0xB080 | imm4
+}
+fn push(list: u16, lr: bool) -> u16 {
+    0xB400 | (lr as u16) << 8 | list
+}
+fn pop(list: u16, pc: bool) -> u16 {
+    0xBC00 | (pc as u16) << 8 | list
+}
+fn stm(rn: u16, list: u16) -> u16 {
+    0xC000 | rn << 8 | list
+}
+fn ldm(rn: u16, list: u16) -> u16 {
+    0xC800 | rn << 8 | list
+}
+fn bcond(cond: u16, off: i8) -> u16 {
+    0xD000 | cond << 8 | (off as u8 as u16)
+}
+fn b(off: i16) -> u16 {
+    0xE000 | (off as u16 & 0x7FF)
+}
+fn svc(imm: u16) -> u16 {
+    0xDF00 | imm
+}
 const NOP: u16 = 0xBF00;
 const BEQ: u16 = 0;
 const BNE: u16 = 1;
 const BGE: u16 = 10;
 const BLT: u16 = 11;
 
-fn new_bus() -> TestBus { TestBus(Ram::new(0x10000)) }
+fn new_bus() -> TestBus {
+    TestBus(Ram::new(0x10000))
+}
 
 fn load(bus: &mut TestBus, at: u32, code: &[u16]) {
     for (i, hw) in code.iter().enumerate() {
@@ -80,7 +159,9 @@ fn run(code: &[u16]) -> (Cpu, TestBus) {
     (cpu, bus)
 }
 
-fn run_cpu(code: &[u16]) -> Cpu { run(code).0 }
+fn run_cpu(code: &[u16]) -> Cpu {
+    run(code).0
+}
 
 // ---- tests -----------------------------------------------------------------
 
@@ -106,7 +187,12 @@ fn add_overflow_and_carry() {
 
 #[test]
 fn shifts_immediate() {
-    let c = run_cpu(&[movs(0, 0x81), lsls_i(1, 0, 4), lsrs_i(2, 0, 1), asrs_i(3, 1, 2)]);
+    let c = run_cpu(&[
+        movs(0, 0x81),
+        lsls_i(1, 0, 4),
+        lsrs_i(2, 0, 1),
+        asrs_i(3, 1, 2),
+    ]);
     assert_eq!(c.r[1], 0x810);
     assert_eq!(c.r[2], 0x40);
     assert_eq!(c.r[3], 0x204);
@@ -119,7 +205,13 @@ fn shifts_immediate() {
     assert_eq!(c.r[1], 0xFFFF_FFFF);
     assert!(c.c && c.n);
     // LSLS carry-out
-    let c = run_cpu(&[movs(0, 3), lsls_i(0, 0, 0), movs(1, 1), lsls_i(1, 1, 31), lsls_i(2, 1, 1)]);
+    let c = run_cpu(&[
+        movs(0, 3),
+        lsls_i(0, 0, 0),
+        movs(1, 1),
+        lsls_i(1, 1, 31),
+        lsls_i(2, 1, 1),
+    ]);
     assert_eq!(c.r[2], 0);
     assert!(c.c && c.z);
 }
@@ -148,13 +240,18 @@ fn ror_reg() {
 #[test]
 fn alu_ops() {
     let c = run_cpu(&[
-        movs(0, 0xF0), movs(1, 0x3C),
-        mov_hi(2, 0), alu(0x0, 2, 1),        // r2 = 0xF0 & 0x3C = 0x30
-        mov_hi(3, 0), alu(0x1, 3, 1),        // eor => 0xCC
-        mov_hi(4, 0), alu(0xC, 4, 1),        // orr => 0xFC
-        mov_hi(5, 0), alu(0xE, 5, 1),        // bic => 0xC0
-        alu(0xF, 6, 1),                      // mvn r6 = !0x3C
-        alu(0x9, 7, 1),                      // rsb r7 = -0x3C
+        movs(0, 0xF0),
+        movs(1, 0x3C),
+        mov_hi(2, 0),
+        alu(0x0, 2, 1), // r2 = 0xF0 & 0x3C = 0x30
+        mov_hi(3, 0),
+        alu(0x1, 3, 1), // eor => 0xCC
+        mov_hi(4, 0),
+        alu(0xC, 4, 1), // orr => 0xFC
+        mov_hi(5, 0),
+        alu(0xE, 5, 1), // bic => 0xC0
+        alu(0xF, 6, 1), // mvn r6 = !0x3C
+        alu(0x9, 7, 1), // rsb r7 = -0x3C
     ]);
     assert_eq!(c.r[2], 0x30);
     assert_eq!(c.r[3], 0xCC);
@@ -178,9 +275,13 @@ fn mul_and_tst_cmn() {
 fn adc_sbc_chain() {
     // 64-bit add: (0xFFFFFFFF,0) + (1,0) => (0,1)
     let c = run_cpu(&[
-        movs(0, 0), subs_i8(0, 1), movs(1, 0), // lo=0xFFFFFFFF hi=0
-        movs(2, 1), movs(3, 0),
-        adds(0, 0, 2), alu(5, 1, 3),
+        movs(0, 0),
+        subs_i8(0, 1),
+        movs(1, 0), // lo=0xFFFFFFFF hi=0
+        movs(2, 1),
+        movs(3, 0),
+        adds(0, 0, 2),
+        alu(5, 1, 3),
     ]);
     assert_eq!((c.r[0], c.r[1]), (0, 1));
 }
@@ -198,11 +299,17 @@ fn hi_register_ops() {
 #[test]
 fn load_store_word_byte_half() {
     let (c, mut bus) = run(&[
-        movs(0, 0x80), lsls_i(0, 0, 4),      // r0 = 0x800 (data area)
-        movs(1, 0xAB), lsls_i(1, 1, 8), adds_i8(1, 0xCD), // r1 = 0xABCD
+        movs(0, 0x80),
+        lsls_i(0, 0, 4), // r0 = 0x800 (data area)
+        movs(1, 0xAB),
+        lsls_i(1, 1, 8),
+        adds_i8(1, 0xCD), // r1 = 0xABCD
         str_i(1, 0, 0),
-        ldrb_i(2, 0, 0), ldrb_i(3, 0, 1), ldrh_i(4, 0, 0),
-        movs(5, 0x7F), strb_i(5, 0, 3),
+        ldrb_i(2, 0, 0),
+        ldrb_i(3, 0, 1),
+        ldrh_i(4, 0, 0),
+        movs(5, 0x7F),
+        strb_i(5, 0, 3),
         ldr_i(6, 0, 0),
     ]);
     assert_eq!(c.r[2], 0xCD);
@@ -217,13 +324,18 @@ fn sign_extending_loads() {
     let mut bus = new_bus();
     bus.write32(0x800, 0x0000_80FF);
     let code = [
-        movs(0, 0x80), lsls_i(0, 0, 4), movs(1, 0),
-        ldrsb_r(2, 0, 1), ldrsh_r(3, 0, 1),
+        movs(0, 0x80),
+        lsls_i(0, 0, 4),
+        movs(1, 0),
+        ldrsb_r(2, 0, 1),
+        ldrsh_r(3, 0, 1),
     ];
     load(&mut bus, CODE, &code);
     let mut cpu = Cpu::new();
     cpu.reset_to(STACK, CODE | 1);
-    for _ in 0..code.len() { cpu.step(&mut bus); }
+    for _ in 0..code.len() {
+        cpu.step(&mut bus);
+    }
     assert_eq!(cpu.r[2], 0xFFFF_FFFF);
     assert_eq!(cpu.r[3], 0xFFFF_80FF);
 }
@@ -243,16 +355,25 @@ fn ldr_literal_aligned_pc() {
 #[test]
 fn push_pop_and_sp_relative() {
     let c = run_cpu(&[
-        movs(0, 1), movs(1, 2), movs(2, 3),
+        movs(0, 1),
+        movs(1, 2),
+        movs(2, 3),
         push(0b111, false),
-        movs(0, 0), movs(1, 0), movs(2, 0),
+        movs(0, 0),
+        movs(1, 0),
+        movs(2, 0),
         pop(0b111, false),
     ]);
     assert_eq!((c.r[0], c.r[1], c.r[2]), (1, 2, 3));
     assert_eq!(c.sp(), STACK);
 
     let c = run_cpu(&[
-        movs(0, 42), sub_sp_i(2), str_sp(0, 1), movs(0, 0), ldr_sp(1, 1), add_sp_i(2),
+        movs(0, 42),
+        sub_sp_i(2),
+        str_sp(0, 1),
+        movs(0, 0),
+        ldr_sp(1, 1),
+        add_sp_i(2),
     ]);
     assert_eq!(c.r[1], 42);
     assert_eq!(c.sp(), STACK);
@@ -262,10 +383,13 @@ fn push_pop_and_sp_relative() {
 fn push_lr_pop_pc_returns() {
     // main: BL func ; movs r1,2 ; (end)   func: push{lr}; movs r0,7; pop{pc}
     let (c, _) = run(&[
-        0xF000, 0xF802,      // BL +4 bytes => target = pc+4+4 = func
-        movs(1, 2),          // executed after return
-        b(2),                // skip over func (jump to end)
-        push(0, true), movs(0, 7), pop(0, true),
+        0xF000,
+        0xF802,     // BL +4 bytes => target = pc+4+4 = func
+        movs(1, 2), // executed after return
+        b(2),       // skip over func (jump to end)
+        push(0, true),
+        movs(0, 7),
+        pop(0, true),
     ]);
     assert_eq!(c.r[0], 7);
     assert_eq!(c.r[1], 2);
@@ -274,12 +398,18 @@ fn push_lr_pop_pc_returns() {
 #[test]
 fn stm_ldm() {
     let c = run_cpu(&[
-        movs(0, 0x80), lsls_i(0, 0, 4),
-        movs(1, 11), movs(2, 22), movs(3, 33),
+        movs(0, 0x80),
+        lsls_i(0, 0, 4),
+        movs(1, 11),
+        movs(2, 22),
+        movs(3, 33),
         stm(0, 0b1110),
         mov_hi(4, 0), // keep r0 after writeback
-        movs(1, 0), movs(2, 0), movs(3, 0),
-        movs(5, 0x80), lsls_i(5, 5, 4),
+        movs(1, 0),
+        movs(2, 0),
+        movs(3, 0),
+        movs(5, 0x80),
+        lsls_i(5, 5, 4),
         ldm(5, 0b1110),
     ]);
     assert_eq!(c.r[4], 0x80 << 4 | 0xC); // writeback after 3 words
@@ -290,7 +420,13 @@ fn stm_ldm() {
 #[test]
 fn conditional_branch_loop_sums_1_to_10() {
     // r0 = 0 ; r1 = 10 ; loop: r0 += r1 ; r1 -= 1 ; bne loop
-    let c = run_cpu(&[movs(0, 0), movs(1, 10), adds(0, 0, 1), subs_i8(1, 1), bcond(BNE, -4)]);
+    let c = run_cpu(&[
+        movs(0, 0),
+        movs(1, 10),
+        adds(0, 0, 1),
+        subs_i8(1, 1),
+        bcond(BNE, -4),
+    ]);
     assert_eq!(c.r[0], 55);
 }
 
@@ -298,13 +434,23 @@ fn conditional_branch_loop_sums_1_to_10() {
 fn signed_conditions() {
     // -1 < 1 (BLT taken), then BGE not taken
     let c = run_cpu(&[
-        movs(0, 0), subs_i8(0, 1), cmp_i(0, 1),
-        bcond(BLT, 0), movs(2, 99),   // skipped
+        movs(0, 0),
+        subs_i8(0, 1),
+        cmp_i(0, 1),
+        bcond(BLT, 0),
+        movs(2, 99), // skipped
         movs(3, 5),
     ]);
     assert_eq!(c.r[2], 0);
     assert_eq!(c.r[3], 5);
-    let c = run_cpu(&[movs(0, 5), cmp_i(0, 5), bcond(BEQ, 0), movs(2, 99), bcond(BGE, 0), movs(4, 1)]);
+    let c = run_cpu(&[
+        movs(0, 5),
+        cmp_i(0, 5),
+        bcond(BEQ, 0),
+        movs(2, 99),
+        bcond(BGE, 0),
+        movs(4, 1),
+    ]);
     assert_eq!(c.r[2], 0);
     assert_eq!(c.r[4], 0);
 }
@@ -348,11 +494,23 @@ fn bl_forward_and_backward() {
 fn bx_and_blx() {
     let mut bus = new_bus();
     // r0 = 0x201 ; blx r0 ; at 0x200: bx lr
-    load(&mut bus, CODE, &[movs(0, 0x80), lsls_i(0, 0, 2), adds_i8(0, 1), blx(0), movs(1, 5)]);
+    load(
+        &mut bus,
+        CODE,
+        &[
+            movs(0, 0x80),
+            lsls_i(0, 0, 2),
+            adds_i8(0, 1),
+            blx(0),
+            movs(1, 5),
+        ],
+    );
     load(&mut bus, 0x200, &[bx(14)]);
     let mut cpu = Cpu::new();
     cpu.reset_to(STACK, CODE | 1);
-    for _ in 0..6 { cpu.step(&mut bus); }
+    for _ in 0..6 {
+        cpu.step(&mut bus);
+    }
     assert_eq!(cpu.r[1], 5);
 }
 
@@ -374,10 +532,21 @@ fn bx_to_arm_state_faults() {
 fn unaligned_access_faults() {
     let mut bus = new_bus();
     bus.write32(12, 0x301);
-    load(&mut bus, CODE, &[movs(0, 0x81), lsls_i(0, 0, 4), adds_i8(0, 2), ldr_i(1, 0, 0)]);
+    load(
+        &mut bus,
+        CODE,
+        &[
+            movs(0, 0x81),
+            lsls_i(0, 0, 4),
+            adds_i8(0, 2),
+            ldr_i(1, 0, 0),
+        ],
+    );
     let mut cpu = Cpu::new();
     cpu.reset_to(STACK, CODE | 1);
-    for _ in 0..4 { cpu.step(&mut bus); }
+    for _ in 0..4 {
+        cpu.step(&mut bus);
+    }
     assert_eq!(cpu.ipsr, EXC_HARDFAULT);
 }
 
@@ -385,7 +554,9 @@ fn unaligned_access_faults() {
 fn extend_and_reverse() {
     let mk = |op: u16, rd: u16, rm: u16| -> u16 { op | rm << 3 | rd };
     let c = run_cpu(&[
-        movs(0, 0x80), lsls_i(0, 0, 8), adds_i8(0, 0x81),
+        movs(0, 0x80),
+        lsls_i(0, 0, 8),
+        adds_i8(0, 0x81),
         mk(0xB200, 1, 0), // sxth
         mk(0xB240, 2, 0), // sxtb
         mk(0xB280, 3, 0), // uxth
@@ -396,9 +567,16 @@ fn extend_and_reverse() {
     assert_eq!(c.r[3], 0x8081);
     assert_eq!(c.r[4], 0x81);
     let c = run_cpu(&[
-        movs(0, 0x12), lsls_i(0, 0, 8), adds_i8(0, 0x34), lsls_i(0, 0, 8), adds_i8(0, 0x56),
-        lsls_i(0, 0, 8), adds_i8(0, 0x78),
-        mk(0xBA00, 1, 0), mk(0xBA40, 2, 0), mk(0xBAC0, 3, 0),
+        movs(0, 0x12),
+        lsls_i(0, 0, 8),
+        adds_i8(0, 0x34),
+        lsls_i(0, 0, 8),
+        adds_i8(0, 0x56),
+        lsls_i(0, 0, 8),
+        adds_i8(0, 0x78),
+        mk(0xBA00, 1, 0),
+        mk(0xBA40, 2, 0),
+        mk(0xBAC0, 3, 0),
     ]);
     assert_eq!(c.r[0], 0x1234_5678);
     assert_eq!(c.r[1], 0x7856_3412);
@@ -562,8 +740,14 @@ fn reset_from_vector_table() {
 fn fibonacci_program() {
     // r0=0, r1=1, r2=counter(20); loop: r3=r0+r1; r0=r1; r1=r3; r2--; bne
     let prog: Vec<u16> = alloc::vec![
-        movs(0, 0), movs(1, 1), movs(2, 20),
-        adds(3, 0, 1), mov_hi(0, 1), mov_hi(1, 3), subs_i8(2, 1), bcond(BNE, -6),
+        movs(0, 0),
+        movs(1, 1),
+        movs(2, 20),
+        adds(3, 0, 1),
+        mov_hi(0, 1),
+        mov_hi(1, 3),
+        subs_i8(2, 1),
+        bcond(BNE, -6),
     ];
     let c = run_cpu(&prog);
     assert_eq!(c.r[0], 6765); // fib(20)
@@ -576,7 +760,10 @@ fn sev_is_reported_for_other_cores_and_wfi_is_not_an_event_sleep() {
     let mut cpu = Cpu::new();
     cpu.reset_to(STACK, CODE | 1);
     cpu.step(&mut bus);
-    assert!(cpu.event && cpu.sev_sent, "SEV sets this core's event register and asks the system to forward it");
+    assert!(
+        cpu.event && cpu.sev_sent,
+        "SEV sets this core's event register and asks the system to forward it"
+    );
     cpu.step(&mut bus);
     assert!(cpu.sleeping && !cpu.wfe, "WFI only wakes for interrupts");
 }

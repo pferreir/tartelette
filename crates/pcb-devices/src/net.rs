@@ -98,13 +98,33 @@ pub fn transport_checksum(src: [u8; 4], dst: [u8; 4], proto: u8, segment: &[u8])
 }
 
 /// An Ethernet + IPv4 frame around `payload` (protocol `proto`).
-pub fn ipv4_frame(dst_mac: [u8; 6], src_mac: [u8; 6], src: [u8; 4], dst: [u8; 4], proto: u8, payload: &[u8]) -> Vec<u8> {
+pub fn ipv4_frame(
+    dst_mac: [u8; 6],
+    src_mac: [u8; 6],
+    src: [u8; 4],
+    dst: [u8; 4],
+    proto: u8,
+    payload: &[u8],
+) -> Vec<u8> {
     let total = 20 + payload.len();
     let mut f = Vec::with_capacity(14 + total);
     f.extend_from_slice(&dst_mac);
     f.extend_from_slice(&src_mac);
     f.extend_from_slice(&ETH_IPV4.to_be_bytes());
-    f.extend_from_slice(&[0x45, 0, (total >> 8) as u8, total as u8, 0, 0, 0x40, 0, 64, proto, 0, 0]);
+    f.extend_from_slice(&[
+        0x45,
+        0,
+        (total >> 8) as u8,
+        total as u8,
+        0,
+        0,
+        0x40,
+        0,
+        64,
+        proto,
+        0,
+        0,
+    ]);
     f.extend_from_slice(&src);
     f.extend_from_slice(&dst);
     let c = checksum(&f[14..34]);
@@ -113,7 +133,13 @@ pub fn ipv4_frame(dst_mac: [u8; 6], src_mac: [u8; 6], src: [u8; 4], dst: [u8; 4]
     f
 }
 
-pub fn udp_frame(dst_mac: [u8; 6], src_mac: [u8; 6], src: ([u8; 4], u16), dst: ([u8; 4], u16), data: &[u8]) -> Vec<u8> {
+pub fn udp_frame(
+    dst_mac: [u8; 6],
+    src_mac: [u8; 6],
+    src: ([u8; 4], u16),
+    dst: ([u8; 4], u16),
+    data: &[u8],
+) -> Vec<u8> {
     let len = 8 + data.len();
     let mut seg = Vec::with_capacity(len);
     seg.extend_from_slice(&src.1.to_be_bytes());
@@ -167,7 +193,11 @@ pub fn parse_udp(payload: &[u8]) -> Option<Udp<'_>> {
         return None;
     }
     let len = (be16(payload, 4) as usize).clamp(8, payload.len());
-    Some(Udp { src_port: be16(payload, 0), dst_port: be16(payload, 2), data: &payload[8..len] })
+    Some(Udp {
+        src_port: be16(payload, 0),
+        dst_port: be16(payload, 2),
+        data: &payload[8..len],
+    })
 }
 
 // ---- the gateway ----
@@ -196,7 +226,11 @@ impl Default for Gateway {
 
 impl Gateway {
     pub fn new() -> Self {
-        Self { leased: None, guest_mac: None, out: VecDeque::new() }
+        Self {
+            leased: None,
+            guest_mac: None,
+            out: VecDeque::new(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -222,7 +256,9 @@ impl Gateway {
                 Handled::Yes
             }
             ETH_IPV4 => {
-                let Some(ip) = parse_ipv4(frame) else { return Handled::Yes };
+                let Some(ip) = parse_ipv4(frame) else {
+                    return Handled::Yes;
+                };
                 if ip.proto == 17
                     && let Some(udp) = parse_udp(ip.payload)
                     && udp.dst_port == 67
@@ -236,7 +272,14 @@ impl Gateway {
                     reply[2..4].copy_from_slice(&[0, 0]);
                     let c = checksum(&reply);
                     reply[2..4].copy_from_slice(&c.to_be_bytes());
-                    self.out.push_back(ipv4_frame(ip.src_mac, GATEWAY_MAC, GATEWAY_IP, ip.src, 1, &reply));
+                    self.out.push_back(ipv4_frame(
+                        ip.src_mac,
+                        GATEWAY_MAC,
+                        GATEWAY_IP,
+                        ip.src,
+                        1,
+                        &reply,
+                    ));
                     return Handled::Yes;
                 }
                 Handled::No
@@ -326,7 +369,13 @@ impl Gateway {
         }
         // Always broadcast: the guest has no address yet, and its stack
         // accepts broadcast replies.
-        self.out.push_back(udp_frame([0xFF; 6], GATEWAY_MAC, (GATEWAY_IP, 67), ([255; 4], 68), &b));
+        self.out.push_back(udp_frame(
+            [0xFF; 6],
+            GATEWAY_MAC,
+            (GATEWAY_IP, 67),
+            ([255; 4], 68),
+            &b,
+        ));
         let _ = ip;
     }
 }
@@ -340,7 +389,10 @@ pub struct LoopbackBackend {
 
 impl LoopbackBackend {
     pub fn new() -> Self {
-        Self { gw: Gateway::new(), up: false }
+        Self {
+            gw: Gateway::new(),
+            up: false,
+        }
     }
 
     pub fn boxed() -> Box<dyn NetBackend> {
@@ -377,7 +429,13 @@ impl NetBackend for LoopbackBackend {
             && let Some(udp) = parse_udp(ip.payload)
             && udp.dst_port == 7
         {
-            let reply = udp_frame(ip.src_mac, GATEWAY_MAC, (GATEWAY_IP, 7), (ip.src, udp.src_port), udp.data);
+            let reply = udp_frame(
+                ip.src_mac,
+                GATEWAY_MAC,
+                (GATEWAY_IP, 7),
+                (ip.src, udp.src_port),
+                udp.data,
+            );
             self.gw.out.push_back(reply);
         }
     }

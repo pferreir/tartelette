@@ -5,23 +5,30 @@
 //! handshake, exactly as on the chip). Core 0 boot is "HLE": the ELF is loaded
 //! straight into flash/SRAM and core 0 starts at the program's vector table, as
 //! if boot2 had already run. Not modelled yet: XIP control, PIO/USB.
-use crate::bus::{Bus, Ram};
-use crate::cpu::Cpu;
-use crate::elf::{self, ElfError};
-use crate::periph::dma::Dma;
-use crate::periph::gpio::{Gpio, IoBank0, PadsBank0};
-use crate::periph::i2c::I2c;
-use crate::periph::pio::{Pio, PioEnv};
-use crate::periph::psm::Psm;
-use crate::periph::resets::Resets;
-use crate::periph::sio::Sio;
-use crate::periph::spi::Spi;
-use crate::periph::timer::Timer;
-use crate::periph::uart::Uart;
-use crate::periph::{Peripheral, RegStub, clocks::Clocks};
-use crate::ppb::Ppb;
 use alloc::{string::String, vec::Vec};
+
 use pcb::{Board, InputResult};
+
+use crate::{
+    bus::{Bus, Ram},
+    cpu::Cpu,
+    elf::{self, ElfError},
+    periph::{
+        Peripheral, RegStub,
+        clocks::Clocks,
+        dma::Dma,
+        gpio::{Gpio, IoBank0, PadsBank0},
+        i2c::I2c,
+        pio::{Pio, PioEnv},
+        psm::Psm,
+        resets::Resets,
+        sio::Sio,
+        spi::Spi,
+        timer::Timer,
+        uart::Uart,
+    },
+    ppb::Ppb,
+};
 
 /// While the core sleeps with DMA running, time advances in slices of this
 /// many cycles (the DMA moves one item per cycle).
@@ -268,7 +275,9 @@ impl SystemBus {
             0xD if Sio::handles(addr - SIO_BASE) => self.sio.read(self.core, addr - SIO_BASE),
             0xE => self.ppb_read(addr),
             0x4 => self.apb_read(addr),
-            0x5 if addr - DMA_BASE < 0x4000 && !self.resets.in_reset(RESET_DMA) => self.dma.read(addr & 0xFFF),
+            0x5 if addr - DMA_BASE < 0x4000 && !self.resets.in_reset(RESET_DMA) => {
+                self.dma.read(addr & 0xFFF)
+            }
             0x5 => match self.pio_at(addr) {
                 Some(b) => self.pio[b].read(addr & 0xFFF),
                 None => 0,
@@ -354,7 +363,10 @@ impl SystemBus {
     /// them: PIO and DMA space, or the RESETS block.
     #[inline]
     fn flush_pio_for(&mut self, addr: u32) {
-        if self.pio_owed != 0 && (addr >> 28 == 5 || (addr >> 28 == 4 && addr.wrapping_sub(APB_BASE) >> 14 == APB_RESETS)) {
+        if self.pio_owed != 0
+            && (addr >> 28 == 5
+                || (addr >> 28 == 4 && addr.wrapping_sub(APB_BASE) >> 14 == APB_RESETS))
+        {
             self.flush_pio();
         }
     }
@@ -766,7 +778,8 @@ impl System {
             let changed = self.bus.gpio.take_changes();
             self.bus.lines_dirty = true;
             self.quiet = false;
-            self.board.service(&mut self.bus.gpio, changed, self.bus.time);
+            self.board
+                .service(&mut self.bus.gpio, changed, self.bus.time);
         }
     }
 
@@ -798,7 +811,8 @@ impl System {
         }
         let name = ["i2c0", "i2c1", "spi0", "spi1"][which];
         if let Some(decl) = self.board.buses.iter().find(|b| b.name == name) {
-            self.warnings.extend(crate::pinmux::wiring_warnings(decl, &self.bus.gpio));
+            self.warnings
+                .extend(crate::pinmux::wiring_warnings(decl, &self.bus.gpio));
         }
     }
 
@@ -878,7 +892,8 @@ impl System {
             let due = self.board.next_timer().filter(|&t| t <= to);
             self.advance_segment(due.map_or(to, |t| t.max(self.bus.time)));
             let Some(t) = due else { break };
-            self.board.fire_timers(&mut self.bus.gpio, t.max(self.bus.time));
+            self.board
+                .fire_timers(&mut self.bus.gpio, t.max(self.bus.time));
             self.quiet = false;
             self.sync_board();
         }
@@ -1023,7 +1038,11 @@ impl System {
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
             .min();
-        self.advance_to(running.unwrap_or(self.cores[core].cycles).max(self.bus.time));
+        self.advance_to(
+            running
+                .unwrap_or(self.cores[core].cycles)
+                .max(self.bus.time),
+        );
         cycles
     }
 
@@ -1031,14 +1050,22 @@ impl System {
     /// after each one? Only when nothing but the timer, SysTick and PIO
     /// dividers is moving, and no register access is waiting for a sync.
     fn can_batch(&self) -> bool {
-        self.batching && self.quiet && !self.bus.touched && !self.bus.lines_dirty && !self.bus.gpio.has_changes()
+        self.batching
+            && self.quiet
+            && !self.bus.touched
+            && !self.bus.lines_dirty
+            && !self.bus.gpio.has_changes()
     }
 
     /// The cycle at which a device next changes state on its own.
     fn batch_limit(&self) -> u64 {
         let event = self.bus.cycles_to_event().map(|c| self.bus.time + c);
         let timer = self.board.next_timer();
-        [event, timer].into_iter().flatten().min().unwrap_or(u64::MAX)
+        [event, timer]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(u64::MAX)
     }
 
     /// Like `step_core`, but keeps executing `core` while the devices can
@@ -1067,7 +1094,11 @@ impl System {
             // Everything below the hot path starts from a register access
             // (`lines_dirty` is set by every MMIO access, and pin and PSM
             // changes only come from those) or from the core itself.
-            let rare = cpu.sleeping | cpu.bkpt.is_some() | cpu.sev_sent | self.bus.touched | self.bus.lines_dirty;
+            let rare = cpu.sleeping
+                | cpu.bkpt.is_some()
+                | cpu.sev_sent
+                | self.bus.touched
+                | self.bus.lines_dirty;
             if !rare {
                 let o = &self.cores[other];
                 let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
@@ -1086,7 +1117,9 @@ impl System {
             if !stop && self.bus.lines_dirty {
                 self.refresh_core_views();
                 let o = &self.cores[other];
-                stop = o.sleeping && !self.held[other] && (self.bus.ppb[other].wakes_core() || (o.wfe && o.event));
+                stop = o.sleeping
+                    && !self.held[other]
+                    && (self.bus.ppb[other].wakes_core() || (o.wfe && o.event));
                 limit = self.batch_limit();
             }
             let o = &self.cores[other];
@@ -1100,7 +1133,11 @@ impl System {
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
             .min();
-        self.advance_to(running.unwrap_or(self.cores[core].cycles).max(self.bus.time));
+        self.advance_to(
+            running
+                .unwrap_or(self.cores[core].cycles)
+                .max(self.bus.time),
+        );
     }
 
     /// Advance the system by one instruction of whichever core is next, or
@@ -1205,7 +1242,11 @@ mod tests {
         assert_eq!(bus.read32(ctrl), 0b0010);
         // A TX FIFO write through an alias is still a plain push.
         bus.write32(PIO0_BASE + 0x10 + 0x3000, 7);
-        assert_eq!(bus.read32(PIO0_BASE + 0x04) >> 24 & 1, 0, "TXF0 empty after a push");
+        assert_eq!(
+            bus.read32(PIO0_BASE + 0x04) >> 24 & 1,
+            0,
+            "TXF0 empty after a push"
+        );
     }
 
     #[test]
@@ -1218,7 +1259,11 @@ mod tests {
         bus.write32(inte0 + 0x2000, 1 << 1);
         assert_eq!(bus.read32(inte0), 0b11);
         bus.write32(inte0 + 0x3000, 1 << 0);
-        assert_eq!(bus.read32(inte0 + 0x1000), 0b10, "aliases read the plain register");
+        assert_eq!(
+            bus.read32(inte0 + 0x1000),
+            0b10,
+            "aliases read the plain register"
+        );
         // Write-1-to-clear through an alias still clears only those bits.
         // Null triggers (enabled, zero count) flag channels 0 and 1 done.
         bus.write32(DMA_BASE + 0x0C, 1);
@@ -1889,7 +1934,12 @@ mod tests {
         sys.sync_board();
         sys.bus.write32(SPI0 + 8, 0x04);
         sys.service_buses();
-        assert_eq!(sys.warnings, ["SPI0 is in use, but GPIO 18 (the board's SPI0 SCK) is set to no function, not SPI; the firmware put SPI0 SCK on GPIO 2"]);
+        assert_eq!(
+            sys.warnings,
+            [
+                "SPI0 is in use, but GPIO 18 (the board's SPI0 SCK) is set to no function, not SPI; the firmware put SPI0 SCK on GPIO 2"
+            ]
+        );
         sys.bus.write32(SIO_BASE + 0x14, 1 << 13); // D/C high
         sys.bus.write32(SPI0 + 8, 0);
         sys.service_buses();

@@ -43,15 +43,16 @@ pub mod gspi;
 pub mod whd;
 pub mod wpa;
 
-use crate::hci::HciBackend;
-use crate::net::NetBackend;
 use alloc::{boxed::Box, string::String, vec::Vec};
+
 use bt::Bt;
 use chip::Chip;
 use gspi::Gspi;
 use pcb::{Device, Io, Kind, Param, Params};
-pub use whd::{Ap, Link};
 use whd::Whd;
+pub use whd::{Ap, Link};
+
+use crate::{hci::HciBackend, net::NetBackend};
 
 const MAX_APS: usize = 8;
 
@@ -104,7 +105,14 @@ fn ap(p: &mut Params, index: usize) -> Result<Ap, String> {
         (false, None) => String::new(),
     };
     let (rssi, chan) = (p.int("rssi") as i16, p.int("channel") as u8);
-    Ok(Ap { ssid, wpa2, pass, rssi, chan, bssid: [0x02, 0x1A, 0x2B, 0x00, 0x00, index as u8 + 1] })
+    Ok(Ap {
+        ssid,
+        wpa2,
+        pass,
+        rssi,
+        chan,
+        bssid: [0x02, 0x1A, 0x2B, 0x00, 0x00, index as u8 + 1],
+    })
 }
 
 pub const KIND: Kind = Kind {
@@ -116,13 +124,15 @@ pub const KIND: Kind = Kind {
         Param::pin("dio", "data in/out, also the host interrupt"),
         Param::pin("cs", "chip select, active low"),
         Param::pin("clk", "serial clock"),
-        Param::str("mac", "MAC address, six hex bytes like 28:cd:c1:00:00:01").default_str("28:cd:c1:00:00:01"),
+        Param::str("mac", "MAC address, six hex bytes like 28:cd:c1:00:00:01")
+            .default_str("28:cd:c1:00:00:01"),
         Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
         Param::tables(
             "aps",
             &[
                 Param::str("ssid", "network name, 1..32 bytes"),
-                Param::choice("security", &["open", "wpa2"], "how a station joins").default_str("open"),
+                Param::choice("security", &["open", "wpa2"], "how a station joins")
+                    .default_str("open"),
                 Param::str("passphrase", "WPA2 passphrase, 8..63 characters").optional(),
                 Param::int("rssi", -120, 0, "signal strength in dBm").default_int(-50),
                 Param::int("channel", 1, 14, "2.4 GHz channel").default_int(6),
@@ -143,16 +153,35 @@ pub const KIND: Kind = Kind {
         for (i, mut t) in tables.into_iter().enumerate() {
             let ap = ap(&mut t, i).map_err(|e| alloc::format!("aps[{i}]: {e}"))?;
             if aps.iter().any(|a| a.ssid == ap.ssid) {
-                return Err(alloc::format!("aps[{i}]: SSID {:?} is listed twice", ap.ssid));
+                return Err(alloc::format!(
+                    "aps[{i}]: SSID {:?} is listed twice",
+                    ap.ssid
+                ));
             }
             aps.push(ap);
         }
-        Ok(Box::new(Cyw43439::new(on, dio, cs, clk, mac, aps, cycles_per_us)))
+        Ok(Box::new(Cyw43439::new(
+            on,
+            dio,
+            cs,
+            clk,
+            mac,
+            aps,
+            cycles_per_us,
+        )))
     },
 };
 
 impl Cyw43439 {
-    pub fn new(on: usize, dio: usize, cs: usize, clk: usize, mac: [u8; 6], aps: Vec<Ap>, cycles_per_us: u64) -> Self {
+    pub fn new(
+        on: usize,
+        dio: usize,
+        cs: usize,
+        clk: usize,
+        mac: [u8; 6],
+        aps: Vec<Ap>,
+        cycles_per_us: u64,
+    ) -> Self {
         let whd = Whd::new(mac, aps.clone(), cycles_per_us);
         Self {
             on,
@@ -167,7 +196,11 @@ impl Cyw43439 {
             clk_high: false,
             dio_driven: None,
             spi: Gspi::new(),
-            chip: Chip::new(whd, Bt::new(Bt::no_radio(mac), cycles_per_us), cycles_per_us),
+            chip: Chip::new(
+                whd,
+                Bt::new(Bt::no_radio(mac), cycles_per_us),
+                cycles_per_us,
+            ),
             armed_due: None,
             armed_poll: None,
             armed_bt: None,
@@ -274,7 +307,13 @@ impl Cyw43439 {
     /// Settle everything that follows from a change: report happenings,
     /// drive the interrupt line, schedule wake-ups.
     fn settle(&mut self, io: &mut Io) {
-        for (label, value) in self.chip.whd.notes.drain(..).chain(self.chip.bt.notes.drain(..)) {
+        for (label, value) in self
+            .chip
+            .whd
+            .notes
+            .drain(..)
+            .chain(self.chip.bt.notes.drain(..))
+        {
             io.emit(label, value);
         }
         if !self.powered {
@@ -294,7 +333,10 @@ impl Cyw43439 {
             self.armed_due = Some(t);
             io.wake_at(t);
         }
-        if self.chip.whd.link != Link::Down && self.armed_poll.is_none() && self.chip.whd.backend.is_some() {
+        if self.chip.whd.link != Link::Down
+            && self.armed_poll.is_none()
+            && self.chip.whd.backend.is_some()
+        {
             let t = io.cycles() + 1000 * self.cycles_per_us;
             self.armed_poll = Some(t);
             io.wake_at(t);
@@ -366,7 +408,11 @@ impl Device for Cyw43439 {
 
     fn input(&mut self, io: &mut Io, action: &str, value: i64) -> bool {
         let now = io.cycles();
-        let ok = self.chip.bt.backend.input(now / self.cycles_per_us, action, value);
+        let ok = self
+            .chip
+            .bt
+            .backend
+            .input(now / self.cycles_per_us, action, value);
         if ok {
             self.chip.now = now;
             self.chip.bt.pump(now, &mut self.chip.bp);

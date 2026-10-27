@@ -9,10 +9,16 @@ fn decodes_the_log_of_the_btl_os() {
         return;
     };
     let elf = std::fs::read(path).unwrap();
-    let mut rtt = rtt::Rtt::new(&elf).unwrap().expect("firmware has RTT and defmt");
+    let mut rtt = rtt::Rtt::new(&elf)
+        .unwrap()
+        .expect("firmware has RTT and defmt");
     let mut sys = System::new();
     sys.load_elf(&elf).unwrap();
-    let board = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/btl-01.toml")).unwrap();
+    let board = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../boards/btl-01.toml"
+    ))
+    .unwrap();
     sys.set_board(pcb::Board::parse_with(&board, &pcb_devices::registry()).unwrap());
 
     let mut lines = Vec::new();
@@ -28,6 +34,11 @@ fn decodes_the_log_of_the_btl_os() {
         println!("{:?} {}", l.level, l.text);
     }
     assert!(!lines.is_empty(), "the firmware logs during boot");
-    assert!(lines.iter().any(|l| l.text.contains("Started encoder task")), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.text.contains("Started encoder task")),
+        "{lines:?}"
+    );
     assert_eq!(rtt.malformed, 0);
 }

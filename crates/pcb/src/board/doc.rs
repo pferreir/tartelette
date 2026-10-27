@@ -3,8 +3,11 @@
 //! order (the order parts are declared in is the order they are attached).
 use alloc::{format, string::String, vec::Vec};
 use core::ops::Range;
-use toml::de::{DeTable, DeValue};
-use toml::Spanned;
+
+use toml::{
+    Spanned,
+    de::{DeTable, DeValue},
+};
 
 pub type Span = Range<usize>;
 
@@ -35,7 +38,10 @@ pub struct Error {
 }
 
 pub fn err(span: &Span, msg: impl Into<String>) -> Error {
-    Error { span: span.clone(), msg: msg.into() }
+    Error {
+        span: span.clone(),
+        msg: msg.into(),
+    }
 }
 
 impl V {
@@ -55,15 +61,27 @@ impl V {
 
 /// Parse a whole document; its root is a table.
 pub fn parse(text: &str) -> Result<Node, Error> {
-    let root = DeTable::parse(text).map_err(|e| Error { span: e.span().unwrap_or(0..0), msg: e.message().into() })?;
+    let root = DeTable::parse(text).map_err(|e| Error {
+        span: e.span().unwrap_or(0..0),
+        msg: e.message().into(),
+    })?;
     let span = root.span();
-    Ok(Node { span, v: table(root.get_ref())? })
+    Ok(Node {
+        span,
+        v: table(root.get_ref())?,
+    })
 }
 
 fn table(t: &DeTable) -> Result<V, Error> {
     let mut entries = Vec::new();
     for (k, v) in t.iter() {
-        entries.push((Key { name: k.get_ref().as_ref().into(), span: k.span() }, node(v)?));
+        entries.push((
+            Key {
+                name: k.get_ref().as_ref().into(),
+                span: k.span(),
+            },
+            node(v)?,
+        ));
     }
     entries.sort_by_key(|(k, _)| k.span.start);
     Ok(V::Table(entries))
@@ -73,8 +91,15 @@ fn node(v: &Spanned<DeValue>) -> Result<Node, Error> {
     let span = v.span();
     let v = match v.get_ref() {
         DeValue::Integer(i) => {
-            let digits: String = i.as_str().chars().filter(|&c| c != '_' && c != '+').collect();
-            V::Int(i64::from_str_radix(&digits, i.radix()).map_err(|_| err(&span, format!("{i} is out of range")))?)
+            let digits: String = i
+                .as_str()
+                .chars()
+                .filter(|&c| c != '_' && c != '+')
+                .collect();
+            V::Int(
+                i64::from_str_radix(&digits, i.radix())
+                    .map_err(|_| err(&span, format!("{i} is out of range")))?,
+            )
         }
         DeValue::String(s) => V::Str(s.as_ref().into()),
         DeValue::Boolean(b) => V::Bool(*b),

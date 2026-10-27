@@ -1,9 +1,11 @@
 //! Command line (native only): one set of options for the front panel and for
 //! headless runs, plus the `mkdisk` tool.
-use crate::session::{BtMode, NetMode, Network, Source};
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
-use std::path::PathBuf;
+
+use crate::session::{BtMode, NetMode, Network, Source};
 
 /// Tartelette, an RP2040 emulator: runs a firmware ELF on an emulated board, with a front
 /// panel window or headless.
@@ -13,7 +15,11 @@ use std::path::PathBuf;
 /// microseconds. With a window, the firmware and board reload when their
 /// files change.
 #[derive(Parser, Debug)]
-#[command(version, args_conflicts_with_subcommands = true, args_override_self = true)]
+#[command(
+    version,
+    args_conflicts_with_subcommands = true,
+    args_override_self = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -80,13 +86,23 @@ pub struct RunArgs {
 
 /// The boards in the repository's `boards/`, built in so that an installed
 /// `tartelette` has them too.
-const BOARDS: &[(&str, &str)] = &[("btl-01", include_str!("../../../boards/btl-01.toml")), ("pico-w", include_str!("../../../boards/pico-w.toml"))];
+const BOARDS: &[(&str, &str)] = &[
+    ("btl-01", include_str!("../../../boards/btl-01.toml")),
+    ("pico-w", include_str!("../../../boards/pico-w.toml")),
+];
 
 /// The shields in `boards/shields/`.
-const SHIELDS: &[(&str, &str)] = &[("pico-display-2", include_str!("../../../boards/shields/pico-display-2.toml"))];
+const SHIELDS: &[(&str, &str)] = &[(
+    "pico-display-2",
+    include_str!("../../../boards/shields/pico-display-2.toml"),
+)];
 
 /// A file, or else the built-in one of that name.
-fn file_or_builtin(path: &std::path::Path, builtin: &[(&str, &str)], option: &str) -> Result<Source, String> {
+fn file_or_builtin(
+    path: &std::path::Path,
+    builtin: &[(&str, &str)],
+    option: &str,
+) -> Result<Source, String> {
     if path.exists() {
         return Source::from_file(path);
     }
@@ -95,7 +111,10 @@ fn file_or_builtin(path: &std::path::Path, builtin: &[(&str, &str)], option: &st
         Some((n, text)) => Ok(Source::new(format!("{n}.toml"), text.as_bytes().to_vec())),
         None => {
             let names: Vec<_> = builtin.iter().map(|(n, _)| *n).collect();
-            Err(format!("{option} {name}: no such file, nor a built-in one ({})", names.join(", ")))
+            Err(format!(
+                "{option} {name}: no such file, nor a built-in one ({})",
+                names.join(", ")
+            ))
         }
     }
 }
@@ -103,16 +122,26 @@ fn file_or_builtin(path: &std::path::Path, builtin: &[(&str, &str)], option: &st
 impl RunArgs {
     /// The `--board` file, or else the built-in board of that name.
     pub fn board(&self) -> Result<Option<Source>, String> {
-        self.board.as_deref().map(|p| file_or_builtin(p, BOARDS, "--board")).transpose()
+        self.board
+            .as_deref()
+            .map(|p| file_or_builtin(p, BOARDS, "--board"))
+            .transpose()
     }
 
     /// The `--shield` files, or built-in shields, in order.
     pub fn shields(&self) -> Result<Vec<Source>, String> {
-        self.shield.iter().map(|p| file_or_builtin(p, SHIELDS, "--shield")).collect()
+        self.shield
+            .iter()
+            .map(|p| file_or_builtin(p, SHIELDS, "--shield"))
+            .collect()
     }
 
     pub fn network(&self) -> Network {
-        Network { mode: self.net, bt: self.bt, forwards: self.forward.clone() }
+        Network {
+            mode: self.net,
+            bt: self.bt,
+            forwards: self.forward.clone(),
+        }
     }
 }
 
@@ -156,10 +185,18 @@ impl Headless {
     pub fn inputs(&self) -> Vec<Input> {
         let mut v = self.input.clone();
         for p in &self.press {
-            let at = |cycle| Input { cycle, part: p.part.clone(), action: "press".into(), value: 0 };
+            let at = |cycle| Input {
+                cycle,
+                part: p.part.clone(),
+                action: "press".into(),
+                value: 0,
+            };
             v.push(at(p.cycle));
             if let Some(hold) = p.hold {
-                v.push(Input { action: "release".into(), ..at(p.cycle + hold) });
+                v.push(Input {
+                    action: "release".into(),
+                    ..at(p.cycle + hold)
+                });
             }
         }
         v.sort_by_key(|i| i.cycle);
@@ -183,7 +220,9 @@ pub fn parts(args: &PartsArgs) -> Result<(), String> {
             for k in registry.kinds() {
                 println!("{:width$}  {}", k.name, k.summary);
             }
-            println!("\n`tartelette parts KIND` describes one; a part is `[parts.NAME]` with `kind = \"KIND\"` and its keys.");
+            println!(
+                "\n`tartelette parts KIND` describes one; a part is `[parts.NAME]` with `kind = \"KIND\"` and its keys."
+            );
         }
     }
     Ok(())
@@ -231,7 +270,11 @@ pub struct Input {
 }
 
 fn us_to_cycles(s: &str) -> Result<u64, String> {
-    s.parse::<f64>().ok().filter(|v| *v >= 0.0).map(|v| (v * CYCLES_PER_US as f64) as u64).ok_or_else(|| format!("{s:?} is not a time in microseconds"))
+    s.parse::<f64>()
+        .ok()
+        .filter(|v| *v >= 0.0)
+        .map(|v| (v * CYCLES_PER_US as f64) as u64)
+        .ok_or_else(|| format!("{s:?} is not a time in microseconds"))
 }
 
 fn name_and_path(s: &str) -> Result<(String, PathBuf), String> {
@@ -253,7 +296,10 @@ fn bt_mode(s: &str) -> Result<BtMode, String> {
 
 fn port_pair(s: &str) -> Result<(u16, u16), String> {
     let (h, g) = s.split_once(':').ok_or("expected HOST:GUEST")?;
-    Ok((h.parse().map_err(|e| format!("{h:?}: {e}"))?, g.parse().map_err(|e| format!("{g:?}: {e}"))?))
+    Ok((
+        h.parse().map_err(|e| format!("{h:?}: {e}"))?,
+        g.parse().map_err(|e| format!("{g:?}: {e}"))?,
+    ))
 }
 
 /// `NAME@US` or `NAME@US+HOLD_US`.
@@ -263,13 +309,21 @@ fn press(s: &str) -> Result<Press, String> {
         Some((a, h)) => (a, Some(us_to_cycles(h)?)),
         None => (when, None),
     };
-    Ok(Press { part: part.into(), cycle: us_to_cycles(at)?, hold })
+    Ok(Press {
+        part: part.into(),
+        cycle: us_to_cycles(at)?,
+        hold,
+    })
 }
 
 /// `NAME:ACTION@US` or `NAME:ACTION=VALUE@US`.
 fn input(s: &str) -> Result<Input, String> {
-    let (target, when) = s.rsplit_once('@').ok_or("expected NAME:ACTION[=VALUE]@US")?;
-    let (part, action) = target.split_once(':').ok_or("expected NAME:ACTION[=VALUE]@US")?;
+    let (target, when) = s
+        .rsplit_once('@')
+        .ok_or("expected NAME:ACTION[=VALUE]@US")?;
+    let (part, action) = target
+        .split_once(':')
+        .ok_or("expected NAME:ACTION[=VALUE]@US")?;
     let (action, value) = match action.split_once('=') {
         Some((a, v)) => {
             let n = match v.strip_prefix("0x") {
@@ -280,7 +334,12 @@ fn input(s: &str) -> Result<Input, String> {
         }
         None => (action, 0),
     };
-    Ok(Input { cycle: us_to_cycles(when)?, part: part.into(), action: action.into(), value })
+    Ok(Input {
+        cycle: us_to_cycles(when)?,
+        part: part.into(),
+        action: action.into(),
+        value,
+    })
 }
 
 #[cfg(test)]
@@ -295,9 +354,31 @@ mod tests {
 
     #[test]
     fn presses_expand_into_sorted_actions() {
-        let cli = Cli::try_parse_from(["x", "fw", "--headless", "--press", "b@100+50", "--input", "k:turn=-1@120"]).unwrap();
-        let v: Vec<_> = cli.run.headless_opts.inputs().into_iter().map(|i| (i.cycle, i.action, i.value)).collect();
-        assert_eq!(v, [(12_500, "press".into(), 0), (15_000, "turn".into(), -1), (18_750, "release".into(), 0)]);
+        let cli = Cli::try_parse_from([
+            "x",
+            "fw",
+            "--headless",
+            "--press",
+            "b@100+50",
+            "--input",
+            "k:turn=-1@120",
+        ])
+        .unwrap();
+        let v: Vec<_> = cli
+            .run
+            .headless_opts
+            .inputs()
+            .into_iter()
+            .map(|i| (i.cycle, i.action, i.value))
+            .collect();
+        assert_eq!(
+            v,
+            [
+                (12_500, "press".into(), 0),
+                (15_000, "turn".into(), -1),
+                (18_750, "release".into(), 0)
+            ]
+        );
     }
 
     #[test]
@@ -310,40 +391,90 @@ mod tests {
         assert_eq!(bt("mock").unwrap(), BtMode::Mock);
         assert!(bt("hcix").is_err() && bt("usb").is_err());
         assert_eq!(input("wifi:midi=0x903C64@5").unwrap().value, 0x903C64);
-        assert!(matches!(Cli::try_parse_from(["x", "mkdisk", "a.img", "--dir", "data"]).unwrap().command, Some(Command::Mkdisk(_))));
+        assert!(matches!(
+            Cli::try_parse_from(["x", "mkdisk", "a.img", "--dir", "data"])
+                .unwrap()
+                .command,
+            Some(Command::Mkdisk(_))
+        ));
         // A later option wins, so `cargo run -- ...` can override an example's runner options.
-        assert_eq!(Cli::try_parse_from(["x", "fw", "--bt", "mock", "--bt", "hci0"]).unwrap().run.bt, BtMode::Adapter(0));
+        assert_eq!(
+            Cli::try_parse_from(["x", "fw", "--bt", "mock", "--bt", "hci0"])
+                .unwrap()
+                .run
+                .bt,
+            BtMode::Adapter(0)
+        );
     }
 
     #[test]
     fn boards_and_shields_are_files_or_built_in() {
-        let board = |b: &str| Cli::try_parse_from(["x", "fw", "--board", b]).unwrap().run.board();
+        let board = |b: &str| {
+            Cli::try_parse_from(["x", "fw", "--board", b])
+                .unwrap()
+                .run
+                .board()
+        };
         for (name, _) in BOARDS {
             let b = board(name).unwrap().unwrap();
             crate::session::parse_board(Some(&b), &[]).unwrap();
             assert!(b.path.is_none());
         }
-        let file = board(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.toml")).unwrap().unwrap();
+        let file = board(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../boards/pico-w.toml"
+        ))
+        .unwrap()
+        .unwrap();
         assert!(file.path.is_some());
         assert!(board("pico").err().unwrap().contains("btl-01, pico-w"));
-        assert!(Cli::try_parse_from(["x", "fw"]).unwrap().run.board().unwrap().is_none());
+        assert!(
+            Cli::try_parse_from(["x", "fw"])
+                .unwrap()
+                .run
+                .board()
+                .unwrap()
+                .is_none()
+        );
 
         // Every shield fits on every board, and on none.
-        let run = Cli::try_parse_from(["x", "fw", "--shield", "pico-display-2"]).unwrap().run;
+        let run = Cli::try_parse_from(["x", "fw", "--shield", "pico-display-2"])
+            .unwrap()
+            .run;
         let shields = run.shields().unwrap();
         assert_eq!(shields[0].name, "pico-display-2.toml");
         for (name, _) in BOARDS.iter().filter(|(n, _)| *n != "btl-01") {
-            let b = crate::session::parse_board(Some(&board(name).unwrap().unwrap()), &shields).unwrap().unwrap();
+            let b = crate::session::parse_board(Some(&board(name).unwrap().unwrap()), &shields)
+                .unwrap()
+                .unwrap();
             assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
         }
-        assert!(crate::session::parse_board(None, &shields).unwrap().is_some());
-        assert!(Cli::try_parse_from(["x", "fw", "--shield", "hat"]).unwrap().run.shields().err().unwrap().contains("pico-display-2"));
+        assert!(
+            crate::session::parse_board(None, &shields)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            Cli::try_parse_from(["x", "fw", "--shield", "hat"])
+                .unwrap()
+                .run
+                .shields()
+                .err()
+                .unwrap()
+                .contains("pico-display-2")
+        );
     }
 
     #[test]
     fn the_committed_schema_is_up_to_date() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/board.schema.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../boards/board.schema.json"
+        );
         let committed = std::fs::read_to_string(path).unwrap_or_default();
-        assert!(committed == schema(), "boards/board.schema.json is stale: run `cargo run -p tartelette -- schema > boards/board.schema.json`");
+        assert!(
+            committed == schema(),
+            "boards/board.schema.json is stale: run `cargo run -p tartelette -- schema > boards/board.schema.json`"
+        );
     }
 }

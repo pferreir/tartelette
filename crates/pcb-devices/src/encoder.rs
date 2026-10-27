@@ -19,6 +19,7 @@
 //! steps of the one in progress.
 //! (`mhz` is the core clock, to turn microseconds into cycles.)
 use alloc::{boxed::Box, collections::VecDeque};
+
 use pcb::{Device, Io, Kind, Param};
 
 /// Contacts closed (CLK, DT) in each phase of a clockwise cycle.
@@ -47,14 +48,35 @@ pub const KIND: Kind = Kind {
     params: &[
         Param::pin("clk", "contact A"),
         Param::pin("dt", "contact B"),
-        Param::choice("cw", &["clk", "dt"], "the contact that leads when turning clockwise").default_str("clk"),
-        Param::int("step_us", 1, 1_000_000, "time between transitions, in microseconds").default_int(300),
+        Param::choice(
+            "cw",
+            &["clk", "dt"],
+            "the contact that leads when turning clockwise",
+        )
+        .default_str("clk"),
+        Param::int(
+            "step_us",
+            1,
+            1_000_000,
+            "time between transitions, in microseconds",
+        )
+        .default_int(300),
         Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
     ],
     build: |p| {
         let (clk, dt, dt_leads) = (p.pin("clk"), p.pin("dt"), p.str("cw") == "dt");
         let step_cycles = p.int("step_us") as u64 * p.int("mhz") as u64;
-        Ok(Box::new(Encoder { clk, dt, dt_leads, step_cycles, phase: 0, queue: VecDeque::new(), steps: 0, detent: 0, scheduled: false }))
+        Ok(Box::new(Encoder {
+            clk,
+            dt,
+            dt_leads,
+            step_cycles,
+            phase: 0,
+            queue: VecDeque::new(),
+            steps: 0,
+            detent: 0,
+            scheduled: false,
+        }))
     },
 };
 
@@ -118,9 +140,11 @@ impl Device for Encoder {
 
 #[cfg(test)]
 mod tests {
-    use crate::testutil::FakePins;
     use alloc::vec::Vec;
+
     use pcb::{Board, Pins};
+
+    use crate::testutil::FakePins;
 
     const CLK: usize = 22;
     const DT: usize = 21;
@@ -134,16 +158,23 @@ mod tests {
     impl Rig {
         fn new(extra: &str) -> Self {
             let sep = if extra.is_empty() { "" } else { ", " };
-            let text = alloc::format!("parts.knob = {{ kind = \"encoder\", clk = {CLK}, dt = {DT}{sep}{extra} }}");
+            let text = alloc::format!(
+                "parts.knob = {{ kind = \"encoder\", clk = {CLK}, dt = {DT}{sep}{extra} }}"
+            );
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             // Pull-ups on the pads: an open contact reads high.
             let mut pins = FakePins::default();
             pins.floating = 1 << CLK | 1 << DT;
             board.attach(&mut pins);
-            Rig { board, pins, now: 0 }
+            Rig {
+                board,
+                pins,
+                now: 0,
+            }
         }
         fn turn(&mut self, n: i64) {
-            self.board.input(&mut self.pins, "knob", "turn", n, self.now);
+            self.board
+                .input(&mut self.pins, "knob", "turn", n, self.now);
         }
         fn levels(&self) -> (bool, bool) {
             (self.pins.level(CLK), self.pins.level(DT))
@@ -175,9 +206,22 @@ mod tests {
         r.turn(1);
         assert_eq!(r.board.next_timer(), Some(100));
         let steps = r.run_to(1000);
-        assert_eq!(steps, [(100, false, true), (200, false, false), (300, true, false), (400, true, true)]);
+        assert_eq!(
+            steps,
+            [
+                (100, false, true),
+                (200, false, false),
+                (300, true, false),
+                (400, true, true)
+            ]
+        );
         assert_eq!(r.board.next_timer(), None);
-        let ev: Vec<_> = r.board.events.iter().map(|e| (e.cycles, e.label, e.value)).collect();
+        let ev: Vec<_> = r
+            .board
+            .events
+            .iter()
+            .map(|e| (e.cycles, e.label, e.value))
+            .collect();
         assert_eq!(ev, [(400, "detent", 1)]);
     }
 
@@ -186,7 +230,10 @@ mod tests {
         let mut r = Rig::new("step_us = 10, mhz = 1");
         r.turn(-1);
         let steps = r.run_to(1000);
-        assert_eq!(steps.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>(), [(true, false), (false, false), (false, true), (true, true)]);
+        assert_eq!(
+            steps.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>(),
+            [(true, false), (false, false), (false, true), (true, true)]
+        );
         assert_eq!(r.board.events[0].value, -1);
     }
 
@@ -195,7 +242,10 @@ mod tests {
         let mut r = Rig::new("cw = \"dt\", step_us = 10, mhz = 1");
         r.turn(1);
         let steps = r.run_to(1000);
-        assert_eq!(steps.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>(), [(true, false), (false, false), (false, true), (true, true)]);
+        assert_eq!(
+            steps.iter().map(|s| (s.1, s.2)).collect::<Vec<_>>(),
+            [(true, false), (false, false), (false, true), (true, true)]
+        );
         assert_eq!(r.board.events[0].value, 1);
     }
 
@@ -237,10 +287,25 @@ mod tests {
     #[test]
     fn unknown_actions_are_refused_and_params_validated() {
         let mut r = Rig::new("");
-        assert_eq!(r.board.input(&mut r.pins, "knob", "spin", 1, 0), pcb::InputResult::Unsupported);
+        assert_eq!(
+            r.board.input(&mut r.pins, "knob", "spin", 1, 0),
+            pcb::InputResult::Unsupported
+        );
         let reg = crate::registry();
         assert!(Board::parse_with("parts.e = { kind = \"encoder\", clk = 1 }", &reg).is_err());
-        assert!(Board::parse_with("parts.e = { kind = \"encoder\", clk = 1, dt = 2, step_us = 0 }", &reg).is_err());
-        assert!(Board::parse_with("parts.e = { kind = \"encoder\", clk = 1, dt = 2, cw = \"a\" }", &reg).is_err());
+        assert!(
+            Board::parse_with(
+                "parts.e = { kind = \"encoder\", clk = 1, dt = 2, step_us = 0 }",
+                &reg
+            )
+            .is_err()
+        );
+        assert!(
+            Board::parse_with(
+                "parts.e = { kind = \"encoder\", clk = 1, dt = 2, cw = \"a\" }",
+                &reg
+            )
+            .is_err()
+        );
     }
 }

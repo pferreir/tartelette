@@ -1,5 +1,6 @@
-use super::*;
 use alloc::vec::Vec;
+
+use super::*;
 // ---- a tiny assembler: encoders for the instruction set ----
 
 const JMP_ALWAYS: u16 = 0;

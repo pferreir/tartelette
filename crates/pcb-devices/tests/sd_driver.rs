@@ -10,15 +10,18 @@
 //! initialisation (with CRC checking on and off), the CSD capacity, single and
 //! multi-block reads and writes, and a real FAT16 file system on top.
 use core::convert::Infallible;
-use embedded_hal::delay::DelayNs;
-use embedded_hal::spi::{ErrorType, Operation, SpiDevice};
-use embedded_sdmmc::embedded_sdmmc_types::sdcard::CardType;
-use embedded_sdmmc::sdcard::spi::AcquireOpts;
-use embedded_sdmmc::{Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use std::{cell::RefCell, rc::Rc};
+
+use embedded_hal::{
+    delay::DelayNs,
+    spi::{ErrorType, Operation, SpiDevice},
+};
+use embedded_sdmmc::{
+    Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+    embedded_sdmmc_types::sdcard::CardType, sdcard::spi::AcquireOpts,
+};
 use pcb::{Board, Pins, SpiTarget};
 use pcb_devices::sdcard::{BLOCK, SdCard as SdModel};
-use std::cell::RefCell;
-use std::rc::Rc;
 
 const CS: usize = 8;
 const IMAGE_MB: usize = 20;
@@ -59,7 +62,9 @@ impl Bench {
         self.board.service(&mut self.pins, changed, 0);
     }
     fn byte(&mut self, out: u8) -> u8 {
-        self.board.spi_bus(1, &mut self.pins, 0).transfer(out as u16, 8) as u8
+        self.board
+            .spi_bus(1, &mut self.pins, 0)
+            .transfer(out as u16, 8) as u8
     }
 }
 
@@ -110,12 +115,21 @@ struct FixedTime;
 
 impl TimeSource for FixedTime {
     fn get_timestamp(&self) -> Timestamp {
-        Timestamp { year_since_1970: 55, zero_indexed_month: 5, zero_indexed_day: 14, hours: 12, minutes: 30, seconds: 0 }
+        Timestamp {
+            year_since_1970: 55,
+            zero_indexed_month: 5,
+            zero_indexed_day: 14,
+            hours: 12,
+            minutes: 30,
+            seconds: 0,
+        }
     }
 }
 
 fn bench_with_image(image: Vec<u8>) -> Rc<RefCell<Bench>> {
-    let text = format!("buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = {IMAGE_MB} }}");
+    let text = format!(
+        "buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = {IMAGE_MB} }}"
+    );
     let mut board = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
     let mut pins = TestPins::default();
     pins.chip[CS] = true;
@@ -126,7 +140,10 @@ fn bench_with_image(image: Vec<u8>) -> Rc<RefCell<Bench>> {
 }
 
 fn new_card(bench: &Rc<RefCell<Bench>>, use_crc: bool) -> SdCard<SdSpi, NoDelay> {
-    let opts = AcquireOpts { use_crc, ..AcquireOpts::default() };
+    let opts = AcquireOpts {
+        use_crc,
+        ..AcquireOpts::default()
+    };
     SdCard::new_with_options(SdSpi(bench.clone()), NoDelay, opts)
 }
 
@@ -137,7 +154,14 @@ fn formatted_image(megabytes: usize) -> Vec<u8> {
 
 /// A pattern that makes misplaced bytes obvious.
 fn pattern(len: usize, seed: u8) -> Vec<u8> {
-    (0..len).map(|i| (i as u8).wrapping_mul(31).wrapping_add((i >> 8) as u8).wrapping_add(seed)).collect()
+    (0..len)
+        .map(|i| {
+            (i as u8)
+                .wrapping_mul(31)
+                .wrapping_add((i >> 8) as u8)
+                .wrapping_add(seed)
+        })
+        .collect()
 }
 
 #[test]
@@ -145,7 +169,11 @@ fn driver_initialises_the_card_and_reads_its_size_with_crc_on_and_off() {
     for use_crc in [true, false] {
         let bench = bench_with_image(formatted_image(IMAGE_MB));
         let card = new_card(&bench, use_crc);
-        assert_eq!(card.num_bytes().unwrap(), (IMAGE_MB * 1024 * 1024) as u64, "crc={use_crc}");
+        assert_eq!(
+            card.num_bytes().unwrap(),
+            (IMAGE_MB * 1024 * 1024) as u64,
+            "crc={use_crc}"
+        );
         assert_eq!(card.get_card_type(), Some(CardType::SdhcSdxc));
         assert!(card.erase_single_block_enabled().unwrap());
     }
@@ -161,13 +189,24 @@ fn files_round_trip_through_a_fat_filesystem() {
         let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
         let volume = volume_mgr.open_volume(VolumeIdx(0)).expect("open volume 0");
         let root = volume.open_root_dir().expect("root dir");
-        let file = root.open_file_in_dir("HELLO.TXT", Mode::ReadWriteCreate).expect("create file");
+        let file = root
+            .open_file_in_dir("HELLO.TXT", Mode::ReadWriteCreate)
+            .expect("create file");
         file.write(&small).expect("write small");
         drop(file);
-        let file = root.open_file_in_dir("BIG.BIN", Mode::ReadWriteCreate).expect("create big file");
+        let file = root
+            .open_file_in_dir("BIG.BIN", Mode::ReadWriteCreate)
+            .expect("create big file");
         file.write(&big).expect("write big");
     }
-    assert!(bench.borrow().board.device::<SdModel>("sd").unwrap().dirty());
+    assert!(
+        bench
+            .borrow()
+            .board
+            .device::<SdModel>("sd")
+            .unwrap()
+            .dirty()
+    );
 
     // A fresh driver instance (the card is re-initialised) sees the same files.
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
@@ -180,10 +219,18 @@ fn files_round_trip_through_a_fat_filesystem() {
     })
     .expect("list root");
     names.sort();
-    assert_eq!(names, [("BIG.BIN".to_string(), 10_000), ("HELLO.TXT".to_string(), small.len() as u32)]);
+    assert_eq!(
+        names,
+        [
+            ("BIG.BIN".to_string(), 10_000),
+            ("HELLO.TXT".to_string(), small.len() as u32)
+        ]
+    );
 
     let read_all = |name: &str| {
-        let file = root.open_file_in_dir(name, Mode::ReadOnly).expect("open for read");
+        let file = root
+            .open_file_in_dir(name, Mode::ReadOnly)
+            .expect("open for read");
         let mut data = vec![0u8; file.length() as usize];
         let n = file.read(&mut data).expect("read");
         assert_eq!(n, data.len());
@@ -196,7 +243,8 @@ fn files_round_trip_through_a_fat_filesystem() {
 
 #[test]
 fn a_volume_label_shows_up_as_an_empty_directory_entry() {
-    let bench = bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
+    let bench =
+        bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
     let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
     let root = volume.open_root_dir().unwrap();
@@ -211,14 +259,18 @@ fn a_volume_label_shows_up_as_an_empty_directory_entry() {
 
 #[test]
 fn a_formatted_directory_can_be_entered_and_written_to() {
-    let bench = bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "", &["data", "songs"]).unwrap());
+    let bench = bench_with_image(
+        pcb_devices::fat::blank_fat16_image(IMAGE_MB, "", &["data", "songs"]).unwrap(),
+    );
     let payload = pattern(3000, 3);
     {
         let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
         let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
         let root = volume.open_root_dir().unwrap();
         let data = root.open_dir("data").expect("the data directory exists");
-        let file = data.open_file_in_dir("PATCH.BIN", Mode::ReadWriteCreate).unwrap();
+        let file = data
+            .open_file_in_dir("PATCH.BIN", Mode::ReadWriteCreate)
+            .unwrap();
         file.write(&payload).unwrap();
     }
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
@@ -252,9 +304,13 @@ fn every_formatted_size_mounts_and_keeps_a_file() {
         let data = pattern(70_000, mb as u8);
         {
             let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
-            let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap_or_else(|e| panic!("{mb} MiB: open volume: {e:?}"));
+            let volume = volume_mgr
+                .open_volume(VolumeIdx(0))
+                .unwrap_or_else(|e| panic!("{mb} MiB: open volume: {e:?}"));
             let root = volume.open_root_dir().unwrap();
-            let file = root.open_file_in_dir("DATA.BIN", Mode::ReadWriteCreate).unwrap();
+            let file = root
+                .open_file_in_dir("DATA.BIN", Mode::ReadWriteCreate)
+                .unwrap();
             file.write(&data).unwrap();
         }
         let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
@@ -270,19 +326,29 @@ fn every_formatted_size_mounts_and_keeps_a_file() {
 #[test]
 fn appending_and_overwriting_preserve_the_rest_of_the_disk() {
     let bench = bench_with_image(formatted_image(IMAGE_MB));
-    let untouched: Vec<u8> = bench.borrow().board.device::<SdModel>("sd").unwrap().image()[..2048 * BLOCK].to_vec();
+    let untouched: Vec<u8> = bench
+        .borrow()
+        .board
+        .device::<SdModel>("sd")
+        .unwrap()
+        .image()[..2048 * BLOCK]
+        .to_vec();
     {
         let volume_mgr = VolumeManager::new(new_card(&bench, false), FixedTime);
         let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
         let root = volume.open_root_dir().unwrap();
-        let log = root.open_file_in_dir("LOG.TXT", Mode::ReadWriteCreateOrAppend).unwrap();
+        let log = root
+            .open_file_in_dir("LOG.TXT", Mode::ReadWriteCreateOrAppend)
+            .unwrap();
         log.write(b"line one\n").unwrap();
     }
     {
         let volume_mgr = VolumeManager::new(new_card(&bench, false), FixedTime);
         let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
         let root = volume.open_root_dir().unwrap();
-        let log = root.open_file_in_dir("LOG.TXT", Mode::ReadWriteCreateOrAppend).unwrap();
+        let log = root
+            .open_file_in_dir("LOG.TXT", Mode::ReadWriteCreateOrAppend)
+            .unwrap();
         log.write(b"line two\n").unwrap();
     }
     let volume_mgr = VolumeManager::new(new_card(&bench, false), FixedTime);
@@ -293,7 +359,15 @@ fn appending_and_overwriting_preserve_the_rest_of_the_disk() {
     let n = log.read(&mut data).unwrap();
     assert_eq!(&data[..n], b"line one\nline two\n");
     // The MBR and the sectors before the partition were never touched.
-    assert_eq!(bench.borrow().board.device::<SdModel>("sd").unwrap().image()[..2048 * BLOCK], untouched[..]);
+    assert_eq!(
+        bench
+            .borrow()
+            .board
+            .device::<SdModel>("sd")
+            .unwrap()
+            .image()[..2048 * BLOCK],
+        untouched[..]
+    );
 }
 
 /// Mount a real disk image made by the upstream project (set `UPSTREAM_DISK_IMG`
@@ -303,14 +377,19 @@ fn appending_and_overwriting_preserve_the_rest_of_the_disk() {
 #[ignore = "needs the upstream embedded-sdmmc tests/disk.img (see UPSTREAM_DISK_IMG)"]
 fn reads_the_upstream_test_disk_image() {
     use sha2::{Digest, Sha256};
-    const TEST_DAT_SHA256: &str = "59e3468e3bef8bfe37e60a8221a1896e105b80a61a23637612ac8cd24ca04a75";
+    const TEST_DAT_SHA256: &str =
+        "59e3468e3bef8bfe37e60a8221a1896e105b80a61a23637612ac8cd24ca04a75";
     let path = std::env::var("UPSTREAM_DISK_IMG").expect("UPSTREAM_DISK_IMG");
     let bench = bench_with_image(std::fs::read(path).unwrap());
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
-    let volume = volume_mgr.open_volume(VolumeIdx(0)).expect("open the FAT16 volume");
+    let volume = volume_mgr
+        .open_volume(VolumeIdx(0))
+        .expect("open the FAT16 volume");
     let root = volume.open_root_dir().expect("root dir");
     let dir = root.open_dir("TEST").expect("TEST dir");
-    let file = dir.open_file_in_dir("TEST.DAT", Mode::ReadOnly).expect("TEST.DAT");
+    let file = dir
+        .open_file_in_dir("TEST.DAT", Mode::ReadOnly)
+        .expect("TEST.DAT");
     let mut data = vec![0u8; 4096];
     let n = file.read(&mut data).expect("read");
     assert_eq!(n, 3500);
@@ -319,6 +398,8 @@ fn reads_the_upstream_test_disk_image() {
     assert_eq!(hex, TEST_DAT_SHA256);
     // The second partition is FAT32.
     drop((file, dir, root, volume));
-    let volume1 = volume_mgr.open_volume(VolumeIdx(1)).expect("open the FAT32 volume");
+    let volume1 = volume_mgr
+        .open_volume(VolumeIdx(1))
+        .expect("open the FAT32 volume");
     volume1.open_root_dir().expect("FAT32 root dir");
 }

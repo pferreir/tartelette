@@ -2,8 +2,9 @@
 //! one instruction at a time, against Unicorn.
 
 mod common;
-use common::*;
 use std::collections::BTreeMap;
+
+use common::*;
 
 /// Second halfword for a 32-bit encoding starting with `hw1`. Prefixes in
 /// 0xF000..=0xF7FF are shared by BL, MSR, MRS and the barriers, which differ
@@ -13,7 +14,7 @@ fn wide_hw2(rng: &mut fastrand::Rng, hw1: u16) -> u16 {
     match (hw1, rng.u8(..4)) {
         (0xF380..=0xF38F, 0..=2) => 0x8800 | rng.u16(0..32), // MSR
         (0xF3EF, 0..=2) => 0x8000 | rng.u16(0..16) << 8 | rng.u16(0..32), // MRS
-        (0xF3BF, 0..=2) => 0x8F00 | rng.u16(..) & 0xFF, // barriers
+        (0xF3BF, 0..=2) => 0x8F00 | rng.u16(..) & 0xFF,      // barriers
         (0xF000..=0xF7FF, 0..=2) => bl,
         _ => rng.u16(..),
     }
@@ -33,7 +34,9 @@ fn single_instruction_sweep() {
     }
 
     // DIFFTEST_ONLY=f380 restricts the sweep to one encoding and prints every failure.
-    let only = std::env::var("DIFFTEST_ONLY").ok().and_then(|s| u16::from_str_radix(&s, 16).ok());
+    let only = std::env::var("DIFFTEST_ONLY")
+        .ok()
+        .and_then(|s| u16::from_str_radix(&s, 16).ok());
     if let Some(o) = only {
         encodings.retain(|&h| h == o);
         encodings.extend(std::iter::repeat_n(o, 200));
@@ -49,7 +52,9 @@ fn single_instruction_sweep() {
             let mem = random_mem(&mut rng, &[hw, hw2.unwrap_or(0)]);
             pair.load(&st, &mem);
             let res = pair.step();
-            *stats.entry(format!("{:?}/{:?}", res.ours, res.theirs)).or_default() += 1;
+            *stats
+                .entry(format!("{:?}/{:?}", res.ours, res.theirs))
+                .or_default() += 1;
 
             match judge(&res, &pair, hw, hw2, &st) {
                 Verdict::Match => {}
@@ -76,5 +81,9 @@ fn single_instruction_sweep() {
     for (k, (n, hws, example)) in &failures {
         eprintln!("[{k}] x{n}: {}\n  e.g. {example}", hws.join(" "));
     }
-    assert!(failures.is_empty(), "{} mismatching categories", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} mismatching categories",
+        failures.len()
+    );
 }

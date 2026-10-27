@@ -17,8 +17,9 @@
 //!   services and characteristics, reads the device name and subscribes to
 //!   everything that notifies or indicates. Values it receives are reported
 //!   as `ble_notify`.
-use super::catprinter::CatPrinter;
 use alloc::{collections::VecDeque, string::String, vec, vec::Vec};
+
+use super::catprinter::CatPrinter;
 
 pub const ATT_CID: u16 = 4;
 pub const ATT_MTU: usize = 23;
@@ -74,9 +75,13 @@ const PROP_NOTIFY: u8 = 0x10;
 const PROP_INDICATE: u8 = 0x20;
 
 /// BLE MIDI service 03B80E5A-EDE8-4B33-A751-6CE34EC4C700, as sent (little-endian).
-pub const MIDI_SERVICE: [u8; 16] = [0x00, 0xC7, 0xC4, 0x4E, 0xE3, 0x6C, 0x51, 0xA7, 0x33, 0x4B, 0xE8, 0xED, 0x5A, 0x0E, 0xB8, 0x03];
+pub const MIDI_SERVICE: [u8; 16] = [
+    0x00, 0xC7, 0xC4, 0x4E, 0xE3, 0x6C, 0x51, 0xA7, 0x33, 0x4B, 0xE8, 0xED, 0x5A, 0x0E, 0xB8, 0x03,
+];
 /// BLE MIDI I/O characteristic 7772E5DB-3868-4112-A1A9-F2669D106BF3.
-pub const MIDI_IO: [u8; 16] = [0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2, 0xA9, 0xA1, 0x12, 0x41, 0x68, 0x38, 0xDB, 0xE5, 0x72, 0x77];
+pub const MIDI_IO: [u8; 16] = [
+    0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2, 0xA9, 0xA1, 0x12, 0x41, 0x68, 0x38, 0xDB, 0xE5, 0x72, 0x77,
+];
 
 // AD types.
 const AD_FLAGS: u8 = 0x01;
@@ -86,7 +91,8 @@ const AD_SHORT_NAME: u8 = 0x08;
 const AD_NAME: u8 = 0x09;
 
 fn le16(b: &[u8], at: usize) -> u16 {
-    b.get(at..at + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
+    b.get(at..at + 2)
+        .map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
 }
 
 fn att_error(req: u8, handle: u16, code: u8) -> Vec<u8> {
@@ -118,7 +124,12 @@ impl Server {
 
     fn push(&mut self, typ: &[u8], value: Vec<u8>, writable: bool) -> u16 {
         let handle = self.next_handle();
-        self.attrs.push(Attr { handle, typ: typ.into(), value, writable });
+        self.attrs.push(Attr {
+            handle,
+            typ: typ.into(),
+            value,
+            writable,
+        });
         handle
     }
 
@@ -165,7 +176,8 @@ impl Server {
 
     /// Notifications enabled on the characteristic whose value is `handle`?
     fn subscribed(&self, handle: u16) -> bool {
-        self.attr(handle + 1).is_some_and(|a| Self::is(a, CCCD) && a.value.first().is_some_and(|v| v & 1 != 0))
+        self.attr(handle + 1)
+            .is_some_and(|a| Self::is(a, CCCD) && a.value.first().is_some_and(|v| v & 1 != 0))
     }
 
     /// Answer one request. `written` gets (handle, value) of each write.
@@ -200,11 +212,19 @@ impl Server {
             FIND_BY_TYPE_REQ => {
                 let (typ, value) = (&pdu[5..7.min(pdu.len())], pdu.get(7..).unwrap_or(&[]));
                 let mut r = vec![FIND_BY_TYPE_RSP];
-                for a in self.attrs.iter().filter(|a| in_range(a, range()) && a.typ == typ && a.value == value) {
+                for a in self
+                    .attrs
+                    .iter()
+                    .filter(|a| in_range(a, range()) && a.typ == typ && a.value == value)
+                {
                     if r.len() + 4 > ATT_MTU {
                         break;
                     }
-                    let end = if Self::is(a, PRIMARY_SERVICE) { self.group_end(a.handle) } else { a.handle };
+                    let end = if Self::is(a, PRIMARY_SERVICE) {
+                        self.group_end(a.handle)
+                    } else {
+                        a.handle
+                    };
                     r.extend_from_slice(&a.handle.to_le_bytes());
                     r.extend_from_slice(&end.to_le_bytes());
                 }
@@ -219,8 +239,19 @@ impl Server {
                 if group && typ != PRIMARY_SERVICE.to_le_bytes() {
                     return Some(att_error(op, range().0, E_NOT_SUPPORTED));
                 }
-                let mut r = vec![if group { READ_BY_GROUP_RSP } else { READ_BY_TYPE_RSP }, 0];
-                for a in self.attrs.iter().filter(|a| in_range(a, range()) && a.typ == typ) {
+                let mut r = vec![
+                    if group {
+                        READ_BY_GROUP_RSP
+                    } else {
+                        READ_BY_TYPE_RSP
+                    },
+                    0,
+                ];
+                for a in self
+                    .attrs
+                    .iter()
+                    .filter(|a| in_range(a, range()) && a.typ == typ)
+                {
                     let head = if group { 4 } else { 2 };
                     let len = (head + a.value.len()).min(ATT_MTU - 2);
                     if r[1] == 0 {
@@ -242,12 +273,22 @@ impl Server {
             }
             READ_REQ | READ_BLOB_REQ => {
                 let handle = le16(pdu, 1);
-                let offset = if op == READ_BLOB_REQ { le16(pdu, 3) as usize } else { 0 };
-                let Some(a) = self.attr(handle) else { return Some(att_error(op, handle, E_INVALID_HANDLE)) };
+                let offset = if op == READ_BLOB_REQ {
+                    le16(pdu, 3) as usize
+                } else {
+                    0
+                };
+                let Some(a) = self.attr(handle) else {
+                    return Some(att_error(op, handle, E_INVALID_HANDLE));
+                };
                 if offset > a.value.len() {
                     return Some(att_error(op, handle, E_INVALID_OFFSET));
                 }
-                let mut r = vec![if op == READ_REQ { READ_RSP } else { READ_BLOB_RSP }];
+                let mut r = vec![if op == READ_REQ {
+                    READ_RSP
+                } else {
+                    READ_BLOB_RSP
+                }];
                 let rest = &a.value[offset..];
                 r.extend_from_slice(&rest[..rest.len().min(ATT_MTU - 1)]);
                 r
@@ -319,7 +360,14 @@ struct Client {
 
 impl Client {
     fn new() -> Self {
-        Self { step: Step::Mtu, waiting: false, services: Vec::new(), chars: Vec::new(), cccds: Vec::new(), name: None }
+        Self {
+            step: Step::Mtu,
+            waiting: false,
+            services: Vec::new(),
+            chars: Vec::new(),
+            cccds: Vec::new(),
+            name: None,
+        }
     }
 
     /// The next request of the script, if it's time for one.
@@ -334,8 +382,22 @@ impl Client {
                     r.extend_from_slice(&(ATT_MTU as u16).to_le_bytes());
                     break r;
                 }
-                Step::Services(start) => break range_req(READ_BY_GROUP_REQ, start, 0xFFFF, &PRIMARY_SERVICE.to_le_bytes()),
-                Step::Chars(s, start) => break range_req(READ_BY_TYPE_REQ, start, self.services[s].1, &CHARACTERISTIC.to_le_bytes()),
+                Step::Services(start) => {
+                    break range_req(
+                        READ_BY_GROUP_REQ,
+                        start,
+                        0xFFFF,
+                        &PRIMARY_SERVICE.to_le_bytes(),
+                    );
+                }
+                Step::Chars(s, start) => {
+                    break range_req(
+                        READ_BY_TYPE_REQ,
+                        start,
+                        self.services[s].1,
+                        &CHARACTERISTIC.to_le_bytes(),
+                    );
+                }
                 Step::Descriptors(c, from) => {
                     if from > self.chars[c].end {
                         self.next_char(c);
@@ -346,7 +408,11 @@ impl Client {
                     r.extend_from_slice(&self.chars[c].end.to_le_bytes());
                     break r;
                 }
-                Step::ReadName => match self.chars.iter().find(|c| c.uuid == DEVICE_NAME.to_le_bytes() && c.props & PROP_READ != 0) {
+                Step::ReadName => match self
+                    .chars
+                    .iter()
+                    .find(|c| c.uuid == DEVICE_NAME.to_le_bytes() && c.props & PROP_READ != 0)
+                {
                     Some(c) => {
                         let mut r = vec![READ_REQ];
                         r.extend_from_slice(&c.value_handle.to_le_bytes());
@@ -359,7 +425,11 @@ impl Client {
                         self.step = Step::Done;
                         continue;
                     };
-                    let bits: u16 = if self.chars[c].props & PROP_NOTIFY != 0 { 1 } else { 2 };
+                    let bits: u16 = if self.chars[c].props & PROP_NOTIFY != 0 {
+                        1
+                    } else {
+                        2
+                    };
                     let mut r = vec![WRITE_REQ];
                     r.extend_from_slice(&cccd.to_le_bytes());
                     r.extend_from_slice(&bits.to_le_bytes());
@@ -400,7 +470,13 @@ impl Client {
                     for e in entries(pdu[1] as usize) {
                         let decl = le16(e, 0);
                         self.close_char(decl - 1);
-                        self.chars.push(Found { uuid: e[5..].into(), props: e[2], value_handle: le16(e, 3), end: u16::MAX, value: Vec::new() });
+                        self.chars.push(Found {
+                            uuid: e[5..].into(),
+                            props: e[2],
+                            value_handle: le16(e, 3),
+                            end: u16::MAX,
+                            value: Vec::new(),
+                        });
                         next = Some(decl + 1);
                     }
                 }
@@ -415,7 +491,9 @@ impl Client {
                     let len = if pdu[1] == 1 { 4 } else { 18 };
                     for e in entries(len) {
                         let handle = le16(e, 0);
-                        if e[2..] == CCCD.to_le_bytes() && self.chars[c].props & (PROP_NOTIFY | PROP_INDICATE) != 0 {
+                        if e[2..] == CCCD.to_le_bytes()
+                            && self.chars[c].props & (PROP_NOTIFY | PROP_INDICATE) != 0
+                        {
                             self.cccds.push((c, handle));
                         }
                         next = handle.checked_add(1);
@@ -532,7 +610,21 @@ pub struct Peer {
 impl Peer {
     pub fn new(kind: Kind, name: String, addr: [u8; 6], random: bool) -> Self {
         let printer = matches!(kind, Kind::CatPrinter).then(CatPrinter::new);
-        let mut p = Self { name, addr, random, kind, conn: None, gatt: Gatt::Client(Client::new()), midi_handle: 0, printer_handles: (0, 0), printer: None, level: 100, level_due: 0, outbox: VecDeque::new(), notes: Vec::new() };
+        let mut p = Self {
+            name,
+            addr,
+            random,
+            kind,
+            conn: None,
+            gatt: Gatt::Client(Client::new()),
+            midi_handle: 0,
+            printer_handles: (0, 0),
+            printer: None,
+            level: 100,
+            level_due: 0,
+            outbox: VecDeque::new(),
+            notes: Vec::new(),
+        };
         p.printer = printer;
         p.reset();
         p
@@ -546,27 +638,53 @@ impl Peer {
             Kind::Midi => {
                 let mut s = Server::new();
                 s.service(&0x1800u16.to_le_bytes());
-                s.characteristic(&DEVICE_NAME.to_le_bytes(), PROP_READ, self.name.as_bytes().into());
+                s.characteristic(
+                    &DEVICE_NAME.to_le_bytes(),
+                    PROP_READ,
+                    self.name.as_bytes().into(),
+                );
                 s.service(&MIDI_SERVICE);
-                self.midi_handle = s.characteristic(&MIDI_IO, PROP_READ | PROP_WRITE_NO_RSP | PROP_NOTIFY, Vec::new());
+                self.midi_handle = s.characteristic(
+                    &MIDI_IO,
+                    PROP_READ | PROP_WRITE_NO_RSP | PROP_NOTIFY,
+                    Vec::new(),
+                );
                 Gatt::Server(s)
             }
             Kind::Battery => {
                 let mut s = Server::new();
                 s.service(&0x1800u16.to_le_bytes());
-                s.characteristic(&DEVICE_NAME.to_le_bytes(), PROP_READ, self.name.as_bytes().into());
+                s.characteristic(
+                    &DEVICE_NAME.to_le_bytes(),
+                    PROP_READ,
+                    self.name.as_bytes().into(),
+                );
                 s.service(&BATTERY_SERVICE.to_le_bytes());
-                self.midi_handle = s.characteristic(&BATTERY_LEVEL.to_le_bytes(), PROP_READ | PROP_NOTIFY, vec![self.level]);
+                self.midi_handle = s.characteristic(
+                    &BATTERY_LEVEL.to_le_bytes(),
+                    PROP_READ | PROP_NOTIFY,
+                    vec![self.level],
+                );
                 Gatt::Server(s)
             }
             Kind::CatPrinter => {
                 let mut s = Server::new();
                 s.service(&0x1800u16.to_le_bytes());
-                s.characteristic(&DEVICE_NAME.to_le_bytes(), PROP_READ, self.name.as_bytes().into());
+                s.characteristic(
+                    &DEVICE_NAME.to_le_bytes(),
+                    PROP_READ,
+                    self.name.as_bytes().into(),
+                );
                 s.service(&PRINTER_SERVICE.to_le_bytes());
-                let control = s.characteristic(&PRINTER_CONTROL.to_le_bytes(), PROP_WRITE | PROP_WRITE_NO_RSP, Vec::new());
-                self.midi_handle = s.characteristic(&PRINTER_REPLY.to_le_bytes(), PROP_NOTIFY, Vec::new());
-                let data = s.characteristic(&PRINTER_DATA.to_le_bytes(), PROP_WRITE_NO_RSP, Vec::new());
+                let control = s.characteristic(
+                    &PRINTER_CONTROL.to_le_bytes(),
+                    PROP_WRITE | PROP_WRITE_NO_RSP,
+                    Vec::new(),
+                );
+                self.midi_handle =
+                    s.characteristic(&PRINTER_REPLY.to_le_bytes(), PROP_NOTIFY, Vec::new());
+                let data =
+                    s.characteristic(&PRINTER_DATA.to_le_bytes(), PROP_WRITE_NO_RSP, Vec::new());
                 self.printer_handles = (control, data);
                 if let Some(p) = &mut self.printer {
                     p.disconnected();
@@ -640,7 +758,11 @@ impl Peer {
             {
                 ch.value = value.into();
             }
-            let packed = value.iter().take(8).rev().fold(0i64, |acc, &b| acc << 8 | b as i64);
+            let packed = value
+                .iter()
+                .take(8)
+                .rev()
+                .fold(0i64, |acc, &b| acc << 8 | b as i64);
             self.notes.push(("ble_notify", packed));
             if op == INDICATE {
                 self.outbox.push_back(vec![CONFIRM]);
@@ -671,13 +793,18 @@ impl Peer {
                     if let Some(p) = &mut self.printer {
                         if handle == self.printer_handles.0 {
                             for reply in p.control(&value, &mut self.notes) {
-                                self.outbox.push_back(notification(self.midi_handle, &reply));
+                                self.outbox
+                                    .push_back(notification(self.midi_handle, &reply));
                             }
                         } else if handle == self.printer_handles.1 {
                             p.data(&value);
                         }
                     } else if handle == self.midi_handle {
-                        let packed = value.iter().take(8).rev().fold(0i64, |acc, &b| acc << 8 | b as i64);
+                        let packed = value
+                            .iter()
+                            .take(8)
+                            .rev()
+                            .fold(0i64, |acc, &b| acc << 8 | b as i64);
                         self.notes.push(("ble_midi_out", packed));
                     }
                 }
@@ -718,7 +845,9 @@ impl Peer {
     /// Send a MIDI message (MIDI peripheral, connected and subscribed):
     /// one BLE MIDI packet stamped with the low 13 bits of `ms`.
     pub fn midi(&mut self, ms: u64, msg: &[u8]) -> bool {
-        let (Kind::Midi, Gatt::Server(s)) = (&self.kind, &self.gatt) else { return false };
+        let (Kind::Midi, Gatt::Server(s)) = (&self.kind, &self.gatt) else {
+            return false;
+        };
         if self.conn.is_none() || !s.subscribed(self.midi_handle) || msg.is_empty() {
             return false;
         }
@@ -797,21 +926,36 @@ mod tests {
 
     #[test]
     fn the_central_explores_and_subscribes_to_the_battery() {
-        let (mut c, mut p) = (Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true), Peer::new(Kind::Battery, "Bat".into(), BATTERY_ADDR, true));
+        let (mut c, mut p) = (
+            Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true),
+            Peer::new(Kind::Battery, "Bat".into(), BATTERY_ADDR, true),
+        );
         link(&mut c, &mut p, 3500);
         assert!(c.explored());
         assert_eq!(c.remote_name(), Some("Bat"));
-        let level = c.found().iter().find(|f| f.uuid == BATTERY_LEVEL.to_le_bytes()).expect("battery level found");
+        let level = c
+            .found()
+            .iter()
+            .find(|f| f.uuid == BATTERY_LEVEL.to_le_bytes())
+            .expect("battery level found");
         assert_eq!(level.props, PROP_READ | PROP_NOTIFY);
         // Subscribed, so the level arrives once a second, dropping.
-        let got: Vec<i64> = c.notes.iter().filter(|n| n.0 == "ble_notify").map(|n| n.1).collect();
+        let got: Vec<i64> = c
+            .notes
+            .iter()
+            .filter(|n| n.0 == "ble_notify")
+            .map(|n| n.1)
+            .collect();
         assert_eq!(got, [99, 98, 97, 96]);
         assert_eq!(level.value, [96]);
     }
 
     #[test]
     fn midi_goes_out_as_ble_midi_notifications_once_subscribed() {
-        let (mut c, mut p) = (Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true), Peer::new(Kind::Midi, "Keys".into(), MIDI_ADDR, false));
+        let (mut c, mut p) = (
+            Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true),
+            Peer::new(Kind::Midi, "Keys".into(), MIDI_ADDR, false),
+        );
         c.connected(1);
         p.connected(1);
         assert!(!p.midi(0, &[0x90, 60, 100]), "nobody subscribed yet");
@@ -835,13 +979,25 @@ mod tests {
             p.poll(0).pop().unwrap()
         };
         // Primary services: GAP (1..3) and MIDI (4..7), the 128-bit one alone.
-        assert_eq!(ask(&[READ_BY_GROUP_REQ, 1, 0, 0xFF, 0xFF, 0x00, 0x28]), [READ_BY_GROUP_RSP, 6, 1, 0, 3, 0, 0x00, 0x18]);
+        assert_eq!(
+            ask(&[READ_BY_GROUP_REQ, 1, 0, 0xFF, 0xFF, 0x00, 0x28]),
+            [READ_BY_GROUP_RSP, 6, 1, 0, 3, 0, 0x00, 0x18]
+        );
         let mut find = vec![FIND_BY_TYPE_REQ, 1, 0, 0xFF, 0xFF, 0x00, 0x28];
         find.extend_from_slice(&MIDI_SERVICE);
         assert_eq!(ask(&find), [FIND_BY_TYPE_RSP, 4, 0, 7, 0]);
-        assert_eq!(ask(&[FIND_INFO_REQ, 7, 0, 7, 0]), [FIND_INFO_RSP, 1, 7, 0, 0x02, 0x29]);
-        assert_eq!(ask(&[READ_REQ, 9, 0]), [ERROR_RSP, READ_REQ, 9, 0, E_INVALID_HANDLE]);
-        assert_eq!(ask(&[WRITE_REQ, 3, 0, 1]), [ERROR_RSP, WRITE_REQ, 3, 0, E_WRITE_NOT_PERMITTED]);
+        assert_eq!(
+            ask(&[FIND_INFO_REQ, 7, 0, 7, 0]),
+            [FIND_INFO_RSP, 1, 7, 0, 0x02, 0x29]
+        );
+        assert_eq!(
+            ask(&[READ_REQ, 9, 0]),
+            [ERROR_RSP, READ_REQ, 9, 0, E_INVALID_HANDLE]
+        );
+        assert_eq!(
+            ask(&[WRITE_REQ, 3, 0, 1]),
+            [ERROR_RSP, WRITE_REQ, 3, 0, E_WRITE_NOT_PERMITTED]
+        );
         assert_eq!(ask(&[MTU_REQ, 0, 1]), [MTU_RSP, 23, 0]);
     }
 
@@ -879,11 +1035,24 @@ mod tests {
 
     #[test]
     fn advertising_fits_in_31_bytes_and_stops_while_connected() {
-        let mut p = Peer::new(Kind::Midi, "A rather long keyboard name".into(), MIDI_ADDR, false);
+        let mut p = Peer::new(
+            Kind::Midi,
+            "A rather long keyboard name".into(),
+            MIDI_ADDR,
+            false,
+        );
         let (adv, rsp) = p.advertising().unwrap();
         assert!(adv.len() <= 31 && rsp.len() <= 31);
-        assert_eq!(adv[adv.len() - 10..adv.len() - 8], [9, AD_SHORT_NAME], "a shortened name fills the rest");
-        assert!(Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true).advertising().is_none());
+        assert_eq!(
+            adv[adv.len() - 10..adv.len() - 8],
+            [9, AD_SHORT_NAME],
+            "a shortened name fills the rest"
+        );
+        assert!(
+            Peer::new(Kind::Central, "c".into(), CENTRAL_ADDR, true)
+                .advertising()
+                .is_none()
+        );
         p.connected(1);
         assert!(p.advertising().is_none());
     }

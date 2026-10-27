@@ -26,7 +26,9 @@ pub struct Ram {
 
 impl Ram {
     pub fn new(size: usize) -> Self {
-        Self { data: alloc::vec![0; size] }
+        Self {
+            data: alloc::vec![0; size],
+        }
     }
     pub fn read8(&self, off: u32) -> u8 {
         self.data.get(off as usize).copied().unwrap_or(0)
@@ -80,7 +82,10 @@ mod tests {
     fn little_endian_roundtrip() {
         let mut r = Ram::new(16);
         r.write32(4, 0x1122_3344);
-        assert_eq!([r.read8(4), r.read8(5), r.read8(6), r.read8(7)], [0x44, 0x33, 0x22, 0x11]);
+        assert_eq!(
+            [r.read8(4), r.read8(5), r.read8(6), r.read8(7)],
+            [0x44, 0x33, 0x22, 0x11]
+        );
         assert_eq!(r.read16(4), 0x3344);
         assert_eq!(r.read16(6), 0x1122);
         r.write16(8, 0xBEEF);

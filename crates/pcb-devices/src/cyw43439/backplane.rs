@@ -35,7 +35,10 @@ impl Default for Backplane {
 
 impl Backplane {
     pub fn new() -> Self {
-        Self { ram: vec![0; RAM_SIZE], regs: BTreeMap::new() }
+        Self {
+            ram: vec![0; RAM_SIZE],
+            regs: BTreeMap::new(),
+        }
     }
 
     fn default_byte(addr: u32) -> u8 {
@@ -54,12 +57,17 @@ impl Backplane {
         if (addr as usize) < RAM_SIZE {
             self.ram[addr as usize]
         } else {
-            self.regs.get(&addr).copied().unwrap_or_else(|| Self::default_byte(addr))
+            self.regs
+                .get(&addr)
+                .copied()
+                .unwrap_or_else(|| Self::default_byte(addr))
         }
     }
 
     pub fn read(&self, addr: u32, len: usize) -> Vec<u8> {
-        (0..len as u32).map(|i| self.byte(addr.wrapping_add(i))).collect()
+        (0..len as u32)
+            .map(|i| self.byte(addr.wrapping_add(i)))
+            .collect()
     }
 
     pub fn read32(&self, addr: u32) -> u32 {

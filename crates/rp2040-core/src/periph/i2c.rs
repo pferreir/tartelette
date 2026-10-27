@@ -6,9 +6,11 @@
 //! instantaneous: after the write to `IC_DATA_CMD` that queued it, a command
 //! is done by the time the next instruction runs, so SCL timing registers
 //! are stored but have no effect.
-use super::Peripheral;
 use alloc::collections::VecDeque;
+
 use pcb::I2cTarget;
+
+use super::Peripheral;
 
 const FIFO_DEPTH: usize = 16;
 
@@ -352,8 +354,9 @@ impl Peripheral for I2c {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     /// A fake bus recording what the controller does.
     #[derive(Default)]

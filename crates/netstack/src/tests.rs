@@ -1,7 +1,8 @@
-use super::*;
-use smoltcp::socket::tcp;
-use smoltcp::wire::IpEndpoint;
 use std::net::{TcpListener, UdpSocket};
+
+use smoltcp::{socket::tcp, wire::IpEndpoint};
+
+use super::*;
 
 const GUEST_MAC: [u8; 6] = [0x28, 0xCD, 0xC1, 0, 0, 1];
 
@@ -54,7 +55,13 @@ fn dhcp_hands_out_the_guest_address() {
     d[4..8].copy_from_slice(&[9, 9, 9, 9]);
     d[28..34].copy_from_slice(&GUEST_MAC);
     d.extend_from_slice(&[0x63, 0x82, 0x53, 0x63, 53, 1, 3, 255]); // REQUEST
-    s.send(&net::udp_frame([0xFF; 6], GUEST_MAC, ([0; 4], 68), ([255; 4], 67), &d));
+    s.send(&net::udp_frame(
+        [0xFF; 6],
+        GUEST_MAC,
+        ([0; 4], 68),
+        ([255; 4], 67),
+        &d,
+    ));
     let ack = wait_for(&mut s, |s| s.recv());
     let ip = net::parse_ipv4(&ack).unwrap();
     let udp = net::parse_udp(ip.payload).unwrap();
@@ -66,7 +73,13 @@ fn dhcp_hands_out_the_guest_address() {
 #[test]
 fn dns_resolves_names_with_the_host_resolver() {
     let mut s = up();
-    s.send(&net::udp_frame([0; 6], GUEST_MAC, (GUEST_IP, 4000), (net::DNS_IP, 53), &dns_query("localhost", 1)));
+    s.send(&net::udp_frame(
+        [0; 6],
+        GUEST_MAC,
+        (GUEST_IP, 4000),
+        (net::DNS_IP, 53),
+        &dns_query("localhost", 1),
+    ));
     let reply = wait_for(&mut s, |s| s.recv());
     let udp = net::parse_udp(net::parse_ipv4(&reply).unwrap().payload).unwrap();
     assert_eq!(&udp.data[0..2], &[0x12, 0x34]);
@@ -75,7 +88,13 @@ fn dns_resolves_names_with_the_host_resolver() {
     assert_eq!(&udp.data[udp.data.len() - 4..], &[127, 0, 0, 1]);
 
     // AAAA: no data, but not an error.
-    s.send(&net::udp_frame([0; 6], GUEST_MAC, (GUEST_IP, 4000), (net::DNS_IP, 53), &dns_query("localhost", 28)));
+    s.send(&net::udp_frame(
+        [0; 6],
+        GUEST_MAC,
+        (GUEST_IP, 4000),
+        (net::DNS_IP, 53),
+        &dns_query("localhost", 28),
+    ));
     let reply = wait_for(&mut s, |s| s.recv());
     let udp = net::parse_udp(net::parse_ipv4(&reply).unwrap().payload).unwrap();
     assert_eq!((udp.data[3] & 0xF, udp.data[7]), (0, 0));
@@ -104,12 +123,21 @@ fn udp_is_natted_to_the_host_and_back() {
     });
     let mut s = up();
     // 10.0.2.2 is the host's loopback.
-    s.send(&net::udp_frame(GATEWAY_MAC, GUEST_MAC, (GUEST_IP, 5000), (GATEWAY_IP, port), b"ping"));
+    s.send(&net::udp_frame(
+        GATEWAY_MAC,
+        GUEST_MAC,
+        (GUEST_IP, 5000),
+        (GATEWAY_IP, port),
+        b"ping",
+    ));
     let reply = wait_for(&mut s, |s| s.recv());
     let ip = net::parse_ipv4(&reply).unwrap();
     assert_eq!((ip.src, ip.dst), (GATEWAY_IP, GUEST_IP));
     let udp = net::parse_udp(ip.payload).unwrap();
-    assert_eq!((udp.src_port, udp.dst_port, udp.data), (port, 5000, &b"ping"[..]));
+    assert_eq!(
+        (udp.src_port, udp.dst_port, udp.data),
+        (port, 5000, &b"ping"[..])
+    );
 }
 
 /// A second smoltcp stack standing in for the firmware's.
@@ -129,16 +157,32 @@ impl Guest {
         iface.update_ip_addrs(|a| {
             let _ = a.push(IpCidr::new(IpAddress::v4(10, 0, 2, 15), 24));
         });
-        let _ = iface.routes_mut().add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2));
-        Guest { iface, wire, sockets: SocketSet::new(Vec::new()), start: std::time::Instant::now() }
+        let _ = iface
+            .routes_mut()
+            .add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2));
+        Guest {
+            iface,
+            wire,
+            sockets: SocketSet::new(Vec::new()),
+            start: std::time::Instant::now(),
+        }
     }
 
     fn connect(&mut self, addr: ([u8; 4], u16)) -> SocketHandle {
-        let socket = tcp::Socket::new(tcp::SocketBuffer::new(vec![0; 4096]), tcp::SocketBuffer::new(vec![0; 4096]));
+        let socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0; 4096]),
+            tcp::SocketBuffer::new(vec![0; 4096]),
+        );
         let handle = self.sockets.add(socket);
-        let remote = IpEndpoint::new(IpAddress::v4(addr.0[0], addr.0[1], addr.0[2], addr.0[3]), addr.1);
+        let remote = IpEndpoint::new(
+            IpAddress::v4(addr.0[0], addr.0[1], addr.0[2], addr.0[3]),
+            addr.1,
+        );
         let cx = self.iface.context();
-        self.sockets.get_mut::<tcp::Socket>(handle).connect(cx, remote, 49152).unwrap();
+        self.sockets
+            .get_mut::<tcp::Socket>(handle)
+            .connect(cx, remote, 49152)
+            .unwrap();
         handle
     }
 
@@ -193,7 +237,9 @@ fn tcp_connects_through_to_a_host_server_and_back() {
     let mut s = up();
     let mut g = Guest::new();
     let h = g.connect((GATEWAY_IP, port));
-    run_guest(&mut g, &mut s, |g| (g.socket(h).state() == tcp::State::Established).then_some(()));
+    run_guest(&mut g, &mut s, |g| {
+        (g.socket(h).state() == tcp::State::Established).then_some(())
+    });
 
     // More than the socket buffers hold, so flow control has to work.
     let payload: Vec<u8> = (0..20_000u32).map(|i| (i * 31) as u8).collect();
@@ -223,11 +269,17 @@ fn tcp_connects_through_to_a_host_server_and_back() {
 #[test]
 fn a_refused_connection_resets_the_guest() {
     // A port nothing listens on.
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let mut s = up();
     let mut g = Guest::new();
     let h = g.connect((GATEWAY_IP, port));
-    run_guest(&mut g, &mut s, |g| (g.socket(h).state() == tcp::State::Closed).then_some(()));
+    run_guest(&mut g, &mut s, |g| {
+        (g.socket(h).state() == tcp::State::Closed).then_some(())
+    });
     assert!(s.tcp.is_empty());
 }
 
@@ -263,7 +315,10 @@ fn inbound_connections_can_be_forwarded_to_the_guest() {
     let addr = s.forward(0, 8080).unwrap();
     // The guest runs a one-shot server on 8080.
     let mut g = Guest::new();
-    let socket = tcp::Socket::new(tcp::SocketBuffer::new(vec![0; 4096]), tcp::SocketBuffer::new(vec![0; 4096]));
+    let socket = tcp::Socket::new(
+        tcp::SocketBuffer::new(vec![0; 4096]),
+        tcp::SocketBuffer::new(vec![0; 4096]),
+    );
     let h = g.sockets.add(socket);
     g.socket(h).listen(8080).unwrap();
     // The gateway must be reachable for ARP; the guest speaks first so its MAC is learned.

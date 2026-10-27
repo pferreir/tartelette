@@ -13,24 +13,66 @@ struct Table<B: ?Sized>(core::marker::PhantomData<B>);
 
 impl<B: Bus + ?Sized> Table<B> {
     const CLASS: [Handler<B>; 32] = [
-        Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_shift_imm, Cpu::op_add_sub,
-        Cpu::op_mov_imm, Cpu::op_cmp_imm, Cpu::op_add_imm, Cpu::op_sub_imm,
-        Cpu::op_special, Cpu::op_ldr_literal, Cpu::op_undefined, Cpu::op_undefined,
-        Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_ldst_imm,
-        Cpu::op_ldst_imm, Cpu::op_ldst_imm, Cpu::op_str_sp, Cpu::op_ldr_sp,
-        Cpu::op_adr, Cpu::op_add_sp_imm, Cpu::op_misc, Cpu::op_misc,
-        Cpu::op_stm, Cpu::op_ldm, Cpu::op_cond_branch, Cpu::op_cond_branch,
-        Cpu::op_branch, Cpu::op_undefined, Cpu::op_wide, Cpu::op_undefined,
+        Cpu::op_shift_imm,
+        Cpu::op_shift_imm,
+        Cpu::op_shift_imm,
+        Cpu::op_add_sub,
+        Cpu::op_mov_imm,
+        Cpu::op_cmp_imm,
+        Cpu::op_add_imm,
+        Cpu::op_sub_imm,
+        Cpu::op_special,
+        Cpu::op_ldr_literal,
+        Cpu::op_undefined,
+        Cpu::op_undefined,
+        Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm,
+        Cpu::op_ldst_imm,
+        Cpu::op_str_sp,
+        Cpu::op_ldr_sp,
+        Cpu::op_adr,
+        Cpu::op_add_sp_imm,
+        Cpu::op_misc,
+        Cpu::op_misc,
+        Cpu::op_stm,
+        Cpu::op_ldm,
+        Cpu::op_cond_branch,
+        Cpu::op_cond_branch,
+        Cpu::op_branch,
+        Cpu::op_undefined,
+        Cpu::op_wide,
+        Cpu::op_undefined,
     ];
     const ALU: [Handler<B>; 16] = [
-        Cpu::op_alu::<B, 0>, Cpu::op_alu::<B, 1>, Cpu::op_alu::<B, 2>, Cpu::op_alu::<B, 3>,
-        Cpu::op_alu::<B, 4>, Cpu::op_alu::<B, 5>, Cpu::op_alu::<B, 6>, Cpu::op_alu::<B, 7>,
-        Cpu::op_alu::<B, 8>, Cpu::op_alu::<B, 9>, Cpu::op_alu::<B, 10>, Cpu::op_alu::<B, 11>,
-        Cpu::op_alu::<B, 12>, Cpu::op_alu::<B, 13>, Cpu::op_alu::<B, 14>, Cpu::op_alu::<B, 15>,
+        Cpu::op_alu::<B, 0>,
+        Cpu::op_alu::<B, 1>,
+        Cpu::op_alu::<B, 2>,
+        Cpu::op_alu::<B, 3>,
+        Cpu::op_alu::<B, 4>,
+        Cpu::op_alu::<B, 5>,
+        Cpu::op_alu::<B, 6>,
+        Cpu::op_alu::<B, 7>,
+        Cpu::op_alu::<B, 8>,
+        Cpu::op_alu::<B, 9>,
+        Cpu::op_alu::<B, 10>,
+        Cpu::op_alu::<B, 11>,
+        Cpu::op_alu::<B, 12>,
+        Cpu::op_alu::<B, 13>,
+        Cpu::op_alu::<B, 14>,
+        Cpu::op_alu::<B, 15>,
     ];
     const LDST: [Handler<B>; 8] = [
-        Cpu::op_ldst_reg::<B, 0>, Cpu::op_ldst_reg::<B, 1>, Cpu::op_ldst_reg::<B, 2>, Cpu::op_ldst_reg::<B, 3>,
-        Cpu::op_ldst_reg::<B, 4>, Cpu::op_ldst_reg::<B, 5>, Cpu::op_ldst_reg::<B, 6>, Cpu::op_ldst_reg::<B, 7>,
+        Cpu::op_ldst_reg::<B, 0>,
+        Cpu::op_ldst_reg::<B, 1>,
+        Cpu::op_ldst_reg::<B, 2>,
+        Cpu::op_ldst_reg::<B, 3>,
+        Cpu::op_ldst_reg::<B, 4>,
+        Cpu::op_ldst_reg::<B, 5>,
+        Cpu::op_ldst_reg::<B, 6>,
+        Cpu::op_ldst_reg::<B, 7>,
     ];
     const H: [Handler<B>; 1024] = {
         let mut t = [Cpu::op_undefined as Handler<B>; 1024];
@@ -78,7 +120,11 @@ impl Cpu {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
         let rm6 = ((hw >> 6) & 7) as usize;
-        let b = if hw & (1 << 10) != 0 { rm6 as u32 } else { self.r[rm6] };
+        let b = if hw & (1 << 10) != 0 {
+            rm6 as u32
+        } else {
+            self.r[rm6]
+        };
         let (res, c, v) = if hw & (1 << 9) != 0 {
             add_with_carry(self.r[rn], !b, true)
         } else {
@@ -209,13 +255,18 @@ impl Cpu {
     }
 
     fn op_str_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
-        self.st32(bus, self.sp().wrapping_add((hw & 0xFF) * 4), self.r[((hw >> 8) & 7) as usize])?;
+        self.st32(
+            bus,
+            self.sp().wrapping_add((hw & 0xFF) * 4),
+            self.r[((hw >> 8) & 7) as usize],
+        )?;
         self.pc = pc.wrapping_add(2);
         Ok(2)
     }
 
     fn op_ldr_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
-        self.r[((hw >> 8) & 7) as usize] = self.ld32(bus, self.sp().wrapping_add((hw & 0xFF) * 4))?;
+        self.r[((hw >> 8) & 7) as usize] =
+            self.ld32(bus, self.sp().wrapping_add((hw & 0xFF) * 4))?;
         self.pc = pc.wrapping_add(2);
         Ok(2)
     }
@@ -320,28 +371,91 @@ impl Cpu {
         let b = self.r[rm];
         let c = self.c;
         match OP {
-            0x0 => { let r = a & b; self.r[rd] = r; self.set_nz(r) }
-            0x1 => { let r = a ^ b; self.r[rd] = r; self.set_nz(r) }
-            0x2 => { let (r, c) = lsl(a, b & 0xFF, c); self.r[rd] = r; self.set_nzc(r, c) }
-            0x3 => { let (r, c) = lsr(a, b & 0xFF, c); self.r[rd] = r; self.set_nzc(r, c) }
-            0x4 => { let (r, c) = asr(a, b & 0xFF, c); self.r[rd] = r; self.set_nzc(r, c) }
-            0x5 => { let (r, c, v) = add_with_carry(a, b, c); self.r[rd] = r; self.set_nzcv(r, c, v) }
-            0x6 => { let (r, c, v) = add_with_carry(a, !b, c); self.r[rd] = r; self.set_nzcv(r, c, v) }
-            0x7 => { let (r, c) = ror(a, b & 0xFF, c); self.r[rd] = r; self.set_nzc(r, c) }
+            0x0 => {
+                let r = a & b;
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
+            0x1 => {
+                let r = a ^ b;
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
+            0x2 => {
+                let (r, c) = lsl(a, b & 0xFF, c);
+                self.r[rd] = r;
+                self.set_nzc(r, c)
+            }
+            0x3 => {
+                let (r, c) = lsr(a, b & 0xFF, c);
+                self.r[rd] = r;
+                self.set_nzc(r, c)
+            }
+            0x4 => {
+                let (r, c) = asr(a, b & 0xFF, c);
+                self.r[rd] = r;
+                self.set_nzc(r, c)
+            }
+            0x5 => {
+                let (r, c, v) = add_with_carry(a, b, c);
+                self.r[rd] = r;
+                self.set_nzcv(r, c, v)
+            }
+            0x6 => {
+                let (r, c, v) = add_with_carry(a, !b, c);
+                self.r[rd] = r;
+                self.set_nzcv(r, c, v)
+            }
+            0x7 => {
+                let (r, c) = ror(a, b & 0xFF, c);
+                self.r[rd] = r;
+                self.set_nzc(r, c)
+            }
             0x8 => self.set_nz(a & b),
-            0x9 => { let (r, c, v) = add_with_carry(!b, 0, true); self.r[rd] = r; self.set_nzcv(r, c, v) }
-            0xA => { let (r, c, v) = add_with_carry(a, !b, true); self.set_nzcv(r, c, v) }
-            0xB => { let (r, c, v) = add_with_carry(a, b, false); self.set_nzcv(r, c, v) }
-            0xC => { let r = a | b; self.r[rd] = r; self.set_nz(r) }
-            0xD => { let r = a.wrapping_mul(b); self.r[rd] = r; self.set_nz(r) }
-            0xE => { let r = a & !b; self.r[rd] = r; self.set_nz(r) }
-            _ => { let r = !b; self.r[rd] = r; self.set_nz(r) }
+            0x9 => {
+                let (r, c, v) = add_with_carry(!b, 0, true);
+                self.r[rd] = r;
+                self.set_nzcv(r, c, v)
+            }
+            0xA => {
+                let (r, c, v) = add_with_carry(a, !b, true);
+                self.set_nzcv(r, c, v)
+            }
+            0xB => {
+                let (r, c, v) = add_with_carry(a, b, false);
+                self.set_nzcv(r, c, v)
+            }
+            0xC => {
+                let r = a | b;
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
+            0xD => {
+                let r = a.wrapping_mul(b);
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
+            0xE => {
+                let r = a & !b;
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
+            _ => {
+                let r = !b;
+                self.r[rd] = r;
+                self.set_nz(r)
+            }
         }
         self.pc = pc.wrapping_add(2);
         Ok(1)
     }
 
-    fn exec_misc<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, next: &mut u32) -> Result<u32, Fault> {
+    fn exec_misc<B: Bus + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        hw: u32,
+        next: &mut u32,
+    ) -> Result<u32, Fault> {
         let rd = (hw & 7) as usize;
         let rm = ((hw >> 3) & 7) as usize;
         let mut cycles = 1;
@@ -349,7 +463,11 @@ impl Cpu {
             0xB000 => {
                 let imm = (hw & 0x7F) * 4;
                 let sp = self.sp();
-                self.set_sp(if hw & 0x80 != 0 { sp.wrapping_sub(imm) } else { sp.wrapping_add(imm) });
+                self.set_sp(if hw & 0x80 != 0 {
+                    sp.wrapping_sub(imm)
+                } else {
+                    sp.wrapping_add(imm)
+                });
             }
             0xB200 => {
                 let v = self.r[rm];

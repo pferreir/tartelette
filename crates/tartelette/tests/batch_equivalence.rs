@@ -3,15 +3,21 @@
 //! syncs every device after every instruction. Both must agree exactly: same
 //! core state and clocks, same UART output, same timer and SysTick values,
 //! at every checkpoint, whatever the checkpoint spacing.
+use std::{path::PathBuf, process::Command};
+
 use rp2040_core::system::{StopReason, System};
-use std::path::PathBuf;
-use std::process::Command;
 
 fn build(name: &str) -> Vec<u8> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let target_dir = root.join("target/firmware").join(name);
     let status = Command::new(env!("CARGO"))
-        .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
+        .args([
+            "build",
+            "--release",
+            "--target",
+            "thumbv6m-none-eabi",
+            "--manifest-path",
+        ])
         .arg(root.join(format!("firmware/tests/{name}/Cargo.toml")))
         .arg("--target-dir")
         .arg(&target_dir)
@@ -54,7 +60,11 @@ fn compare(name: &str, limit: u64, chunks: &[u64]) {
         assert_eq!(a_stop, b_stop, "{name}: different stop at chunk {i}");
         let (a, b) = (snapshot(&fast), snapshot(&slow));
         if a != b {
-            let at = a.bytes().zip(b.bytes()).position(|(x, y)| x != y).unwrap_or(0);
+            let at = a
+                .bytes()
+                .zip(b.bytes())
+                .position(|(x, y)| x != y)
+                .unwrap_or(0);
             let from = at.saturating_sub(120);
             panic!(
                 "{name}: diverged at chunk {i} (size {chunk}), time {}\n batch: ...{}\n  full: ...{}",

@@ -4,9 +4,16 @@
 //!
 //! Layouts follow Embassy `cyw43` (`structs.rs`). Event packets are
 //! big-endian; everything else little-endian.
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, VecDeque},
+    string::String,
+    vec,
+    vec::Vec,
+};
+
 use super::wpa;
 use crate::net::NetBackend;
-use alloc::{boxed::Box, collections::BTreeMap, collections::VecDeque, string::String, vec, vec::Vec};
 
 // SDPCM channels.
 const CONTROL: u8 = 0;
@@ -106,11 +113,13 @@ pub struct Whd {
 }
 
 fn le16(b: &[u8], at: usize) -> u16 {
-    b.get(at..at + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
+    b.get(at..at + 2)
+        .map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
 }
 
 fn le32(b: &[u8], at: usize) -> u32 {
-    b.get(at..at + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    b.get(at..at + 4)
+        .map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Variables the driver sets that need no behaviour.
@@ -214,7 +223,14 @@ impl Whd {
 
     /// Deliver everything scheduled at or before `now`.
     pub fn tick(&mut self, now: u64) {
-        while let Some(pos) = self.later.iter().enumerate().filter(|(_, l)| l.0 <= now).min_by_key(|(_, l)| l.0).map(|(i, _)| i) {
+        while let Some(pos) = self
+            .later
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.0 <= now)
+            .min_by_key(|(_, l)| l.0)
+            .map(|(i, _)| i)
+        {
             let (_, what) = self.later.remove(pos);
             match what {
                 Later::Frame(f) => self.rx.push_back(f),
@@ -250,10 +266,15 @@ impl Whd {
             return false;
         }
         while self.rx.len() < 32 {
-            let Some(eth) = self.backend.as_mut().and_then(|b| b.recv()) else { break };
+            let Some(eth) = self.backend.as_mut().and_then(|b| b.recv()) else {
+                break;
+            };
             let mut payload = vec![2 << 4, 0, 0, 0]; // BDC v2, no offset
             payload.extend_from_slice(&eth);
-            self.rx.push_back(Frame { channel: DATA, payload });
+            self.rx.push_back(Frame {
+                channel: DATA,
+                payload,
+            });
             any = true;
         }
         any
@@ -278,16 +299,22 @@ impl Whd {
         // That was its last credit and nothing is on its way to it: a frame
         // with no payload hands out more, as the chip does when it frees
         // buffers (a driver that waits for the interrupt would stall).
-        let coming = !self.rx.is_empty() || self.later.iter().any(|l| matches!(l.1, Later::Frame(_)));
+        let coming =
+            !self.rx.is_empty() || self.later.iter().any(|l| matches!(l.1, Later::Frame(_)));
         if !coming && self.host_seq.wrapping_add(1) == self.granted {
-            self.rx.push_back(Frame { channel: CONTROL, payload: Vec::new() });
+            self.rx.push_back(Frame {
+                channel: CONTROL,
+                payload: Vec::new(),
+            });
         }
     }
 
     fn data(&mut self, p: &[u8]) {
         // BDC header, then `data_offset` words of options, then Ethernet.
         let Some(&offset) = p.get(3) else { return };
-        let Some(eth) = p.get(4 + 4 * offset as usize..) else { return };
+        let Some(eth) = p.get(4 + 4 * offset as usize..) else {
+            return;
+        };
         if matches!(self.link, Link::Up(_))
             && eth.len() >= 14
             && let Some(b) = self.backend.as_mut()
@@ -319,7 +346,13 @@ impl Whd {
         payload.extend_from_slice(&0u32.to_le_bytes()); // status: the driver panics on anything else
         payload.extend_from_slice(resp);
         let at = now + self.us(30);
-        self.later.push((at, Later::Frame(Frame { channel: CONTROL, payload })));
+        self.later.push((
+            at,
+            Later::Frame(Frame {
+                channel: CONTROL,
+                payload,
+            }),
+        ));
     }
 
     fn dispatch(&mut self, now: u64, cmd: u32, set: bool, data: &[u8], req_len: usize) -> Vec<u8> {
@@ -351,7 +384,16 @@ impl Whd {
                 if self.link != Link::Down {
                     let bssid = self.joined_bssid();
                     self.link_down();
-                    self.event(now + self.ms(1), E_DEAUTH_IND, ST_SUCCESS, 3, 0, 0, bssid, &[]);
+                    self.event(
+                        now + self.ms(1),
+                        E_DEAUTH_IND,
+                        ST_SUCCESS,
+                        3,
+                        0,
+                        0,
+                        bssid,
+                        &[],
+                    );
                 }
                 Vec::new()
             }
@@ -412,7 +454,17 @@ impl Whd {
     // ---- events ----
 
     #[allow(clippy::too_many_arguments)]
-    fn event(&mut self, at: u64, event: u32, status: u32, reason: u32, auth_type: u32, flags: u16, addr: [u8; 6], data: &[u8]) {
+    fn event(
+        &mut self,
+        at: u64,
+        event: u32,
+        status: u32,
+        reason: u32,
+        auth_type: u32,
+        flags: u16,
+        addr: [u8; 6],
+        data: &[u8],
+    ) {
         let mut p = Vec::with_capacity(4 + 72 + data.len());
         p.extend_from_slice(&[2 << 4, 0, 0, 0]); // BDC
         // Ethernet header: the tunnelled-event ethertype.
@@ -439,7 +491,13 @@ impl Whd {
         p.extend_from_slice(&ifname);
         p.extend_from_slice(&[0, 0]); // ifidx, bsscfgidx
         p.extend_from_slice(data);
-        self.later.push((at, Later::Frame(Frame { channel: EVENT, payload: p })));
+        self.later.push((
+            at,
+            Later::Frame(Frame {
+                channel: EVENT,
+                payload: p,
+            }),
+        ));
     }
 
     // ---- scan ----
@@ -452,7 +510,10 @@ impl Whd {
         let sync_id = le16(p, 6);
         let want_len = (le32(p, 8) as usize).min(32);
         let want_ssid = p.get(12..12 + want_len).unwrap_or(&[]).to_vec();
-        let want_bssid: [u8; 6] = p.get(44..50).and_then(|b| b.try_into().ok()).unwrap_or([0xFF; 6]);
+        let want_bssid: [u8; 6] = p
+            .get(44..50)
+            .and_then(|b| b.try_into().ok())
+            .unwrap_or([0xFF; 6]);
         let mut at = now + self.ms(8);
         let mut found = 0;
         if self.available() {
@@ -507,19 +568,45 @@ impl Whd {
         if !self.available() {
             self.notes.push(("unavailable", 1));
             self.notes.push(("join", 0));
-            self.event(now + self.ms(50), E_SET_SSID, ST_NO_NETWORKS, 0, 0, 0, [0; 6], &[]);
+            self.event(
+                now + self.ms(50),
+                E_SET_SSID,
+                ST_NO_NETWORKS,
+                0,
+                0,
+                0,
+                [0; 6],
+                &[],
+            );
             return;
         }
-        let Some(i) = self.aps.iter().position(|a| a.ssid.as_bytes() == ssid.as_slice()) else {
+        let Some(i) = self
+            .aps
+            .iter()
+            .position(|a| a.ssid.as_bytes() == ssid.as_slice())
+        else {
             // The chip scans every channel before giving up.
             self.notes.push(("join", 0));
-            self.event(now + self.ms(300), E_SET_SSID, ST_NO_NETWORKS, 0, 0, 0, [0; 6], &[]);
+            self.event(
+                now + self.ms(300),
+                E_SET_SSID,
+                ST_NO_NETWORKS,
+                0,
+                0,
+                0,
+                [0; 6],
+                &[],
+            );
             return;
         };
         let ap = self.aps[i].clone();
         // Security has to agree on both sides: AES (4) with a matching key
         // for WPA2, nothing for an open network.
-        let ok = if ap.wpa2 { self.wsec & 4 != 0 && self.password_ok(&ap) } else { self.wsec & 7 == 0 };
+        let ok = if ap.wpa2 {
+            self.wsec & 4 != 0 && self.password_ok(&ap)
+        } else {
+            self.wsec & 7 == 0
+        };
         self.joined_ssid = Some(ap.ssid.clone());
         self.link = Link::Joining;
         let b = ap.bssid;
@@ -539,7 +626,16 @@ impl Whd {
         } else {
             // A wrong key stalls the four-way handshake until the chip gives up.
             if ap.wpa2 {
-                self.event(now + self.ms(60), E_PSK_SUP, WLC_SUP_KEYXCHANGE_WAIT_M1, 0, 0, 0, b, &[]);
+                self.event(
+                    now + self.ms(60),
+                    E_PSK_SUP,
+                    WLC_SUP_KEYXCHANGE_WAIT_M1,
+                    0,
+                    0,
+                    0,
+                    b,
+                    &[],
+                );
             }
             self.event(now + self.ms(100), E_SET_SSID, ST_FAIL, 0, 0, 0, b, &[]);
             self.later.push((now + self.ms(100), Later::LinkDown));
@@ -571,7 +667,11 @@ fn bss_info(ap: &Ap) -> [u8; BSS_INFO_SIZE] {
     put32(&mut b, 52, 8); // rateset count
     b[56..64].copy_from_slice(&[0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24]);
     // Chanspec: channel, 20 MHz, 2.4 GHz band.
-    put16(&mut b, 72, ap.chan as u16 | 0x1000 | if ap.chan > 14 { 0xC000 } else { 0 });
+    put16(
+        &mut b,
+        72,
+        ap.chan as u16 | 0x1000 | if ap.chan > 14 { 0xC000 } else { 0 },
+    );
     b[76] = 1; // DTIM period
     put16(&mut b, 78, ap.rssi as u16);
     b[80] = (-92i8) as u8; // noise

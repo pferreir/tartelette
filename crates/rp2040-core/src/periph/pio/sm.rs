@@ -1,5 +1,6 @@
-use super::*;
 use alloc::collections::VecDeque;
+
+use super::*;
 
 /// State shared by the four machines.
 #[derive(Default)]

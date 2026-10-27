@@ -16,6 +16,7 @@
 //! Events: `dac` with value `channel << 16 | code` whenever an output
 //! changes. [`Dac8165::millivolts`] gives `vref * code / 16384`.
 use alloc::boxed::Box;
+
 use pcb::{Device, Io, Kind, Param};
 
 pub struct Dac8165 {
@@ -47,7 +48,13 @@ pub const KIND: Kind = Kind {
         Param::pin("cs", "sync (chip select), active low"),
         Param::pin("clk", "serial clock"),
         Param::pin("rst", "reset, active low").optional(),
-        Param::int("vref_mv", 1, 10_000, "reference voltage in millivolts: the full-scale output").default_int(2500),
+        Param::int(
+            "vref_mv",
+            1,
+            10_000,
+            "reference voltage in millivolts: the full-scale output",
+        )
+        .default_int(2500),
     ],
     build: build_dac,
 };
@@ -84,7 +91,11 @@ impl Dac8165 {
     fn frame(&mut self, io: &mut Io) {
         let f = self.shift & 0xFF_FFFF;
         self.frames += 1;
-        let (ld, sel, flags) = (f >> 20 & 3, (f >> 17 & 3) as usize, f >> 22 | (f >> 19 & 1) | (f >> 16 & 1));
+        let (ld, sel, flags) = (
+            f >> 20 & 3,
+            (f >> 17 & 3) as usize,
+            f >> 22 | (f >> 19 & 1) | (f >> 16 & 1),
+        );
         if flags != 0 {
             // Reserved bits set, broadcast (DB19) or power-down (DB16): not modelled.
             self.unsupported += 1;
@@ -160,10 +171,12 @@ impl Device for Dac8165 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
-    use crate::testutil::FakePins;
+
     use pcb::Board;
+
+    use super::*;
+    use crate::testutil::FakePins;
 
     const SDI: usize = 4;
     const CS: usize = 5;
@@ -178,7 +191,9 @@ mod tests {
     impl Rig {
         fn new(extra: &str) -> Self {
             let sep = if extra.is_empty() { "" } else { ", " };
-            let text = alloc::format!("parts.dac = {{ kind = \"dac8165\", sdi = {SDI}, cs = {CS}, clk = {CLK}, rst = {RST}{sep}{extra} }}");
+            let text = alloc::format!(
+                "parts.dac = {{ kind = \"dac8165\", sdi = {SDI}, cs = {CS}, clk = {CLK}, rst = {RST}{sep}{extra} }}"
+            );
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             pins.set_chip(CS, true);
@@ -230,7 +245,15 @@ mod tests {
         assert_eq!(codes, [0x2000, 0x3FFF, 0x048D, 1]);
         assert_eq!(r.dac().frames, 5 - 1);
         let ev: Vec<(&str, i64)> = r.board.events.iter().map(|e| (e.label, e.value)).collect();
-        assert_eq!(ev, [("dac", 0x2000), ("dac", 1 << 16 | 0x3FFF), ("dac", 2 << 16 | 0x048D), ("dac", 3 << 16 | 1)]);
+        assert_eq!(
+            ev,
+            [
+                ("dac", 0x2000),
+                ("dac", 1 << 16 | 0x3FFF),
+                ("dac", 2 << 16 | 0x048D),
+                ("dac", 3 << 16 | 1)
+            ]
+        );
         // An update that changes nothing is silent.
         r.send(word(3, 0x0004), 24);
         assert_eq!(r.board.events.len(), 4);
@@ -247,7 +270,10 @@ mod tests {
         assert_eq!((r.dac().code(0), r.dac().code(1)), (0x2000, 0x1000));
         // 11: store the code in every channel and update all.
         r.send(0x30_0000 | 0xC000, 24);
-        assert_eq!((0..4).map(|c| r.dac().code(c)).collect::<Vec<_>>(), [0x3000; 4]);
+        assert_eq!(
+            (0..4).map(|c| r.dac().code(c)).collect::<Vec<_>>(),
+            [0x3000; 4]
+        );
     }
 
     #[test]
@@ -289,7 +315,15 @@ mod tests {
     #[test]
     fn factory_requires_the_serial_pins() {
         let reg = crate::registry();
-        assert!(Board::parse_with("parts.d = { kind = \"dac8165\", sdi = 1, cs = 2 }", &reg).is_err());
-        assert!(Board::parse_with("parts.d = { kind = \"dac8165\", sdi = 1, cs = 2, clk = 3 }", &reg).is_ok());
+        assert!(
+            Board::parse_with("parts.d = { kind = \"dac8165\", sdi = 1, cs = 2 }", &reg).is_err()
+        );
+        assert!(
+            Board::parse_with(
+                "parts.d = { kind = \"dac8165\", sdi = 1, cs = 2, clk = 3 }",
+                &reg
+            )
+            .is_ok()
+        );
     }
 }

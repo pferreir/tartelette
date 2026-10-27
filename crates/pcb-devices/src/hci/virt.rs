@@ -9,9 +9,12 @@
 //! itself unavailable: scans find nothing, connections never complete, and
 //! the first attempt at either (or at advertising) is reported as
 //! `bt_unavailable`.
-use super::peers::{ATT_CID, Peer};
-use super::{ACL, EVENT, HciBackend};
 use alloc::{collections::VecDeque, format, string::String, vec, vec::Vec};
+
+use super::{
+    ACL, EVENT, HciBackend,
+    peers::{ATT_CID, Peer},
+};
 
 /// How often the radio neighbourhood acts: a connection event, more or less.
 const TICK_US: u64 = 10_000;
@@ -46,7 +49,8 @@ const ADV_IND: u8 = 0x00;
 const SCAN_RSP: u8 = 0x04;
 
 fn le16(b: &[u8], at: usize) -> u16 {
-    b.get(at..at + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
+    b.get(at..at + 2)
+        .map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
 }
 
 #[derive(Default)]
@@ -130,7 +134,10 @@ impl VirtualController {
 
     /// What answers when there is no radio: no peers, unavailable.
     pub fn no_radio(addr: [u8; 6]) -> Self {
-        Self { available: false, ..Self::new(addr, Vec::new()) }
+        Self {
+            available: false,
+            ..Self::new(addr, Vec::new())
+        }
     }
 
     fn event(&mut self, code: u8, params: &[u8]) {
@@ -182,9 +189,8 @@ impl VirtualController {
             // Settings with nothing to model: event masks, host buffer
             // size and flow control, LE host support, default data length
             // and PHY, filter list removals, address resolution.
-            0x0C01 | 0x0C31 | 0x0C33 | 0x0C63 | 0x0C6D | 0x2001 | 0x2012 | 0x2024 | 0x2027 | 0x2029 | 0x202D | 0x202E | 0x2031 => {
-                self.complete(opcode, &[OK])
-            }
+            0x0C01 | 0x0C31 | 0x0C33 | 0x0C63 | 0x0C6D | 0x2001 | 0x2012 | 0x2024 | 0x2027
+            | 0x2029 | 0x202D | 0x202E | 0x2031 => self.complete(opcode, &[OK]),
             // Read Local Version Information: Bluetooth 5.0, Cypress.
             0x1001 => self.complete(opcode, &[OK, 9, 0, 0, 9, 0x31, 0x01, 0, 0]),
             // Read Local Supported Commands: claim them all.
@@ -254,7 +260,12 @@ impl VirtualController {
                 if p.first() == Some(&1) {
                     self.unavailable();
                     let (active, filtered) = self.scan_params;
-                    self.scan = Some(Scan { active, filtered, no_duplicates: p.get(1) == Some(&1), reported: Vec::new() });
+                    self.scan = Some(Scan {
+                        active,
+                        filtered,
+                        no_duplicates: p.get(1) == Some(&1),
+                        reported: Vec::new(),
+                    });
                 } else {
                     self.scan = None;
                 }
@@ -266,8 +277,15 @@ impl VirtualController {
                     return self.status(opcode, DISALLOWED);
                 }
                 self.unavailable();
-                let peer = p.get(6..12).and_then(|a| a.try_into().ok()).unwrap_or_default();
-                self.connecting = Some(Connecting { filtered: p.get(4) == Some(&1), peer, interval: le16(p, 13) });
+                let peer = p
+                    .get(6..12)
+                    .and_then(|a| a.try_into().ok())
+                    .unwrap_or_default();
+                self.connecting = Some(Connecting {
+                    filtered: p.get(4) == Some(&1),
+                    peer,
+                    interval: le16(p, 13),
+                });
                 self.status(opcode, OK);
             }
             // LE Create Connection Cancel
@@ -276,7 +294,29 @@ impl VirtualController {
                     return self.complete(opcode, &[DISALLOWED]);
                 }
                 self.complete(opcode, &[OK]);
-                self.le_event(LE_CONN_COMPLETE, &[UNKNOWN_CONNECTION, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                self.le_event(
+                    LE_CONN_COMPLETE,
+                    &[
+                        UNKNOWN_CONNECTION,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                    ],
+                );
             }
             // LE Read Filter Accept List Size
             0x200F => self.complete(opcode, &[OK, 8]),
@@ -326,7 +366,10 @@ impl VirtualController {
             }
             // LE Read Suggested Default / Maximum Data Length
             0x2023 => self.complete(opcode, &[OK, LE_MTU as u8, 0, 0x48, 0x01]),
-            0x202F => self.complete(opcode, &[OK, LE_MTU as u8, 0, 0x48, 0x01, LE_MTU as u8, 0, 0x48, 0x01]),
+            0x202F => self.complete(
+                opcode,
+                &[OK, LE_MTU as u8, 0, 0x48, 0x01, LE_MTU as u8, 0, 0x48, 0x01],
+            ),
             // Disconnect
             0x0406 => {
                 let handle = le16(p, 0);
@@ -337,7 +380,10 @@ impl VirtualController {
                 let link = self.links.remove(i);
                 self.peers[link.peer].disconnected();
                 let h = handle.to_le_bytes();
-                self.event(EV_DISCONNECTION_COMPLETE, &[OK, h[0], h[1], LOCAL_HOST_TERMINATED]);
+                self.event(
+                    EV_DISCONNECTION_COMPLETE,
+                    &[OK, h[0], h[1], LOCAL_HOST_TERMINATED],
+                );
             }
             _ => {
                 let name = format!("HCI command {opcode:#06x}");
@@ -355,7 +401,9 @@ impl VirtualController {
         let (handle, boundary) = (word & 0xFFF, word >> 12 & 3);
         let len = le16(pkt, 2) as usize;
         let data = pkt.get(4..4 + len).unwrap_or(&[]);
-        let Some(link) = self.links.iter_mut().find(|l| l.handle == handle) else { return };
+        let Some(link) = self.links.iter_mut().find(|l| l.handle == handle) else {
+            return;
+        };
         link.completed += 1;
         if boundary == 0b01 {
             link.rx.extend_from_slice(data);
@@ -379,7 +427,10 @@ impl VirtualController {
     /// LE signalling from the firmware: accept parameter updates, reject
     /// the rest.
     fn signal(&mut self, handle: u16, cmd: &[u8]) {
-        let (code, id) = (cmd.first().copied().unwrap_or(0), cmd.get(1).copied().unwrap_or(0));
+        let (code, id) = (
+            cmd.first().copied().unwrap_or(0),
+            cmd.get(1).copied().unwrap_or(0),
+        );
         let reply = match code {
             // Connection Parameter Update Request: accepted.
             0x12 => vec![0x13, id, 2, 0, 0, 0],
@@ -422,7 +473,14 @@ impl VirtualController {
         e.extend_from_slice(&800u16.to_le_bytes()); // supervision timeout: 8 s
         e.push(0); // clock accuracy
         self.le_event(LE_CONN_COMPLETE, &e);
-        self.links.push(Link { handle, peer, central, interval, rx: Vec::new(), completed: 0 });
+        self.links.push(Link {
+            handle,
+            peer,
+            central,
+            interval,
+            rx: Vec::new(),
+            completed: 0,
+        });
     }
 
     /// One step of the radio neighbourhood.
@@ -431,8 +489,12 @@ impl VirtualController {
         if let Some(scan) = &self.scan {
             let mut reports = Vec::new();
             for (i, peer) in self.peers.iter().enumerate() {
-                let Some((adv, rsp)) = peer.advertising() else { continue };
-                if (scan.no_duplicates && scan.reported.contains(&i)) || (scan.filtered && !self.accept.contains(&peer.addr)) {
+                let Some((adv, rsp)) = peer.advertising() else {
+                    continue;
+                };
+                if (scan.no_duplicates && scan.reported.contains(&i))
+                    || (scan.filtered && !self.accept.contains(&peer.addr))
+                {
                     continue;
                 }
                 reports.push((i, ADV_IND, peer.random, peer.addr, adv));
@@ -457,7 +519,12 @@ impl VirtualController {
         // The firmware connecting to an advertising peer.
         if let Some(c) = &self.connecting {
             let target = self.peers.iter().position(|p| {
-                p.advertising().is_some() && if c.filtered { self.accept.contains(&p.addr) } else { p.addr == c.peer }
+                p.advertising().is_some()
+                    && if c.filtered {
+                        self.accept.contains(&p.addr)
+                    } else {
+                        p.addr == c.peer
+                    }
             });
             if let Some(i) = target {
                 let interval = c.interval;
@@ -469,7 +536,10 @@ impl VirtualController {
         if let Some(since) = self.adv.since
             && self.adv.kind == 0
             && now >= since + CONNECT_DELAY_US
-            && let Some(i) = self.peers.iter().position(|p| p.is_central() && p.conn.is_none())
+            && let Some(i) = self
+                .peers
+                .iter()
+                .position(|p| p.is_central() && p.conn.is_none())
         {
             // Legacy advertising stops when a connection is made.
             self.adv.since = None;
@@ -537,7 +607,11 @@ impl HciBackend for VirtualController {
     }
 
     fn unavailable_reason(&self) -> String {
-        if self.available { String::new() } else { "Bluetooth unavailable: no radio".into() }
+        if self.available {
+            String::new()
+        } else {
+            "Bluetooth unavailable: no radio".into()
+        }
     }
 
     fn take_notes(&mut self) -> Vec<(&'static str, i64)> {
@@ -545,7 +619,10 @@ impl HciBackend for VirtualController {
     }
 
     fn paper(&self) -> Option<&[u8]> {
-        self.peers.iter().find_map(|p| p.printer.as_ref()).map(|p| p.paper.as_slice())
+        self.peers
+            .iter()
+            .find_map(|p| p.printer.as_ref())
+            .map(|p| p.paper.as_slice())
     }
 
     /// `midi` with a message packed big-endian in the low bytes of `value`
@@ -565,8 +642,10 @@ impl HciBackend for VirtualController {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{COMMAND, peers};
-    use super::*;
+    use super::{
+        super::{COMMAND, peers},
+        *,
+    };
 
     fn cmd(c: &mut VirtualController, now: u64, opcode: u16, params: &[u8]) {
         let mut p = opcode.to_le_bytes().to_vec();
@@ -580,14 +659,23 @@ mod tests {
     }
 
     fn le_events(got: &[(u8, Vec<u8>)], sub: u8) -> Vec<Vec<u8>> {
-        got.iter().filter(|(k, p)| *k == EVENT && p[0] == EV_LE_META && p[2] == sub).map(|(_, p)| p[3..].to_vec()).collect()
+        got.iter()
+            .filter(|(k, p)| *k == EVENT && p[0] == EV_LE_META && p[2] == sub)
+            .map(|(_, p)| p[3..].to_vec())
+            .collect()
     }
 
     #[test]
     fn unknown_commands_fail_and_are_listed() {
         let mut c = VirtualController::new([1; 6], Vec::new());
         cmd(&mut c, 0, 0x2036, &[]);
-        assert_eq!(drain(&mut c, 0), [(EVENT, vec![EV_COMMAND_COMPLETE, 4, 1, 0x36, 0x20, UNKNOWN_COMMAND])]);
+        assert_eq!(
+            drain(&mut c, 0),
+            [(
+                EVENT,
+                vec![EV_COMMAND_COMPLETE, 4, 1, 0x36, 0x20, UNKNOWN_COMMAND]
+            )]
+        );
         assert_eq!(c.unknown, ["HCI command 0x2036"]);
     }
 
@@ -598,26 +686,45 @@ mod tests {
         let mut add = vec![1];
         add.extend_from_slice(&peers::BATTERY_ADDR);
         cmd(&mut c, 0, 0x2011, &add);
-        let mut create = vec![0x10, 0, 0x10, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0x40, 0, 0x40, 0, 0, 0, 0x80, 0x0C, 0, 0, 0, 0];
+        let mut create = vec![
+            0x10, 0, 0x10, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0x40, 0, 0x40, 0, 0, 0, 0x80, 0x0C, 0, 0,
+            0, 0,
+        ];
         create.truncate(25);
         cmd(&mut c, 0, 0x200D, &create);
         let got = drain(&mut c, 0);
-        assert!(got.iter().any(|(_, p)| p[..3] == [EV_COMMAND_STATUS, 4, OK]));
+        assert!(
+            got.iter()
+                .any(|(_, p)| p[..3] == [EV_COMMAND_STATUS, 4, OK])
+        );
         // The battery advertises, so the next radio tick connects.
         let conn = &le_events(&got, LE_CONN_COMPLETE)[0];
-        assert_eq!((conn[0], conn[3], &conn[5..11]), (OK, 0, &peers::BATTERY_ADDR[..]), "connected as central to the battery");
+        assert_eq!(
+            (conn[0], conn[3], &conn[5..11]),
+            (OK, 0, &peers::BATTERY_ADDR[..]),
+            "connected as central to the battery"
+        );
         let handle = le16(conn, 1);
         // Read By Group Type over L2CAP/ACL, in one packet.
         let mut acl = (handle | 0b10 << 12).to_le_bytes().to_vec();
         acl.extend_from_slice(&[11, 0, 7, 0, 4, 0, 0x10, 1, 0, 0xFF, 0xFF, 0x00, 0x28]);
         c.send(0, ACL, &acl);
         let got = drain(&mut c, 2 * TICK_US);
-        assert!(got.iter().any(|(k, p)| *k == EVENT && p[0] == EV_COMPLETED_PACKETS), "the packet's buffer comes back");
+        assert!(
+            got.iter()
+                .any(|(k, p)| *k == EVENT && p[0] == EV_COMPLETED_PACKETS),
+            "the packet's buffer comes back"
+        );
         let rsp: Vec<_> = got.iter().filter(|(k, _)| *k == ACL).collect();
         assert_eq!(rsp.len(), 1);
         assert_eq!(rsp[0].1[8..10], [0x11, 6], "a Read By Group Type response");
         assert!(c.has_link(true));
-        cmd(&mut c, 0, 0x0406, &[handle as u8, (handle >> 8) as u8, 0x13]);
+        cmd(
+            &mut c,
+            0,
+            0x0406,
+            &[handle as u8, (handle >> 8) as u8, 0x13],
+        );
         let got = drain(&mut c, 3 * TICK_US);
         assert!(got.iter().any(|(_, p)| p[0] == EV_DISCONNECTION_COMPLETE));
         assert!(!c.has_link(true));
@@ -626,13 +733,25 @@ mod tests {
     #[test]
     fn a_central_connects_to_the_advertising_firmware() {
         let mut c = VirtualController::new([1; 6], peers::neighbourhood());
-        cmd(&mut c, 0, 0x2006, &[0x20, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0]);
+        cmd(
+            &mut c,
+            0,
+            0x2006,
+            &[0x20, 0, 0x20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0],
+        );
         cmd(&mut c, 0, 0x200A, &[1]);
         drain(&mut c, 0);
-        assert!(le_events(&drain(&mut c, CONNECT_DELAY_US / 2), LE_CONN_COMPLETE).is_empty(), "not straight away");
+        assert!(
+            le_events(&drain(&mut c, CONNECT_DELAY_US / 2), LE_CONN_COMPLETE).is_empty(),
+            "not straight away"
+        );
         let got = drain(&mut c, CONNECT_DELAY_US);
         let conn = &le_events(&got, LE_CONN_COMPLETE)[0];
-        assert_eq!((conn[3], &conn[5..11]), (1, &peers::CENTRAL_ADDR[..]), "connected as peripheral to the central");
+        assert_eq!(
+            (conn[3], &conn[5..11]),
+            (1, &peers::CENTRAL_ADDR[..]),
+            "connected as peripheral to the central"
+        );
         assert!(c.has_link(false));
         // The central's first move, at that same connection event: an MTU exchange.
         let acl: Vec<_> = got.iter().filter(|(k, _)| *k == ACL).collect();

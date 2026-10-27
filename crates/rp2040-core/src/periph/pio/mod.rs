@@ -18,8 +18,9 @@
 //! (stored only), the `IRQ` flags' routing to the system IRQs 4-7 (they are
 //! machine-visible only), and exact behaviour of simultaneous cross-machine
 //! reads (a machine sees the effects of lower-numbered ones in the same cycle).
-use super::Peripheral;
 use sm::{Shared, Sm};
+
+use super::Peripheral;
 
 mod sm;
 #[cfg(test)]
@@ -150,7 +151,9 @@ impl Pio {
                     .filter(|&n| self.runs(n))
                     .map(|n| {
                         let sm = &self.sm[n];
-                        (sm.div256().saturating_sub(sm.acc) as u64).div_ceil(256).max(1)
+                        (sm.div256().saturating_sub(sm.acc) as u64)
+                            .div_ceil(256)
+                            .max(1)
                     })
                     .min()
                     .unwrap_or(1);

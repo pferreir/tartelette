@@ -14,11 +14,11 @@
 //!     build: |p| Ok(Box::new(Led { pin: p.pin("gpio"), active_high: p.str("active") == "high", lit: false })),
 //! };
 //! ```
-use super::params::Params;
-use super::{BUS_KINDS, Registry};
-use crate::{NUM_PINS, device::Device};
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use core::fmt::Write;
+
+use super::{BUS_KINDS, Registry, params::Params};
+use crate::{NUM_PINS, device::Device};
 
 /// Builds a device from its validated parameters.
 pub type Build = fn(&mut Params) -> Result<Box<dyn Device>, String>;
@@ -67,7 +67,11 @@ pub enum Ty {
     /// A GPIO other parts may use too (an LED watching a signal, an
     /// open-drain interrupt line).
     SharedPin,
-    Int { min: i64, max: i64, hex: bool },
+    Int {
+        min: i64,
+        max: i64,
+        hex: bool,
+    },
     Choice(&'static [&'static str]),
     Str,
     /// An array of tables, each with these keys.
@@ -84,7 +88,12 @@ pub enum Need {
 
 impl Param {
     const fn new(key: &'static str, ty: Ty, doc: &'static str) -> Self {
-        Self { key, ty, need: Need::Required, doc }
+        Self {
+            key,
+            ty,
+            need: Need::Required,
+            doc,
+        }
     }
     pub const fn pin(key: &'static str, doc: &'static str) -> Self {
         Self::new(key, Ty::Pin, doc)
@@ -93,13 +102,33 @@ impl Param {
         Self::new(key, Ty::SharedPin, doc)
     }
     pub const fn int(key: &'static str, min: i64, max: i64, doc: &'static str) -> Self {
-        Self::new(key, Ty::Int { min, max, hex: false }, doc)
+        Self::new(
+            key,
+            Ty::Int {
+                min,
+                max,
+                hex: false,
+            },
+            doc,
+        )
     }
     /// An integer usually written in hex (an address).
     pub const fn hex(key: &'static str, min: i64, max: i64, doc: &'static str) -> Self {
-        Self::new(key, Ty::Int { min, max, hex: true }, doc)
+        Self::new(
+            key,
+            Ty::Int {
+                min,
+                max,
+                hex: true,
+            },
+            doc,
+        )
     }
-    pub const fn choice(key: &'static str, options: &'static [&'static str], doc: &'static str) -> Self {
+    pub const fn choice(
+        key: &'static str,
+        options: &'static [&'static str],
+        doc: &'static str,
+    ) -> Self {
         Self::new(key, Ty::Choice(options), doc)
     }
     pub const fn str(key: &'static str, doc: &'static str) -> Self {
@@ -109,13 +138,22 @@ impl Param {
         Self::new(key, Ty::Tables(params), doc)
     }
     pub const fn optional(self) -> Self {
-        Self { need: Need::Optional, ..self }
+        Self {
+            need: Need::Optional,
+            ..self
+        }
     }
     pub const fn default_int(self, v: i64) -> Self {
-        Self { need: Need::DefaultInt(v), ..self }
+        Self {
+            need: Need::DefaultInt(v),
+            ..self
+        }
     }
     pub const fn default_str(self, v: &'static str) -> Self {
-        Self { need: Need::DefaultStr(v), ..self }
+        Self {
+            need: Need::DefaultStr(v),
+            ..self
+        }
     }
 
     pub fn required(&self) -> bool {
@@ -127,7 +165,11 @@ impl Param {
         match self.ty {
             Ty::Pin => "GPIO".into(),
             Ty::SharedPin => "GPIO (shareable)".into(),
-            Ty::Int { min, max, hex: true } => format!("{min:#x}..{max:#x}"),
+            Ty::Int {
+                min,
+                max,
+                hex: true,
+            } => format!("{min:#x}..{max:#x}"),
             Ty::Int { min, max, .. } => format!("{min}..{max}"),
             Ty::Choice(options) => options.join(" | "),
             Ty::Str => "string".into(),
@@ -151,7 +193,12 @@ impl Param {
 /// The closest of `options` to a misspelt `word`, if one is close enough.
 pub fn suggest<'a>(word: &str, options: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let limit = (word.len() / 3).clamp(1, 3);
-    options.into_iter().map(|o| (distance(word, o), o)).filter(|&(d, _)| d <= limit).min_by_key(|&(d, _)| d).map(|(_, o)| o)
+    options
+        .into_iter()
+        .map(|o| (distance(word, o), o))
+        .filter(|&(d, _)| d <= limit)
+        .min_by_key(|&(d, _)| d)
+        .map(|(_, o)| o)
 }
 
 /// Edit distance, counting a swap of neighbours as one edit (optimal
@@ -165,7 +212,9 @@ fn distance(a: &str, b: &str) -> usize {
             d[i * w + j] = if i == 0 || j == 0 {
                 i + j
             } else {
-                let mut best = (d[(i - 1) * w + j - 1] + (a[i - 1] != b[j - 1]) as usize).min(d[(i - 1) * w + j] + 1).min(d[i * w + j - 1] + 1);
+                let mut best = (d[(i - 1) * w + j - 1] + (a[i - 1] != b[j - 1]) as usize)
+                    .min(d[(i - 1) * w + j] + 1)
+                    .min(d[i * w + j - 1] + 1);
                 if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                     best = best.min(d[(i - 2) * w + j - 2] + 1);
                 }
@@ -181,14 +230,33 @@ pub fn describe(kind: &Kind) -> String {
     let mut out = format!("{}: {}\n", kind.name, kind.summary);
     let mut rows: Vec<(String, String, String, &str)> = Vec::new();
     if let Some(bus) = kind.bus {
-        rows.push(("bus".into(), format!("{}0 | {}1", bus.prefix(), bus.prefix()), "optional".into(), "the bus it sits on (declared under [buses])"));
+        rows.push((
+            "bus".into(),
+            format!("{}0 | {}1", bus.prefix(), bus.prefix()),
+            "optional".into(),
+            "the bus it sits on (declared under [buses])",
+        ));
         if bus == BusType::Spi {
-            rows.push(("cs".into(), "GPIO".into(), "optional".into(), "chip select, active low (none: always selected)"));
+            rows.push((
+                "cs".into(),
+                "GPIO".into(),
+                "optional".into(),
+                "chip select, active low (none: always selected)",
+            ));
         }
     }
-    fn add(rows: &mut Vec<(String, String, String, &'static str)>, prefix: &str, params: &'static [Param]) {
+    fn add(
+        rows: &mut Vec<(String, String, String, &'static str)>,
+        prefix: &str,
+        params: &'static [Param],
+    ) {
         for p in params {
-            rows.push((format!("{prefix}{}", p.key), p.type_text(), p.need_text(), p.doc));
+            rows.push((
+                format!("{prefix}{}", p.key),
+                p.type_text(),
+                p.need_text(),
+                p.doc,
+            ));
             if let Ty::Tables(inner) = p.ty {
                 add(rows, &format!("{prefix}{}[].", p.key), inner);
             }
@@ -288,7 +356,12 @@ impl J {
 }
 
 fn pin_schema(doc: &str) -> J {
-    J::Obj(vec![("type", s("integer")), ("minimum", J::Int(0)), ("maximum", J::Int(NUM_PINS as i64 - 1)), ("description", s(doc))])
+    J::Obj(vec![
+        ("type", s("integer")),
+        ("minimum", J::Int(0)),
+        ("maximum", J::Int(NUM_PINS as i64 - 1)),
+        ("description", s(doc)),
+    ])
 }
 
 fn param_schema(p: &Param) -> J {
@@ -299,18 +372,38 @@ fn param_schema(p: &Param) -> J {
     match p.ty {
         Ty::Pin => pin_schema(&doc),
         Ty::SharedPin => pin_schema(&format!("{doc} (other parts may use this GPIO too)")),
-        Ty::Int { min, max, .. } => J::Obj(vec![("type", s("integer")), ("minimum", J::Int(min)), ("maximum", J::Int(max)), ("description", J::Str(doc))]),
-        Ty::Choice(options) => J::Obj(vec![("enum", J::Arr(options.iter().map(|o| s(o)).collect())), ("description", J::Str(doc))]),
+        Ty::Int { min, max, .. } => J::Obj(vec![
+            ("type", s("integer")),
+            ("minimum", J::Int(min)),
+            ("maximum", J::Int(max)),
+            ("description", J::Str(doc)),
+        ]),
+        Ty::Choice(options) => J::Obj(vec![
+            ("enum", J::Arr(options.iter().map(|o| s(o)).collect())),
+            ("description", J::Str(doc)),
+        ]),
         Ty::Str => J::Obj(vec![("type", s("string")), ("description", J::Str(doc))]),
-        Ty::Tables(inner) => J::Obj(vec![("type", s("array")), ("items", table_schema(inner, Vec::new())), ("description", J::Str(doc))]),
+        Ty::Tables(inner) => J::Obj(vec![
+            ("type", s("array")),
+            ("items", table_schema(inner, Vec::new())),
+            ("description", J::Str(doc)),
+        ]),
     }
 }
 
 /// A closed object with `params` (plus `extra` keys).
 fn table_schema(params: &[Param], extra: Vec<(String, J)>) -> J {
     let mut props = extra;
-    props.extend(params.iter().map(|p| (String::from(p.key), param_schema(p))));
-    let required: Vec<J> = params.iter().filter(|p| p.required()).map(|p| s(p.key)).collect();
+    props.extend(
+        params
+            .iter()
+            .map(|p| (String::from(p.key), param_schema(p))),
+    );
+    let required: Vec<J> = params
+        .iter()
+        .filter(|p| p.required())
+        .map(|p| s(p.key))
+        .collect();
     let mut o = vec![("type", s("object")), ("properties", J::Map(props))];
     if !required.is_empty() {
         o.push(("required", J::Arr(required)));
@@ -326,38 +419,84 @@ pub fn json_schema(registry: &Registry) -> String {
     let buses = BUS_KINDS
         .iter()
         .map(|(name, keys)| {
-            let props = keys.iter().map(|k| (String::from(*k), pin_schema("GPIO"))).collect();
-            (String::from(*name), J::Obj(vec![("type", s("object")), ("properties", J::Map(props)), ("additionalProperties", J::Bool(false))]))
+            let props = keys
+                .iter()
+                .map(|k| (String::from(*k), pin_schema("GPIO")))
+                .collect();
+            (
+                String::from(*name),
+                J::Obj(vec![
+                    ("type", s("object")),
+                    ("properties", J::Map(props)),
+                    ("additionalProperties", J::Bool(false)),
+                ]),
+            )
         })
         .collect();
     let kinds: Vec<&Kind> = registry.kinds().collect();
     let per_kind: Vec<J> = kinds
         .iter()
         .map(|k| {
-            let mut extra = vec![(String::from("kind"), J::Obj(vec![("const", s(k.name)), ("description", s(k.summary))]))];
+            let mut extra = vec![(
+                String::from("kind"),
+                J::Obj(vec![("const", s(k.name)), ("description", s(k.summary))]),
+            )];
             if let Some(bus) = k.bus {
                 let names = [0, 1].map(|n| J::Str(format!("{}{n}", bus.prefix())));
-                extra.push(("bus".into(), J::Obj(vec![("enum", J::Arr(names.into())), ("description", s("the bus it sits on (declared under [buses])"))])));
+                extra.push((
+                    "bus".into(),
+                    J::Obj(vec![
+                        ("enum", J::Arr(names.into())),
+                        (
+                            "description",
+                            s("the bus it sits on (declared under [buses])"),
+                        ),
+                    ]),
+                ));
                 if bus == BusType::Spi {
-                    extra.push(("cs".into(), pin_schema("chip select, active low (none: always selected)")));
+                    extra.push((
+                        "cs".into(),
+                        pin_schema("chip select, active low (none: always selected)"),
+                    ));
                 }
             }
-            let cond = J::Obj(vec![("properties", J::Obj(vec![("kind", J::Obj(vec![("const", s(k.name))]))]))]);
+            let cond = J::Obj(vec![(
+                "properties",
+                J::Obj(vec![("kind", J::Obj(vec![("const", s(k.name))]))]),
+            )]);
             J::Obj(vec![("if", cond), ("then", table_schema(k.params, extra))])
         })
         .collect();
     let kind_names = J::Arr(kinds.iter().map(|k| s(k.name)).collect());
-    let kind_docs: String = kinds.iter().map(|k| format!("\n- {}: {}", k.name, k.summary)).collect();
+    let kind_docs: String = kinds
+        .iter()
+        .map(|k| format!("\n- {}: {}", k.name, k.summary))
+        .collect();
     let part = J::Obj(vec![
         ("type", s("object")),
         ("required", J::Arr(vec![s("kind")])),
-        ("properties", J::Obj(vec![("kind", J::Obj(vec![("enum", kind_names), ("description", J::Str(format!("what the part is:{kind_docs}")))]))])),
+        (
+            "properties",
+            J::Obj(vec![(
+                "kind",
+                J::Obj(vec![
+                    ("enum", kind_names),
+                    (
+                        "description",
+                        J::Str(format!("what the part is:{kind_docs}")),
+                    ),
+                ]),
+            )]),
+        ),
         ("allOf", J::Arr(per_kind)),
     ]);
     let cell = |doc: &str, min: i64| {
         J::Obj(vec![
             ("type", s("array")),
-            ("items", J::Obj(vec![("type", s("integer")), ("minimum", J::Int(min))])),
+            (
+                "items",
+                J::Obj(vec![("type", s("integer")), ("minimum", J::Int(min))]),
+            ),
             ("minItems", J::Int(2)),
             ("maxItems", J::Int(2)),
             ("description", s(doc)),
@@ -370,37 +509,104 @@ pub fn json_schema(registry: &Registry) -> String {
             "properties",
             J::Obj(vec![
                 ("at", cell("top-left grid cell [column, row], from 0", 0)),
-                ("span", cell("cells covered [columns, rows] (default [1, 1])", 1)),
-                ("label", J::Obj(vec![("type", s("string")), ("description", s("caption (default: the part's name)"))])),
+                (
+                    "span",
+                    cell("cells covered [columns, rows] (default [1, 1])", 1),
+                ),
+                (
+                    "label",
+                    J::Obj(vec![
+                        ("type", s("string")),
+                        ("description", s("caption (default: the part's name)")),
+                    ]),
+                ),
             ]),
         ),
-        ("additionalProperties", J::Obj(vec![("type", J::Arr(vec![s("string"), s("integer"), s("boolean"), s("array")])), ("description", s("a widget option for the host (rotate, key, color, ...)"))])),
+        (
+            "additionalProperties",
+            J::Obj(vec![
+                (
+                    "type",
+                    J::Arr(vec![s("string"), s("integer"), s("boolean"), s("array")]),
+                ),
+                (
+                    "description",
+                    s("a widget option for the host (rotate, key, color, ...)"),
+                ),
+            ]),
+        ),
     ]);
     let schema = J::Obj(vec![
         ("$schema", s("http://json-schema.org/draft-07/schema#")),
         ("title", s("Tartelette board")),
-        ("description", s("A PCB around the chip: buses, the parts on them and a front panel layout. Generated by `tartelette schema`.")),
+        (
+            "description",
+            s(
+                "A PCB around the chip: buses, the parts on them and a front panel layout. Generated by `tartelette schema`.",
+            ),
+        ),
         ("type", s("object")),
         (
             "properties",
             J::Obj(vec![
-                ("name", J::Obj(vec![("type", s("string")), ("description", s("the board's (or shield's) name"))])),
+                (
+                    "name",
+                    J::Obj(vec![
+                        ("type", s("string")),
+                        ("description", s("the board's (or shield's) name")),
+                    ]),
+                ),
                 (
                     "buses",
                     J::Obj(vec![
                         ("type", s("object")),
-                        ("description", s("the chip's bus controllers wired on this board, and their pins")),
+                        (
+                            "description",
+                            s("the chip's bus controllers wired on this board, and their pins"),
+                        ),
                         ("properties", J::Map(buses)),
                         ("additionalProperties", J::Bool(false)),
                     ]),
                 ),
-                ("parts", J::Obj(vec![("type", s("object")), ("description", s("the devices on the board, by name")), ("additionalProperties", part)])),
+                (
+                    "parts",
+                    J::Obj(vec![
+                        ("type", s("object")),
+                        ("description", s("the devices on the board, by name")),
+                        ("additionalProperties", part),
+                    ]),
+                ),
                 (
                     "panel",
                     J::Obj(vec![
                         ("type", s("object")),
-                        ("description", s("where a front panel puts each part's controls, on a grid, by part name")),
-                        ("additionalProperties", J::Obj(vec![("anyOf", J::Arr(vec![item, J::Obj(vec![("type", s("array")), ("items", J::Obj(vec![("$ref", s("#/properties/panel/additionalProperties/anyOf/0"))]))])]))])),
+                        (
+                            "description",
+                            s(
+                                "where a front panel puts each part's controls, on a grid, by part name",
+                            ),
+                        ),
+                        (
+                            "additionalProperties",
+                            J::Obj(vec![(
+                                "anyOf",
+                                J::Arr(vec![
+                                    item,
+                                    J::Obj(vec![
+                                        ("type", s("array")),
+                                        (
+                                            "items",
+                                            J::Obj(vec![(
+                                                "$ref",
+                                                s(
+                                                    "#/properties/panel/additionalProperties/anyOf/0",
+                                                ),
+                                            )]),
+                                        ),
+                                    ]),
+                                ]),
+                            )]),
+                        ),
                     ]),
                 ),
             ]),
@@ -432,13 +638,26 @@ mod tests {
             name: "thing",
             summary: "a thing",
             bus: Some(BusType::I2c),
-            params: &[Param::pin("gpio", "its pin"), Param::hex("addr", 0x20, 0x27, "address").default_int(0x20), Param::choice("mode", &["a", "b"], "mode").optional()],
+            params: &[
+                Param::pin("gpio", "its pin"),
+                Param::hex("addr", 0x20, 0x27, "address").default_int(0x20),
+                Param::choice("mode", &["a", "b"], "mode").optional(),
+            ],
             build: |_| Err("no".into()),
         };
         let text = describe(&K);
         assert!(text.starts_with("thing: a thing\n"), "{text}");
-        assert!(text.contains("\n  gpio  GPIO         required  its pin\n"), "{text}");
-        assert!(text.contains("\n  addr  0x20..0x27   = 0x20    address\n"), "{text}");
-        assert!(text.contains("\n  mode  a | b        optional  mode\n"), "{text}");
+        assert!(
+            text.contains("\n  gpio  GPIO         required  its pin\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  addr  0x20..0x27   = 0x20    address\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n  mode  a | b        optional  mode\n"),
+            "{text}"
+        );
     }
 }

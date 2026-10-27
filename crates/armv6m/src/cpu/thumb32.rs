@@ -3,7 +3,13 @@
 use super::*;
 
 impl Cpu {
-    pub(super) fn exec_wide(&mut self, hw1: u32, hw2: u32, pc: u32, next: &mut u32) -> Result<u32, Fault> {
+    pub(super) fn exec_wide(
+        &mut self,
+        hw1: u32,
+        hw2: u32,
+        pc: u32,
+        next: &mut u32,
+    ) -> Result<u32, Fault> {
         if hw2 & 0xD000 == 0xD000 {
             // BL
             let s = (hw1 >> 10) & 1;

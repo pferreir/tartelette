@@ -1,8 +1,11 @@
 //! Native only: reload the firmware, board or shields when their file changes
 //! on disk, so a rebuild shows up without touching the app.
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime},
+};
+
 use crate::session::Source;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
 
 const EVERY: Duration = Duration::from_millis(500);
 
@@ -20,7 +23,12 @@ fn mtime(p: &Path) -> Option<SystemTime> {
 impl Watch {
     /// Watch the files these sources came from.
     pub fn track<'a>(&mut self, sources: impl IntoIterator<Item = &'a Source>) {
-        self.files = sources.into_iter().filter_map(|s| s.path.clone()).map(|p| (mtime(&p), p)).map(|(t, p)| (p, t)).collect();
+        self.files = sources
+            .into_iter()
+            .filter_map(|s| s.path.clone())
+            .map(|p| (mtime(&p), p))
+            .map(|(t, p)| (p, t))
+            .collect();
     }
 
     /// Re-read any watched file that changed; true if one did.
@@ -32,14 +40,18 @@ impl Watch {
         let mut any = false;
         for src in sources {
             let Some(path) = &src.path else { continue };
-            let Some((_, seen)) = self.files.iter_mut().find(|(p, _)| p == path) else { continue };
+            let Some((_, seen)) = self.files.iter_mut().find(|(p, _)| p == path) else {
+                continue;
+            };
             let now = mtime(path);
             if now == *seen || now.is_none() {
                 continue;
             }
             // A build may still be writing it: wait for the next check if it
             // doesn't read back.
-            let Ok(bytes) = std::fs::read(path) else { continue };
+            let Ok(bytes) = std::fs::read(path) else {
+                continue;
+            };
             *seen = now;
             src.bytes = bytes;
             any = true;

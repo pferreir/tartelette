@@ -3,11 +3,16 @@
 //! Native it listens to an ALSA / CoreMIDI / WinMM port, in the browser to a
 //! WebMIDI one (the same `midir` calls; the browser asks for permission the
 //! first time, so there it only starts on a click).
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use egui::{Color32, Context, RichText, Ui};
 use midir::{Ignore, MidiInput, MidiInputConnection};
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use web_time::{Duration, Instant};
 
 /// Bytes kept while the run is paused or busy; past this the oldest go.
@@ -27,7 +32,10 @@ struct Wire {
 
 impl Wire {
     fn push(&self, data: &[u8]) {
-        push_capped(&mut self.bytes.lock().unwrap_or_else(|e| e.into_inner()), data);
+        push_capped(
+            &mut self.bytes.lock().unwrap_or_else(|e| e.into_inner()),
+            data,
+        );
         self.total.fetch_add(data.len() as u64, Ordering::Relaxed);
     }
 }
@@ -68,13 +76,24 @@ impl Midi {
 
     /// The bytes received since the last call.
     pub fn take(&mut self) -> Vec<u8> {
-        self.wire.bytes.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect()
+        self.wire
+            .bytes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect()
     }
 
     fn refresh(&mut self) {
         self.refreshed = Some(Instant::now());
         match MidiInput::new(CLIENT) {
-            Ok(input) => self.ports = input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect(),
+            Ok(input) => {
+                self.ports = input
+                    .ports()
+                    .iter()
+                    .filter_map(|p| input.port_name(p).ok())
+                    .collect()
+            }
             Err(e) => self.error = Some(format!("MIDI unavailable: {e}")),
         }
     }
@@ -91,7 +110,11 @@ impl Midi {
         };
         // Active sensing every 300 ms would only fill the receiver's FIFO.
         input.ignore(Ignore::ActiveSense);
-        let Some(port) = input.ports().into_iter().find(|p| input.port_name(p).is_ok_and(|n| n == name)) else {
+        let Some(port) = input
+            .ports()
+            .into_iter()
+            .find(|p| input.port_name(p).is_ok_and(|n| n == name))
+        else {
             return self.error = Some(format!("{name}: port is gone"));
         };
         let (wire, ctx) = (self.wire.clone(), ctx.clone());
@@ -111,7 +134,11 @@ impl Midi {
     /// The toolbar part: a port chooser and an activity light.
     pub fn ui(&mut self, ui: &mut Ui) {
         if !self.started {
-            if ui.button("MIDI in…").on_hover_text("Choose a MIDI input port (the browser asks for permission)").clicked() {
+            if ui
+                .button("MIDI in…")
+                .on_hover_text("Choose a MIDI input port (the browser asks for permission)")
+                .clicked()
+            {
                 self.started = true;
                 self.refresh();
             }
@@ -122,14 +149,24 @@ impl Midi {
         }
         let mut choice = None;
         egui::ComboBox::from_id_salt("midi-in")
-            .selected_text(self.selected.as_deref().map_or("MIDI in: off".to_string(), |n| format!("MIDI: {n}")))
+            .selected_text(
+                self.selected
+                    .as_deref()
+                    .map_or("MIDI in: off".to_string(), |n| format!("MIDI: {n}")),
+            )
             .width(150.0)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(self.selected.is_none(), "off").clicked() {
+                if ui
+                    .selectable_label(self.selected.is_none(), "off")
+                    .clicked()
+                {
                     choice = Some(None);
                 }
                 for name in &self.ports {
-                    if ui.selectable_label(self.selected.as_ref() == Some(name), name).clicked() {
+                    if ui
+                        .selectable_label(self.selected.as_ref() == Some(name), name)
+                        .clicked()
+                    {
                         choice = Some(Some(name.clone()));
                     }
                 }
@@ -149,8 +186,13 @@ impl Midi {
         if lit {
             ui.ctx().request_repaint_after(LIGHT);
         }
-        let color = if lit { Color32::from_rgb(40, 230, 70) } else { ui.visuals().weak_text_color() };
-        ui.label(RichText::new("●").color(color)).on_hover_text("MIDI activity");
+        let color = if lit {
+            Color32::from_rgb(40, 230, 70)
+        } else {
+            ui.visuals().weak_text_color()
+        };
+        ui.label(RichText::new("●").color(color))
+            .on_hover_text("MIDI activity");
         if let Some(e) = &self.error {
             ui.label(RichText::new(e).color(ui.visuals().error_fg_color));
         }

@@ -10,6 +10,7 @@
 //!
 //! A `latch` event (value = LEDs updated) is emitted at each latch.
 use alloc::{boxed::Box, vec, vec::Vec};
+
 use pcb::{Device, Io, Kind, Param};
 
 pub struct Ws2812 {
@@ -37,10 +38,24 @@ pub const KIND: Kind = Kind {
         Param::pin("gpio", "the data line"),
         Param::int("count", 1, 4096, "LEDs in the chain").default_int(8),
         Param::choice("order", &["grb", "rgb"], "colour order on the wire").default_str("grb"),
-        Param::int("reset_us", 1, 10_000, "low time that latches the colours, in microseconds").default_int(50),
+        Param::int(
+            "reset_us",
+            1,
+            10_000,
+            "low time that latches the colours, in microseconds",
+        )
+        .default_int(50),
         Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
     ],
-    build: |p| Ok(Box::new(Ws2812::new(p.pin("gpio"), p.int("count") as usize, p.str("order") == "grb", p.int("reset_us") as u64, p.int("mhz") as u64))),
+    build: |p| {
+        Ok(Box::new(Ws2812::new(
+            p.pin("gpio"),
+            p.int("count") as usize,
+            p.str("order") == "grb",
+            p.int("reset_us") as u64,
+            p.int("mhz") as u64,
+        )))
+    },
 };
 
 impl Ws2812 {
@@ -66,7 +81,11 @@ impl Ws2812 {
     fn latch(&mut self, io: &mut Io) {
         let mut updated = 0;
         for (led, chunk) in self.leds.iter_mut().zip(self.bits.as_chunks::<24>().0) {
-            let byte = |i: usize| chunk[8 * i..8 * i + 8].iter().fold(0u8, |a, &b| a << 1 | b as u8);
+            let byte = |i: usize| {
+                chunk[8 * i..8 * i + 8]
+                    .iter()
+                    .fold(0u8, |a, &b| a << 1 | b as u8)
+            };
             let (a, b, c) = (byte(0), byte(1), byte(2));
             *led = if self.grb { [b, a, c] } else { [a, b, c] };
             updated += 1;
@@ -104,9 +123,10 @@ impl Device for Ws2812 {
 
 #[cfg(test)]
 mod tests {
+    use pcb::Board;
+
     use super::*;
     use crate::testutil::FakePins;
-    use pcb::Board;
 
     const PIN: usize = 14;
 
@@ -120,11 +140,17 @@ mod tests {
     impl Rig {
         fn new(extra: &str) -> Self {
             let sep = if extra.is_empty() { "" } else { ", " };
-            let text = alloc::format!("parts.strip = {{ kind = \"ws2812\", gpio = {PIN}{sep}{extra} }}");
+            let text =
+                alloc::format!("parts.strip = {{ kind = \"ws2812\", gpio = {PIN}{sep}{extra} }}");
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             board.attach(&mut pins);
-            Rig { board, pins, now: 0, last_fall: 0 }
+            Rig {
+                board,
+                pins,
+                now: 0,
+                last_fall: 0,
+            }
         }
         fn edge(&mut self, level: bool) {
             if !level {
@@ -166,7 +192,11 @@ mod tests {
         for b in [0x10, 0x20, 0x30, 0xFF, 0x00, 0x80] {
             r.byte(b);
         }
-        assert_eq!(r.strip().leds(), [[0; 3]; 2], "nothing shows before the latch");
+        assert_eq!(
+            r.strip().leds(),
+            [[0; 3]; 2],
+            "nothing shows before the latch"
+        );
         r.idle_since_fall(50 * 125 - 1);
         assert_eq!(r.strip().frames, 0, "gap not long enough");
         r.idle_since_fall(50 * 125);
@@ -231,14 +261,30 @@ mod tests {
         r.byte(0x00);
         r.byte(0x00);
         r.idle_since_fall(10 * 4);
-        assert_eq!(r.strip().leds(), [[255; 3]], "latch after 10 us = 40 cycles; every pulse is long at this clock");
+        assert_eq!(
+            r.strip().leds(),
+            [[255; 3]],
+            "latch after 10 us = 40 cycles; every pulse is long at this clock"
+        );
     }
 
     #[test]
     fn factory_rejects_bad_parameters() {
         let reg = crate::registry();
-        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", gpio = 1, order = \"bgr\" }", &reg).is_err());
-        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", count = 2 }", &reg).is_err(), "gpio is required");
-        assert!(Board::parse_with("parts.s = { kind = \"ws2812\", gpio = 1, count = 0 }", &reg).is_err());
+        assert!(
+            Board::parse_with(
+                "parts.s = { kind = \"ws2812\", gpio = 1, order = \"bgr\" }",
+                &reg
+            )
+            .is_err()
+        );
+        assert!(
+            Board::parse_with("parts.s = { kind = \"ws2812\", count = 2 }", &reg).is_err(),
+            "gpio is required"
+        );
+        assert!(
+            Board::parse_with("parts.s = { kind = \"ws2812\", gpio = 1, count = 0 }", &reg)
+                .is_err()
+        );
     }
 }

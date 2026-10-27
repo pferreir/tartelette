@@ -4,10 +4,13 @@
 //! missing required keys, values of the wrong type or out of range; the
 //! getters then can't fail. Asking for a key the kind did not declare is a
 //! bug in the device model and panics.
-use super::doc::{self, Key, Node, Span, V};
-use super::spec::{Need, Param, Ty, suggest};
-use crate::NUM_PINS;
 use alloc::{format, string::String, vec::Vec};
+
+use super::{
+    doc::{self, Key, Node, Span, V},
+    spec::{Need, Param, Ty, suggest},
+};
+use crate::NUM_PINS;
 
 pub struct Params {
     /// The part's kind and name (`aps[0]` for a nested table).
@@ -44,22 +47,50 @@ impl Params {
     /// Validate `entries` (a table's keys, minus those the board handles
     /// itself) against `spec`. `at` is where the table is, for errors about
     /// missing keys.
-    pub(crate) fn check(kind: &str, name: &str, spec: &'static [Param], entries: Vec<(Key, Node)>, at: &Span) -> Result<Self, doc::Error> {
-        let mut p = Params { kind: kind.into(), name: name.into(), spec, values: Vec::new(), pins: Vec::new() };
+    pub(crate) fn check(
+        kind: &str,
+        name: &str,
+        spec: &'static [Param],
+        entries: Vec<(Key, Node)>,
+        at: &Span,
+    ) -> Result<Self, doc::Error> {
+        let mut p = Params {
+            kind: kind.into(),
+            name: name.into(),
+            spec,
+            values: Vec::new(),
+            pins: Vec::new(),
+        };
         for (key, node) in entries {
             let Some(param) = spec.iter().find(|s| s.key == key.name) else {
                 let hint = match suggest(&key.name, spec.iter().map(|s| s.key)) {
                     Some(k) => format!(" (did you mean {k}?)"),
                     None if spec.is_empty() => format!(" ({kind} takes no parameters)"),
-                    None => format!(" ({kind} takes {})", spec.iter().map(|s| s.key).collect::<Vec<_>>().join(", ")),
+                    None => format!(
+                        " ({kind} takes {})",
+                        spec.iter().map(|s| s.key).collect::<Vec<_>>().join(", ")
+                    ),
                 };
-                return Err(doc::err(&key.span, format!("unknown parameter {}{hint}", key.name)));
+                return Err(doc::err(
+                    &key.span,
+                    format!("unknown parameter {}{hint}", key.name),
+                ));
             };
             let v = p.value(param, node)?;
-            p.values.push(Value { key: param.key, v, read: false });
+            p.values.push(Value {
+                key: param.key,
+                v,
+                read: false,
+            });
         }
-        if let Some(missing) = spec.iter().find(|s| s.required() && !p.values.iter().any(|v| v.key == s.key)) {
-            return Err(doc::err(at, format!("missing {} ({})", missing.key, missing.doc)));
+        if let Some(missing) = spec
+            .iter()
+            .find(|s| s.required() && !p.values.iter().any(|v| v.key == s.key))
+        {
+            return Err(doc::err(
+                at,
+                format!("missing {} ({})", missing.key, missing.doc),
+            ));
         }
         Ok(p)
     }
@@ -72,16 +103,28 @@ impl Params {
         match (param.ty, node.v) {
             (Ty::Pin | Ty::SharedPin, V::Int(n)) => {
                 if !(0..NUM_PINS as i64).contains(&n) {
-                    return Err(doc::err(&node.span, format!("{key} must be a GPIO, 0..{}", NUM_PINS - 1)));
+                    return Err(doc::err(
+                        &node.span,
+                        format!("{key} must be a GPIO, 0..{}", NUM_PINS - 1),
+                    ));
                 }
                 let shared = matches!(param.ty, Ty::SharedPin);
-                self.pins.push(PinClaim { pin: n as usize, key: key.into(), shared, span: node.span });
+                self.pins.push(PinClaim {
+                    pin: n as usize,
+                    key: key.into(),
+                    shared,
+                    span: node.span,
+                });
                 Ok(Val::Int(n))
             }
             (Ty::Pin | Ty::SharedPin, _) => Err(bad("a GPIO number")),
             (Ty::Int { min, max, hex }, V::Int(n)) => {
                 if !(min..=max).contains(&n) {
-                    let range = if hex { format!("{min:#x}..{max:#x}") } else { format!("{min}..{max}") };
+                    let range = if hex {
+                        format!("{min:#x}..{max:#x}")
+                    } else {
+                        format!("{min}..{max}")
+                    };
                     return Err(doc::err(&node.span, format!("{key} must be {range}")));
                 }
                 Ok(Val::Int(n))
@@ -89,8 +132,13 @@ impl Params {
             (Ty::Int { .. }, _) => Err(bad("a number")),
             (Ty::Choice(options), V::Str(s)) => {
                 if !options.contains(&s.as_str()) {
-                    let hint = suggest(&s, options.iter().copied()).map(|o| format!(" (did you mean {o}?)")).unwrap_or_default();
-                    return Err(doc::err(&node.span, format!("{key} must be {}{hint}", one_of(options))));
+                    let hint = suggest(&s, options.iter().copied())
+                        .map(|o| format!(" (did you mean {o}?)"))
+                        .unwrap_or_default();
+                    return Err(doc::err(
+                        &node.span,
+                        format!("{key} must be {}{hint}", one_of(options)),
+                    ));
                 }
                 Ok(Val::Str(s))
             }
@@ -102,10 +150,22 @@ impl Params {
                 for (i, item) in items.into_iter().enumerate() {
                     let name = format!("{key}[{i}]");
                     let V::Table(entries) = item.v else {
-                        return Err(doc::err(&item.span, format!("{name} must be a table, not {}", item.v.what())));
+                        return Err(doc::err(
+                            &item.span,
+                            format!("{name} must be a table, not {}", item.v.what()),
+                        ));
                     };
-                    let t = Params::check(&self.kind, &name, inner, entries, &item.span).map_err(|e| doc::Error { msg: format!("{name}: {}", e.msg), ..e })?;
-                    self.pins.extend(t.pins.iter().map(|c| PinClaim { key: format!("{name}.{}", c.key), span: c.span.clone(), ..*c }));
+                    let t = Params::check(&self.kind, &name, inner, entries, &item.span).map_err(
+                        |e| doc::Error {
+                            msg: format!("{name}: {}", e.msg),
+                            ..e
+                        },
+                    )?;
+                    self.pins.extend(t.pins.iter().map(|c| PinClaim {
+                        key: format!("{name}.{}", c.key),
+                        span: c.span.clone(),
+                        ..*c
+                    }));
                     tables.push(t);
                 }
                 Ok(Val::Tables(tables))
@@ -116,7 +176,10 @@ impl Params {
 
     fn get(&mut self, key: &str) -> (Option<&mut Val>, Need) {
         let Some(param) = self.spec.iter().find(|s| s.key == key) else {
-            panic!("{}: asked for {key:?}, which it does not declare", self.kind);
+            panic!(
+                "{}: asked for {key:?}, which it does not declare",
+                self.kind
+            );
         };
         let need = param.need;
         let v = self.values.iter_mut().find(|v| v.key == key).map(|v| {
@@ -133,7 +196,8 @@ impl Params {
 
     /// A required `Pin` or `SharedPin`.
     pub fn pin(&mut self, key: &str) -> usize {
-        self.opt_pin(key).unwrap_or_else(|| panic!("{}: {key} is not required", self.kind))
+        self.opt_pin(key)
+            .unwrap_or_else(|| panic!("{}: {key} is not required", self.kind))
     }
 
     /// An integer as given, without its default.
@@ -209,12 +273,22 @@ mod tests {
         Param::int("n", 0, 5, "how many").optional(),
         Param::choice("active", &["high", "low"], "level").default_str("high"),
         Param::str("label", "text").optional(),
-        Param::tables("items", &[Param::str("id", "an id"), Param::pin("pin", "a pin").optional()], "things").optional(),
+        Param::tables(
+            "items",
+            &[
+                Param::str("id", "an id"),
+                Param::pin("pin", "a pin").optional(),
+            ],
+            "things",
+        )
+        .optional(),
     ];
 
     fn check(text: &str) -> Result<Params, String> {
         let root = doc::parse(text).map_err(|e| e.msg)?;
-        let V::Table(entries) = root.v else { unreachable!() };
+        let V::Table(entries) = root.v else {
+            unreachable!()
+        };
         Params::check("k", "n", SPEC, entries, &(0..0)).map_err(|e| e.msg)
     }
 
@@ -230,7 +304,11 @@ mod tests {
         assert_eq!(items[0].opt_pin("pin"), Some(7));
         assert_eq!(items[0].str("id"), "a");
         assert_eq!(items[1].opt_pin("pin"), None);
-        let claimed: Vec<_> = p.pins.iter().map(|c| (c.pin, c.key.as_str(), c.shared)).collect();
+        let claimed: Vec<_> = p
+            .pins
+            .iter()
+            .map(|c| (c.pin, c.key.as_str(), c.shared))
+            .collect();
         assert_eq!(claimed, [(5, "gpio", false), (7, "items[0].pin", false)]);
         let mut d = check("gpio = 1\nint = 2").unwrap();
         assert_eq!((d.int("addr"), d.str("active")), (0x20, "high"));
@@ -244,16 +322,34 @@ mod tests {
     fn errors() {
         let e = |t: &str| check(t).err().unwrap();
         assert_eq!(e("gpio = 30"), "gpio must be a GPIO, 0..29");
-        assert_eq!(e("gpio = \"x\""), "gpio must be a GPIO number, not a string");
+        assert_eq!(
+            e("gpio = \"x\""),
+            "gpio must be a GPIO number, not a string"
+        );
         assert_eq!(e("addr = 0x30\ngpio = 1"), "addr must be 0x20..0x27");
         assert_eq!(e("gpio = 1\nn = 9"), "n must be 0..5");
-        assert_eq!(e("gpio = 1\nactive = \"hig\""), "active must be high or low (did you mean high?)");
-        assert_eq!(e("gpio = 1\ncolour = 1"), "unknown parameter colour (k takes gpio, int, addr, n, active, label, items)");
+        assert_eq!(
+            e("gpio = 1\nactive = \"hig\""),
+            "active must be high or low (did you mean high?)"
+        );
+        assert_eq!(
+            e("gpio = 1\ncolour = 1"),
+            "unknown parameter colour (k takes gpio, int, addr, n, active, label, items)"
+        );
         assert_eq!(e("gpoi = 1"), "unknown parameter gpoi (did you mean gpio?)");
         assert_eq!(e("addr = 0x20"), "missing gpio (its pin)");
-        assert_eq!(e("gpio = 1\nitems = [{ pin = 2 }]"), "items[0]: missing id (an id)");
-        assert_eq!(e("gpio = 1\nitems = [1]"), "items[0] must be a table, not a number");
-        assert_eq!(e("gpio = 1\nlabel = 2.5"), "label must be a string, not a decimal number");
+        assert_eq!(
+            e("gpio = 1\nitems = [{ pin = 2 }]"),
+            "items[0]: missing id (an id)"
+        );
+        assert_eq!(
+            e("gpio = 1\nitems = [1]"),
+            "items[0] must be a table, not a number"
+        );
+        assert_eq!(
+            e("gpio = 1\nlabel = 2.5"),
+            "label must be a string, not a decimal number"
+        );
     }
 
     #[test]

@@ -13,9 +13,10 @@
 //! factory, and register it under a `kind` name (see
 //! [`Registry::register`](crate::board::Registry::register)). The board file
 //! then picks it by name; nothing else changes.
-use crate::board::BoardEvent;
 use alloc::vec::Vec;
 use core::any::Any;
+
+use crate::board::BoardEvent;
 
 /// The chip's pads as the board sees them. Implemented by the host for its
 /// microcontroller.
@@ -40,8 +41,21 @@ pub struct Io<'a> {
 }
 
 impl<'a> Io<'a> {
-    pub fn new(pins: &'a mut dyn Pins, cycles: u64, events: &'a mut Vec<BoardEvent>, part: usize, quiet: bool) -> Self {
-        Self { pins, cycles, events, part, quiet, timers: None }
+    pub fn new(
+        pins: &'a mut dyn Pins,
+        cycles: u64,
+        events: &'a mut Vec<BoardEvent>,
+        part: usize,
+        quiet: bool,
+    ) -> Self {
+        Self {
+            pins,
+            cycles,
+            events,
+            part,
+            quiet,
+            timers: None,
+        }
     }
 
     /// Let the device schedule wake-ups ([`wake_at`](Self::wake_at)) into `timers`.
@@ -78,7 +92,12 @@ impl<'a> Io<'a> {
     /// timestamped and queued in [`Board::events`](crate::board::Board::events).
     pub fn emit(&mut self, label: &'static str, value: i64) {
         if !self.quiet {
-            self.events.push(BoardEvent { cycles: self.cycles, part: self.part, label, value });
+            self.events.push(BoardEvent {
+                cycles: self.cycles,
+                part: self.part,
+                label,
+                value,
+            });
         }
     }
 }

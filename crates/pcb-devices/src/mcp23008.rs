@@ -9,8 +9,9 @@
 //! Host actions: `gp0`..`gp7` with value 1 / 0 drive the pin high / low from
 //! outside (a switch, a sensor), -1 releases it. A `pins` event (value = the
 //! eight pin voltages) is emitted whenever any pin voltage changes.
-use pcb::{BusType, Device, I2cDevice, Io, Kind, Param};
 use alloc::boxed::Box;
+
+use pcb::{BusType, Device, I2cDevice, Io, Kind, Param};
 
 const IODIR: u8 = 0x00;
 const IPOL: u8 = 0x01;
@@ -61,9 +62,18 @@ pub const KIND: Kind = Kind {
     bus: Some(BusType::I2c),
     params: &[
         Param::hex("addr", 0x20, 0x27, "I2C address (A2..A0 pins)").default_int(0x20),
-        Param::shared_pin("int", "the GPIO its INT output drives (open drain can be shared)").optional(),
+        Param::shared_pin(
+            "int",
+            "the GPIO its INT output drives (open drain can be shared)",
+        )
+        .optional(),
     ],
-    build: |p| Ok(Box::new(Mcp23008::new(p.int("addr") as u8, p.opt_pin("int")))),
+    build: |p| {
+        Ok(Box::new(Mcp23008::new(
+            p.int("addr") as u8,
+            p.opt_pin("int"),
+        )))
+    },
 };
 
 impl Mcp23008 {
@@ -121,7 +131,11 @@ impl Mcp23008 {
     /// Re-derive the interrupt state and outputs after anything changed.
     fn evaluate(&mut self, io: &mut Io) {
         let now = self.gpio_value();
-        let differs = if self.intcon != 0 { now ^ self.defval } else { now ^ self.prev };
+        let differs = if self.intcon != 0 {
+            now ^ self.defval
+        } else {
+            now ^ self.prev
+        };
         let new = differs & self.gpinten & self.iodir;
         if new != 0 {
             if self.intf == 0 {
@@ -198,7 +212,11 @@ impl Device for Mcp23008 {
     }
 
     fn input(&mut self, io: &mut Io, action: &str, value: i64) -> bool {
-        let Some(n) = action.strip_prefix("gp").and_then(|n| n.parse::<u8>().ok()).filter(|n| *n < 8) else {
+        let Some(n) = action
+            .strip_prefix("gp")
+            .and_then(|n| n.parse::<u8>().ok())
+            .filter(|n| *n < 8)
+        else {
             return false;
         };
         let bit = 1 << n;
@@ -256,10 +274,12 @@ impl I2cDevice for Mcp23008 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
+    use pcb::{BoardEvent, Pins};
+
     use super::*;
     use crate::testutil::FakePins;
-    use pcb::{BoardEvent, Pins};
-    use alloc::vec::Vec;
 
     struct Rig {
         gpio: FakePins,
@@ -272,15 +292,26 @@ mod tests {
             let sep = if extra.is_empty() { "" } else { ", " };
             let text = alloc::format!("parts.x = {{ kind = \"mcp23008\"{sep}{extra} }}");
             // Take the device off the board, as a concrete one for direct access.
-            let any: Box<dyn core::any::Any> = pcb::Board::parse_with(&text, &crate::registry()).unwrap().parts.remove(0).device;
+            let any: Box<dyn core::any::Any> = pcb::Board::parse_with(&text, &crate::registry())
+                .unwrap()
+                .parts
+                .remove(0)
+                .device;
             let dev = *any.downcast::<Mcp23008>().unwrap();
-            let mut r = Rig { gpio: FakePins::default(), events: Vec::new(), dev };
+            let mut r = Rig {
+                gpio: FakePins::default(),
+                events: Vec::new(),
+                dev,
+            };
             let mut io = Io::new(&mut r.gpio, 0, &mut r.events, 0, true);
             r.dev.attach(&mut io);
             r
         }
         fn io(&mut self) -> (&mut Mcp23008, Io<'_>) {
-            (&mut self.dev, Io::new(&mut self.gpio, 7, &mut self.events, 0, false))
+            (
+                &mut self.dev,
+                Io::new(&mut self.gpio, 7, &mut self.events, 0, false),
+            )
         }
         fn write(&mut self, reg: u8, v: u8) {
             let (d, mut io) = self.io();
@@ -436,8 +467,18 @@ mod tests {
 
     #[test]
     fn factory_rejects_bad_parameters() {
-        let e = |t: &str| pcb::Board::parse_with(t, &crate::registry()).unwrap_err().msg;
-        assert_eq!(e("parts.x = { kind = \"mcp23008\", addr = 0x28 }"), "addr must be 0x20..0x27");
-        assert_eq!(e("parts.x = { kind = \"mcp23008\", int = 40 }"), "int must be a GPIO, 0..29");
+        let e = |t: &str| {
+            pcb::Board::parse_with(t, &crate::registry())
+                .unwrap_err()
+                .msg
+        };
+        assert_eq!(
+            e("parts.x = { kind = \"mcp23008\", addr = 0x28 }"),
+            "addr must be 0x20..0x27"
+        );
+        assert_eq!(
+            e("parts.x = { kind = \"mcp23008\", int = 40 }"),
+            "int must be a GPIO, 0..29"
+        );
     }
 }

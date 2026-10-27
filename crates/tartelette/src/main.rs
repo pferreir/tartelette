@@ -46,7 +46,11 @@ fn main() -> std::process::ExitCode {
 #[cfg(not(target_arch = "wasm32"))]
 fn window(args: &cli::RunArgs) -> Result<(), String> {
     use session::Source;
-    let firmware = args.firmware.as_deref().map(Source::from_file).transpose()?;
+    let firmware = args
+        .firmware
+        .as_deref()
+        .map(Source::from_file)
+        .transpose()?;
     let board = args.board()?;
     let mut app = app::App::new(firmware, board, args.shields()?, args.network());
     for (name, file) in &args.sd {
@@ -55,10 +59,14 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
         }
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Tartelette").with_inner_size([1100.0, 760.0]).with_icon(brand::window_icon()),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Tartelette")
+            .with_inner_size([1100.0, 760.0])
+            .with_icon(brand::window_icon()),
         ..Default::default()
     };
-    eframe::run_native("tartelette", options, Box::new(|_| Ok(Box::new(app)))).map_err(|e| e.to_string())
+    eframe::run_native("tartelette", options, Box::new(|_| Ok(Box::new(app))))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -71,7 +79,18 @@ fn main() {
             .and_then(|e| e.dyn_into::<eframe::web_sys::HtmlCanvasElement>().ok())
             .expect("no <canvas id=\"app\"> on the page");
         let start = eframe::WebRunner::new()
-            .start(canvas, eframe::WebOptions::default(), Box::new(|_| Ok(Box::new(app::App::new(None, None, Vec::new(), Default::default())))))
+            .start(
+                canvas,
+                eframe::WebOptions::default(),
+                Box::new(|_| {
+                    Ok(Box::new(app::App::new(
+                        None,
+                        None,
+                        Vec::new(),
+                        Default::default(),
+                    )))
+                }),
+            )
             .await;
         if let Err(e) = start {
             files::log(&format!("failed to start: {e:?}"));

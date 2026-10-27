@@ -2,9 +2,11 @@
 //! SPI and I2C), so a board's `[buses]` wiring can be checked when it is
 //! loaded ([`check_bus_pin`], a [`pcb::PinCheck`]) and against what the
 //! firmware selects when it runs ([`wiring_warnings`]).
-use crate::periph::gpio::Gpio;
 use alloc::{format, string::String, vec::Vec};
+
 use pcb::{BusDecl, NUM_PINS};
+
+use crate::periph::gpio::Gpio;
 
 /// GPIO FUNCSEL of the SPI controllers.
 pub const FUNCSEL_SPI: u32 = 1;
@@ -16,7 +18,10 @@ pub const FUNCSEL_I2C: u32 = 3;
 /// signal (boards use a plain GPIO).
 pub fn signal(func: u32, pin: usize) -> Option<(&'static str, &'static str)> {
     match func {
-        FUNCSEL_SPI => Some((["spi0", "spi1"][pin / 8 % 2], ["miso", "csn", "sck", "mosi"][pin % 4])),
+        FUNCSEL_SPI => Some((
+            ["spi0", "spi1"][pin / 8 % 2],
+            ["miso", "csn", "sck", "mosi"][pin % 4],
+        )),
         FUNCSEL_I2C => Some((["i2c0", "i2c1"][pin / 2 % 2], ["sda", "scl"][pin % 2])),
         _ => None,
     }
@@ -24,12 +29,20 @@ pub fn signal(func: u32, pin: usize) -> Option<(&'static str, &'static str)> {
 
 /// The function select that routes controller `bus` to its pins.
 fn funcsel_of(bus: &str) -> u32 {
-    if bus.starts_with("spi") { FUNCSEL_SPI } else { FUNCSEL_I2C }
+    if bus.starts_with("spi") {
+        FUNCSEL_SPI
+    } else {
+        FUNCSEL_I2C
+    }
 }
 
 /// `SPI0 SCK`, for messages.
 fn name(bus: &str, signal: &str) -> String {
-    format!("{} {}", bus.to_ascii_uppercase(), signal.to_ascii_uppercase())
+    format!(
+        "{} {}",
+        bus.to_ascii_uppercase(),
+        signal.to_ascii_uppercase()
+    )
 }
 
 /// What a FUNCSEL value routes to a pin, for messages.
@@ -63,8 +76,14 @@ pub fn check_bus_pin(bus: &str, sig: &str, pin: usize) -> Result<(), String> {
     if signal(func, pin) == Some((bus, sig)) {
         return Ok(());
     }
-    let ok: Vec<usize> = (0..NUM_PINS).filter(|&p| signal(func, p) == Some((bus, sig))).collect();
-    Err(format!("{} can't be on GPIO {pin}: the RP2040 has it on GPIO {}", name(bus, sig), list(&ok)))
+    let ok: Vec<usize> = (0..NUM_PINS)
+        .filter(|&p| signal(func, p) == Some((bus, sig)))
+        .collect();
+    Err(format!(
+        "{} can't be on GPIO {pin}: the RP2040 has it on GPIO {}",
+        name(bus, sig),
+        list(&ok)
+    ))
 }
 
 /// Problems with the board's wiring of `bus` now that the firmware uses it:
@@ -78,8 +97,18 @@ pub fn wiring_warnings(decl: &BusDecl, gpio: &Gpio) -> Vec<String> {
         if actual == func {
             continue;
         }
-        let elsewhere: Vec<usize> = (0..NUM_PINS).filter(|&p| gpio.funcsel(p) == func && signal(func, p) == Some((&decl.name, sig))).collect();
-        let instead = if elsewhere.is_empty() { String::new() } else { format!("; the firmware put {} on GPIO {}", name(&decl.name, sig), list(&elsewhere)) };
+        let elsewhere: Vec<usize> = (0..NUM_PINS)
+            .filter(|&p| gpio.funcsel(p) == func && signal(func, p) == Some((&decl.name, sig)))
+            .collect();
+        let instead = if elsewhere.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; the firmware put {} on GPIO {}",
+                name(&decl.name, sig),
+                list(&elsewhere)
+            )
+        };
         out.push(format!(
             "{} is in use, but GPIO {pin} (the board's {}) is set to {}, not {}{instead}",
             decl.name.to_ascii_uppercase(),
@@ -111,7 +140,13 @@ mod tests {
         assert_eq!(check_bus_pin("spi0", "sck", 18), Ok(()));
         assert_eq!(check_bus_pin("spi1", "miso", 12), Ok(()));
         assert_eq!(check_bus_pin("i2c1", "scl", 3), Ok(()));
-        assert_eq!(check_bus_pin("spi0", "sck", 10).unwrap_err(), "SPI0 SCK can't be on GPIO 10: the RP2040 has it on GPIO 2, 6, 18 or 22");
-        assert_eq!(check_bus_pin("i2c0", "sda", 2).unwrap_err(), "I2C0 SDA can't be on GPIO 2: the RP2040 has it on GPIO 0, 4, 8, 12, 16, 20, 24 or 28");
+        assert_eq!(
+            check_bus_pin("spi0", "sck", 10).unwrap_err(),
+            "SPI0 SCK can't be on GPIO 10: the RP2040 has it on GPIO 2, 6, 18 or 22"
+        );
+        assert_eq!(
+            check_bus_pin("i2c0", "sda", 2).unwrap_err(),
+            "I2C0 SDA can't be on GPIO 2: the RP2040 has it on GPIO 0, 4, 8, 12, 16, 20, 24 or 28"
+        );
     }
 }

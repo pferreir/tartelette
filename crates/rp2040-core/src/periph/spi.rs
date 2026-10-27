@@ -7,9 +7,11 @@
 //! so BSY is never seen set. Clock polarity/phase and the baud divisors are
 //! stored but have no effect, the receive-timeout interrupt never fires, and
 //! slave mode, TI and Microwire frames are not modelled.
-use super::Peripheral;
 use alloc::collections::VecDeque;
+
 use pcb::SpiTarget;
+
+use super::Peripheral;
 
 const FIFO_DEPTH: usize = 8;
 
@@ -180,8 +182,9 @@ impl Peripheral for Spi {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     /// Answers each frame with `frame ^ 0xFF`, recording what it saw.
     #[derive(Default)]

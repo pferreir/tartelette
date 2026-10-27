@@ -39,7 +39,11 @@ fn geometry(sectors: usize) -> Result<(usize, usize), String> {
         if clusters > MAX_CLUSTERS {
             continue;
         }
-        return if clusters >= MIN_CLUSTERS { Ok((spc, fat)) } else { Err(format!("too small for FAT16 ({clusters} clusters)")) };
+        return if clusters >= MIN_CLUSTERS {
+            Ok((spc, fat))
+        } else {
+            Err(format!("too small for FAT16 ({clusters} clusters)"))
+        };
     }
     Err("too big for FAT16".into())
 }
@@ -64,9 +68,13 @@ fn dir_entry(name: &[u8; 11], attr: u8, cluster: u16) -> Vec<u8> {
 
 /// `name` as an 8.3 short name: upper case, padded with spaces.
 fn short_name(name: &str) -> Result<[u8; 11], String> {
-    let ok = !name.is_empty() && name.len() <= 8 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    let ok = !name.is_empty()
+        && name.len() <= 8
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
     if !ok {
-        return Err(format!("directory {name:?}: use 1 to 8 letters, digits or underscores"));
+        return Err(format!(
+            "directory {name:?}: use 1 to 8 letters, digits or underscores"
+        ));
     }
     let mut short = [b' '; 11];
     short[..name.len()].copy_from_slice(name.to_ascii_uppercase().as_bytes());
@@ -87,7 +95,10 @@ pub fn format_fat16(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
         return Err("label must be at most 11 ASCII characters".into());
     }
     let label = if label.is_empty() { NO_LABEL } else { label };
-    let dirs = dirs.iter().map(|d| short_name(d)).collect::<Result<Vec<_>, _>>()?;
+    let dirs = dirs
+        .iter()
+        .map(|d| short_name(d))
+        .collect::<Result<Vec<_>, _>>()?;
     if dirs.len() > ROOT_ENTRIES - 1 {
         return Err("too many directories".into());
     }
@@ -181,8 +192,14 @@ mod tests {
             let sectors = mb * 1024 * 1024 / BLOCK - START;
             let (spc, fat) = geometry(sectors).unwrap_or_else(|e| panic!("{mb} MiB: {e}"));
             let clusters = (sectors - RESERVED - ROOT_SECTORS - FATS * fat) / spc;
-            assert!((MIN_CLUSTERS..=MAX_CLUSTERS).contains(&clusters), "{mb} MiB: {clusters} clusters");
-            assert!(fat * BLOCK >= 2 * (clusters + 2), "{mb} MiB: the FAT must cover every cluster");
+            assert!(
+                (MIN_CLUSTERS..=MAX_CLUSTERS).contains(&clusters),
+                "{mb} MiB: {clusters} clusters"
+            );
+            assert!(
+                fat * BLOCK >= 2 * (clusters + 2),
+                "{mb} MiB: the FAT must cover every cluster"
+            );
             assert!(spc.is_power_of_two() && spc <= 64);
         }
     }
@@ -194,7 +211,11 @@ mod tests {
         assert!(format_fat16(16, "TWELVE CHARS", &[]).is_err());
         assert!(format_fat16(16, "ÄÖ", &[]).is_err());
         assert!(format_fat16(16, "", &[]).is_ok());
-        assert_eq!(format_fat16(16, "", &[]).unwrap().len(), 4, "no label entry without a label");
+        assert_eq!(
+            format_fat16(16, "", &[]).unwrap().len(),
+            4,
+            "no label entry without a label"
+        );
     }
 
     #[test]
@@ -228,7 +249,10 @@ mod tests {
     fn directories_get_a_cluster_each_with_dot_entries() {
         let image = blank_fat16_image(16, "", &["data", "x"]).unwrap();
         let boot = &image[START * BLOCK..][..BLOCK];
-        let (spc, fat) = (boot[13] as usize, u16::from_le_bytes([boot[22], boot[23]]) as usize);
+        let (spc, fat) = (
+            boot[13] as usize,
+            u16::from_le_bytes([boot[22], boot[23]]) as usize,
+        );
         let root = (START + RESERVED + FATS * fat) * BLOCK;
         assert_eq!(&image[root..root + 12], b"DATA       \x10");
         assert_eq!(&image[root + 32..root + 44], b"X          \x10");
@@ -248,6 +272,9 @@ mod tests {
         let regions = format_fat16(1024, "", &[]).unwrap();
         let boot = &regions[1].1;
         assert_eq!(u16::from_le_bytes([boot[19], boot[20]]), 0);
-        assert_eq!(u32::from_le_bytes(boot[32..36].try_into().unwrap()) as usize, 1024 * 2048 - START);
+        assert_eq!(
+            u32::from_le_bytes(boot[32..36].try_into().unwrap()) as usize,
+            1024 * 2048 - START
+        );
     }
 }

@@ -1,7 +1,8 @@
 //! A momentary switch between the pin and GND (`active = "low"`, the
 //! default) or 3V3. Host actions: `press`, `release`.
-use pcb::{Device, Io, Kind, Param};
 use alloc::boxed::Box;
+
+use pcb::{Device, Io, Kind, Param};
 
 pub struct Button {
     pub pin: usize,
@@ -15,9 +16,20 @@ pub const KIND: Kind = Kind {
     bus: None,
     params: &[
         Param::pin("gpio", "the pin the switch pulls"),
-        Param::choice("active", &["high", "low"], "the level it pulls the pin to when pressed").default_str("low"),
+        Param::choice(
+            "active",
+            &["high", "low"],
+            "the level it pulls the pin to when pressed",
+        )
+        .default_str("low"),
     ],
-    build: |p| Ok(Box::new(Button { pin: p.pin("gpio"), active_high: p.str("active") == "high", pressed: false })),
+    build: |p| {
+        Ok(Box::new(Button {
+            pin: p.pin("gpio"),
+            active_high: p.str("active") == "high",
+            pressed: false,
+        }))
+    },
 };
 
 impl Device for Button {

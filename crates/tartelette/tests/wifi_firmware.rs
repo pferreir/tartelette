@@ -3,13 +3,14 @@
 //! this repository, so set `CYW43_FIRMWARE_DIR` to a directory holding
 //! `43439A0.bin` and `43439A0_clm.bin` (Embassy's `cyw43-firmware/`). The first
 //! run builds the firmware, which needs network access for the crates.
+use std::{path::PathBuf, process::Command, sync::OnceLock};
+
 use pcb::Board;
-use pcb_devices::cyw43439::{Cyw43439, Link};
-use pcb_devices::net::LoopbackBackend;
+use pcb_devices::{
+    cyw43439::{Cyw43439, Link},
+    net::LoopbackBackend,
+};
 use rp2040_core::system::{CYCLES_PER_US, StopReason, System};
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::OnceLock;
 
 fn build(bin: &str) -> Option<Vec<u8>> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -22,7 +23,13 @@ fn build(bin: &str) -> Option<Vec<u8>> {
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
             let target_dir = root.join("target/firmware/pico-w-wifi");
             let status = Command::new(env!("CARGO"))
-                .args(["build", "--release", "--target", "thumbv6m-none-eabi", "--manifest-path"])
+                .args([
+                    "build",
+                    "--release",
+                    "--target",
+                    "thumbv6m-none-eabi",
+                    "--manifest-path",
+                ])
                 .arg(root.join("firmware/examples/pico-w-wifi/Cargo.toml"))
                 .arg("--target-dir")
                 .arg(&target_dir)
@@ -49,14 +56,23 @@ fn run(elf: &[u8], network: bool, ms: u64) -> Run {
 }
 
 fn run_with(elf: &[u8], network: bool, ms: u64, batching: bool) -> Run {
-    let mut rtt = rtt::Rtt::new(elf).unwrap().expect("firmware logs over defmt-RTT");
+    let mut rtt = rtt::Rtt::new(elf)
+        .unwrap()
+        .expect("firmware logs over defmt-RTT");
     let mut sys = System::new();
     sys.batching = batching;
     sys.load_elf(elf).unwrap();
-    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../boards/pico-w.toml")).unwrap();
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../boards/pico-w.toml"
+    ))
+    .unwrap();
     let mut board = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
     if network {
-        board.device_mut::<Cyw43439>("wifi").unwrap().set_backend(LoopbackBackend::boxed());
+        board
+            .device_mut::<Cyw43439>("wifi")
+            .unwrap()
+            .set_backend(LoopbackBackend::boxed());
     }
     sys.set_board(board);
     let (mut lines, mut events) = (Vec::new(), Vec::new());
@@ -69,7 +85,11 @@ fn run_with(elf: &[u8], network: bool, ms: u64, batching: bool) -> Run {
         }
         rtt.poll(&mut sys, &mut raw);
         for e in std::mem::take(&mut sys.board.events) {
-            events.push((e.cycles as f64 / CYCLES_PER_US as f64 / 1000.0, e.label, e.value));
+            events.push((
+                e.cycles as f64 / CYCLES_PER_US as f64 / 1000.0,
+                e.label,
+                e.value,
+            ));
         }
     }
     assert_eq!(rtt.malformed, 0);
@@ -85,22 +105,37 @@ impl Run {
 
 #[test]
 fn blinky_blinks_the_wifi_chips_led() {
-    let Some(elf) = build("wifi_blinky") else { return };
+    let Some(elf) = build("wifi_blinky") else {
+        return;
+    };
     let r = run(&elf, false, 4300);
     let led: Vec<_> = r.events.iter().filter(|e| e.1 == "led").collect();
-    assert_eq!(led.iter().map(|e| e.2).collect::<Vec<_>>(), [1, 0, 1, 0], "{led:?}");
+    assert_eq!(
+        led.iter().map(|e| e.2).collect::<Vec<_>>(),
+        [1, 0, 1, 0],
+        "{led:?}"
+    );
     // About a second apart.
     for pair in led.windows(2) {
         let gap = pair[1].0 - pair[0].0;
         assert!((900.0..1100.0).contains(&gap), "{led:?}");
     }
     assert!(r.logged("led on!") && r.logged("led off!"), "{:?}", r.lines);
-    assert!(r.sys.board.device::<Cyw43439>("wifi").unwrap().unknown_requests().is_empty());
+    assert!(
+        r.sys
+            .board
+            .device::<Cyw43439>("wifi")
+            .unwrap()
+            .unknown_requests()
+            .is_empty()
+    );
 }
 
 #[test]
 fn scan_finds_the_mock_networks() {
-    let Some(elf) = build("wifi_scan") else { return };
+    let Some(elf) = build("wifi_scan") else {
+        return;
+    };
     let r = run(&elf, true, 1500);
     assert!(r.logged("scanned TarteletteNet"), "{:?}", r.lines);
     assert!(r.logged("scanned FreeCafe"));
@@ -110,15 +145,23 @@ fn scan_finds_the_mock_networks() {
 
 #[test]
 fn scan_without_a_network_finds_nothing_and_says_so() {
-    let Some(elf) = build("wifi_scan") else { return };
+    let Some(elf) = build("wifi_scan") else {
+        return;
+    };
     let r = run(&elf, false, 1500);
     assert!(r.logged("scan done: 0 networks"), "{:?}", r.lines);
-    assert!(r.events.iter().any(|e| e.1 == "unavailable"), "{:?}", r.events);
+    assert!(
+        r.events.iter().any(|e| e.1 == "unavailable"),
+        "{:?}",
+        r.events
+    );
 }
 
 #[test]
 fn join_gets_a_lease_and_talks_to_the_gateway() {
-    let Some(elf) = build("wifi_join") else { return };
+    let Some(elf) = build("wifi_join") else {
+        return;
+    };
     let r = run(&elf, true, 1800);
     assert!(r.logged("joined TarteletteNet"), "{:?}", r.lines);
     assert!(r.logged("DHCP up: [10, 0, 2, 15]"));
@@ -133,8 +176,13 @@ fn join_gets_a_lease_and_talks_to_the_gateway() {
 /// timers and the network do.
 #[test]
 fn batching_does_not_change_the_wifi_run() {
-    let Some(elf) = build("wifi_join") else { return };
-    let (a, b) = (run_with(&elf, true, 1800, true), run_with(&elf, true, 1800, false));
+    let Some(elf) = build("wifi_join") else {
+        return;
+    };
+    let (a, b) = (
+        run_with(&elf, true, 1800, true),
+        run_with(&elf, true, 1800, false),
+    );
     assert_eq!(a.events, b.events);
     assert_eq!(a.lines, b.lines);
     assert_eq!(a.sys.cycles(), b.sys.cycles());

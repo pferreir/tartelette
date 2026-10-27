@@ -8,9 +8,10 @@
 //! host data at +0x1000, then the four indices (H2B in/out, B2H in/out).
 //! Each packet is a 4-byte header (24-bit length, H4 type) and the payload
 //! padded to a multiple of four. The writer owns "in", the reader "out".
+use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+
 use super::backplane::Backplane;
 use crate::hci::{HciBackend, virt::VirtualController};
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 
 pub const BT_CTRL: u32 = 0x1800_0C7C;
 pub const WLAN_RAM_BASE: u32 = 0x1800_0D68;
@@ -60,7 +61,18 @@ fn round4(n: u32) -> u32 {
 
 impl Bt {
     pub fn new(backend: Box<dyn HciBackend>, cycles_per_us: u64) -> Self {
-        Self { cycles_per_us, backend, patched_at: None, int_status: 0, pending: VecDeque::new(), up: false, scanning: false, advertising: false, links: 0, notes: Vec::new() }
+        Self {
+            cycles_per_us,
+            backend,
+            patched_at: None,
+            int_status: 0,
+            pending: VecDeque::new(),
+            up: false,
+            scanning: false,
+            advertising: false,
+            links: 0,
+            notes: Vec::new(),
+        }
     }
 
     /// The controller to use with nothing better installed: the virtual
@@ -71,7 +83,8 @@ impl Bt {
 
     /// The patch has been in for a moment: the core is up.
     fn ready(&self, now: u64) -> bool {
-        self.patched_at.is_some_and(|t| now >= t + 2000 * self.cycles_per_us)
+        self.patched_at
+            .is_some_and(|t| now >= t + 2000 * self.cycles_per_us)
     }
 
     fn us(&self, now: u64) -> u64 {
@@ -100,7 +113,11 @@ impl Bt {
     pub fn write(&mut self, now: u64, addr: u32, data: &[u8], bp: &mut Backplane) -> bool {
         match addr {
             SDIO_INT_STATUS => {
-                let v = u32::from_le_bytes(data.get(..4).and_then(|d| d.try_into().ok()).unwrap_or_default());
+                let v = u32::from_le_bytes(
+                    data.get(..4)
+                        .and_then(|d| d.try_into().ok())
+                        .unwrap_or_default(),
+                );
                 self.int_status &= !v;
                 true
             }

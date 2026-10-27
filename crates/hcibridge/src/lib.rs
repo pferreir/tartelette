@@ -15,9 +15,12 @@ use pcb_devices::hci::HciBackend;
 
 #[cfg(target_os = "linux")]
 mod linux {
+    use std::{
+        io,
+        os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    };
+
     use super::*;
-    use std::io;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
     const BTPROTO_HCI: libc::c_int = 1;
     const HCI_CHANNEL_USER: u16 = 1;
@@ -38,9 +41,13 @@ mod linux {
     fn explain(e: io::Error, what: &str, name: &str) -> String {
         match e.raw_os_error() {
             Some(libc::EPERM) | Some(libc::EACCES) => {
-                format!("{name}: {what}: permission denied (needs CAP_NET_ADMIN: sudo setcap cap_net_admin+ep on the tartelette binary)")
+                format!(
+                    "{name}: {what}: permission denied (needs CAP_NET_ADMIN: sudo setcap cap_net_admin+ep on the tartelette binary)"
+                )
             }
-            Some(libc::EBUSY) => format!("{name}: adapter busy (something else holds its user channel, or it is up)"),
+            Some(libc::EBUSY) => {
+                format!("{name}: adapter busy (something else holds its user channel, or it is up)")
+            }
             Some(libc::ENODEV) => format!("{name}: no such Bluetooth adapter"),
             _ => format!("{name}: {what}: {e}"),
         }
@@ -49,12 +56,22 @@ mod linux {
     impl UserChannel {
         pub fn open(dev: u16) -> Result<Self, String> {
             let name = format!("hci{dev}");
-            let raw = unsafe { libc::socket(libc::AF_BLUETOOTH, libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK, BTPROTO_HCI) };
+            let raw = unsafe {
+                libc::socket(
+                    libc::AF_BLUETOOTH,
+                    libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                    BTPROTO_HCI,
+                )
+            };
             if raw < 0 {
                 return Err(explain(io::Error::last_os_error(), "socket", &name));
             }
             let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-            let addr = SockaddrHci { family: libc::AF_BLUETOOTH as _, dev, channel: HCI_CHANNEL_USER };
+            let addr = SockaddrHci {
+                family: libc::AF_BLUETOOTH as _,
+                dev,
+                channel: HCI_CHANNEL_USER,
+            };
             // The adapter must be down to be bound; bluetoothd may race to
             // power it up again, so try a few times.
             let mut last = None;
@@ -66,7 +83,11 @@ mod linux {
                     }
                 }
                 let r = unsafe {
-                    libc::bind(fd.as_raw_fd(), &addr as *const SockaddrHci as *const libc::sockaddr, size_of::<SockaddrHci>() as libc::socklen_t)
+                    libc::bind(
+                        fd.as_raw_fd(),
+                        &addr as *const SockaddrHci as *const libc::sockaddr,
+                        size_of::<SockaddrHci>() as libc::socklen_t,
+                    )
                 };
                 if r == 0 {
                     return Ok(Self { fd });

@@ -85,7 +85,14 @@ impl Default for CatPrinter {
 
 impl CatPrinter {
     pub fn new() -> Self {
-        Self { ctl: Vec::new(), job: None, intensity: 0x5D, battery: 87, paper: Vec::new(), bad_frames: 0 }
+        Self {
+            ctl: Vec::new(),
+            job: None,
+            intensity: 0x5D,
+            battery: 87,
+            paper: Vec::new(),
+            bad_frames: 0,
+        }
     }
 
     /// The link went down: a half-sent job is lost.
@@ -133,8 +140,18 @@ impl CatPrinter {
         replies
     }
 
-    fn command(&mut self, cmd: u8, p: &[u8], notes: &mut Vec<(&'static str, i64)>) -> Option<Vec<u8>> {
-        let arg16 = || u16::from_le_bytes([p.first().copied().unwrap_or(0), p.get(1).copied().unwrap_or(0)]) as usize;
+    fn command(
+        &mut self,
+        cmd: u8,
+        p: &[u8],
+        notes: &mut Vec<(&'static str, i64)>,
+    ) -> Option<Vec<u8>> {
+        let arg16 = || {
+            u16::from_le_bytes([
+                p.first().copied().unwrap_or(0),
+                p.get(1).copied().unwrap_or(0),
+            ]) as usize
+        };
         match cmd {
             GET_STATUS => {
                 // State, ?, ?, battery %, temperature °C, ?, OK (0), error
@@ -158,7 +175,12 @@ impl CatPrinter {
                 let rows = arg16();
                 let ok = self.job.is_none() && rows > 0;
                 if ok {
-                    self.job = Some(Job { rows, gray: p.get(3) == Some(&MODE_GRAY), data: Vec::new(), flushed: None });
+                    self.job = Some(Job {
+                        rows,
+                        gray: p.get(3) == Some(&MODE_GRAY),
+                        data: Vec::new(),
+                        flushed: None,
+                    });
                 }
                 Some(frame(PRINT, &[if ok { 0 } else { 1 }]))
             }
@@ -191,7 +213,10 @@ impl CatPrinter {
     /// done with it, and the printer says so.
     pub fn poll(&mut self, now: u64, notes: &mut Vec<(&'static str, i64)>) -> Option<Vec<u8>> {
         let j = self.job.as_mut()?;
-        let due = *j.flushed.as_mut()?.get_or_insert(now + j.rows as u64 * ROW_US);
+        let due = *j
+            .flushed
+            .as_mut()?
+            .get_or_insert(now + j.rows as u64 * ROW_US);
         if now < due {
             return None;
         }
@@ -215,7 +240,8 @@ impl CatPrinter {
 fn row_dots(src: &[u8], gray: bool) -> impl Iterator<Item = bool> + '_ {
     (0..WIDTH).map(move |x| {
         if gray {
-            src.get(x / 2).is_some_and(|b| (if x % 2 == 0 { b >> 4 } else { b & 15 }) >= 8)
+            src.get(x / 2)
+                .is_some_and(|b| (if x % 2 == 0 { b >> 4 } else { b & 15 }) >= 8)
         } else {
             src.get(x / 8).is_some_and(|b| b >> (x % 8) & 1 != 0)
         }
@@ -231,7 +257,10 @@ mod tests {
         // Entries of the vendor app's CRC table.
         assert_eq!(crc8(&[1]), 0x07);
         assert_eq!(crc8(&[0x5D]), 0x94);
-        assert_eq!(frame(GET_STATUS, &[0]), [0x22, 0x21, 0xA1, 0x00, 1, 0, 0, 0, 0xFF]);
+        assert_eq!(
+            frame(GET_STATUS, &[0]),
+            [0x22, 0x21, 0xA1, 0x00, 1, 0, 0, 0, 0xFF]
+        );
     }
 
     #[test]
@@ -248,8 +277,14 @@ mod tests {
         p.data(&rows[20..]);
         assert!(p.poll(0, &mut notes).is_none(), "not flushed");
         assert!(p.control(&frame(FLUSH, &[0]), &mut notes).is_empty());
-        assert!(p.poll(1000, &mut notes).is_none(), "the head takes its time");
-        assert_eq!(p.poll(1000 + 2 * ROW_US, &mut notes), Some(frame(PRINT_COMPLETE, &[0])));
+        assert!(
+            p.poll(1000, &mut notes).is_none(),
+            "the head takes its time"
+        );
+        assert_eq!(
+            p.poll(1000 + 2 * ROW_US, &mut notes),
+            Some(frame(PRINT_COMPLETE, &[0]))
+        );
         assert_eq!(p.paper, rows);
         assert_eq!(notes, [("printed", 2)]);
     }

@@ -399,8 +399,9 @@ impl Default for Dma {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use alloc::vec::Vec;
+
+    use super::*;
 
     // Register offsets within channel 0's window.
     const READ: u32 = 0x00;

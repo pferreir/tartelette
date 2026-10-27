@@ -20,6 +20,7 @@
 //! The host loads or inspects the disk with [`SdCard::load_image`] and
 //! [`SdCard::image`]; [`SdCard::dirty`] says whether the firmware wrote to it.
 use alloc::{boxed::Box, collections::VecDeque, vec, vec::Vec};
+
 use pcb::{BusType, Device, Io, Kind, Param, SpiDevice};
 
 pub const BLOCK: usize = 512;
@@ -64,7 +65,11 @@ pub fn crc16(data: &[u8]) -> u16 {
     for &byte in data {
         crc ^= (byte as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { crc << 1 ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                crc << 1 ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -74,9 +79,14 @@ pub fn crc16(data: &[u8]) -> u16 {
 enum Rx {
     Command,
     /// A write was accepted; waiting for the data token (`multi` = CMD25).
-    WriteToken { multi: bool },
+    WriteToken {
+        multi: bool,
+    },
     /// Collecting a data block and its CRC16.
-    WriteData { multi: bool, buf: Vec<u8> },
+    WriteData {
+        multi: bool,
+        buf: Vec<u8>,
+    },
 }
 
 pub struct SdCard {
@@ -106,8 +116,18 @@ pub const KIND: Kind = Kind {
     name: "sdcard",
     summary: "SDHC card in SPI mode over a disk image",
     bus: Some(BusType::Spi),
-    params: &[Param::int("size_mb", 1, 2048, "size of the blank card in MiB (a loaded image sets its own)").default_int(16)],
-    build: |p| Ok(Box::new(SdCard::new(p.int("size_mb") as usize * 1024 * 1024 / BLOCK))),
+    params: &[Param::int(
+        "size_mb",
+        1,
+        2048,
+        "size of the blank card in MiB (a loaded image sets its own)",
+    )
+    .default_int(16)],
+    build: |p| {
+        Ok(Box::new(SdCard::new(
+            p.int("size_mb") as usize * 1024 * 1024 / BLOCK,
+        )))
+    },
 };
 
 impl SdCard {
@@ -184,8 +204,11 @@ impl SdCard {
         let c_size = (self.blocks() / 1024).saturating_sub(1);
         let mut csd = [
             0x40, // CSD_STRUCTURE = 1
-            0x0E, 0x00, 0x32, // TAAC, NSAC, TRAN_SPEED (25 MHz)
-            0x5B, 0x59, // CCC, READ_BL_LEN = 9
+            0x0E,
+            0x00,
+            0x32, // TAAC, NSAC, TRAN_SPEED (25 MHz)
+            0x5B,
+            0x59, // CCC, READ_BL_LEN = 9
             0x00,
             (c_size >> 16) as u8 & 0x3F,
             (c_size >> 8) as u8,
@@ -194,7 +217,8 @@ impl SdCard {
             0x80, // SECTOR_SIZE low bit, WP_GRP_SIZE = 0
             0x0A, // R2W_FACTOR = 2, WRITE_BL_LEN high bits
             0x40, // WRITE_BL_LEN low bits
-            0x00, 0x00,
+            0x00,
+            0x00,
         ];
         csd[15] = crc7(&csd[..15]) << 1 | 1;
         csd
@@ -244,7 +268,9 @@ impl SdCard {
                 self.busy = 0;
                 self.respond(R1_IDLE, &[]);
             }
-            (false, 8) if self.idle => self.respond(R1_IDLE, &[0x00, 0x00, (arg >> 8) as u8 & 0x0F, arg as u8]),
+            (false, 8) if self.idle => {
+                self.respond(R1_IDLE, &[0x00, 0x00, (arg >> 8) as u8 & 0x0F, arg as u8])
+            }
             (false, 9) | (false, 10) => {
                 let reg = if cmd == 9 { self.csd() } else { self.cid() };
                 self.respond(self.r1(0), &[0xFF]);
@@ -332,8 +358,18 @@ impl SdCard {
                 }
             }
             Rx::WriteToken { multi } => match byte {
-                TOKEN_SINGLE if !*multi => self.rx = Rx::WriteData { multi: false, buf: Vec::with_capacity(BLOCK + 2) },
-                TOKEN_MULTI if *multi => self.rx = Rx::WriteData { multi: true, buf: Vec::with_capacity(BLOCK + 2) },
+                TOKEN_SINGLE if !*multi => {
+                    self.rx = Rx::WriteData {
+                        multi: false,
+                        buf: Vec::with_capacity(BLOCK + 2),
+                    }
+                }
+                TOKEN_MULTI if *multi => {
+                    self.rx = Rx::WriteData {
+                        multi: true,
+                        buf: Vec::with_capacity(BLOCK + 2),
+                    }
+                }
                 TOKEN_STOP_TRAN if *multi => {
                     self.rx = Rx::Command;
                     self.busy = WRITE_BUSY_BYTES;
@@ -371,7 +407,11 @@ impl SdCard {
         self.out.clear();
         self.out.push_back(response);
         self.busy = WRITE_BUSY_BYTES;
-        self.rx = if multi && response == RESP_ACCEPTED { Rx::WriteToken { multi: true } } else { Rx::Command };
+        self.rx = if multi && response == RESP_ACCEPTED {
+            Rx::WriteToken { multi: true }
+        } else {
+            Rx::Command
+        };
     }
 }
 
@@ -412,9 +452,10 @@ impl SpiDevice for SdCard {
 
 #[cfg(test)]
 mod tests {
+    use pcb::Board;
+
     use super::*;
     use crate::testutil::FakePins;
-    use pcb::Board;
 
     const CS: usize = 8;
 
@@ -426,7 +467,9 @@ mod tests {
 
     impl Host {
         fn new() -> Self {
-            let text = alloc::format!("buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = 1 }}");
+            let text = alloc::format!(
+                "buses.spi1 = {{ sck = 10, mosi = 11, miso = 12 }}\nparts.sd = {{ kind = \"sdcard\", bus = \"spi1\", cs = {CS}, size_mb = 1 }}"
+            );
             let mut board = Board::parse_with(&text, &crate::registry()).unwrap();
             let mut pins = FakePins::default();
             pins.set_chip(CS, true);
@@ -440,7 +483,9 @@ mod tests {
         }
         fn byte(&mut self, out: u8) -> u8 {
             use pcb::SpiTarget;
-            self.board.spi_bus(1, &mut self.pins, 0).transfer(out as u16, 8) as u8
+            self.board
+                .spi_bus(1, &mut self.pins, 0)
+                .transfer(out as u16, 8) as u8
         }
         fn card(&self) -> &SdCard {
             self.board.device::<SdCard>("sd").unwrap()
@@ -450,7 +495,14 @@ mod tests {
         }
         /// Send a command and return R1 (the first byte with bit 7 clear).
         fn command(&mut self, cmd: u8, arg: u32) -> u8 {
-            let mut frame = [0x40 | cmd, (arg >> 24) as u8, (arg >> 16) as u8, (arg >> 8) as u8, arg as u8, 0];
+            let mut frame = [
+                0x40 | cmd,
+                (arg >> 24) as u8,
+                (arg >> 16) as u8,
+                (arg >> 8) as u8,
+                arg as u8,
+                0,
+            ];
             frame[5] = crc7(&frame[..5]) << 1 | 1;
             for b in frame {
                 self.byte(b);
@@ -566,8 +618,16 @@ mod tests {
         let mut h = Host::new();
         h.cs(false);
         h.command(0, 0);
-        assert_eq!(h.command(1, 0), R1_IDLE | R1_ILLEGAL, "CMD1 is not an SD command");
-        assert_eq!(h.command(17, 0), R1_IDLE | R1_ILLEGAL, "no reads before initialisation");
+        assert_eq!(
+            h.command(1, 0),
+            R1_IDLE | R1_ILLEGAL,
+            "CMD1 is not an SD command"
+        );
+        assert_eq!(
+            h.command(17, 0),
+            R1_IDLE | R1_ILLEGAL,
+            "no reads before initialisation"
+        );
         // A wrong CRC on CMD8 is rejected even with CRC checking off.
         for b in [0x48, 0, 0, 1, 0xAA, 0x01] {
             h.byte(b);
@@ -589,7 +649,10 @@ mod tests {
         assert_eq!(csd[0] >> 6, 1, "CSD version 2");
         assert_eq!(csd[15], crc7(&csd[..15]) << 1 | 1);
         let c_size = (csd[7] as u32 & 0x3F) << 16 | (csd[8] as u32) << 8 | csd[9] as u32;
-        assert_eq!((c_size + 1) as u64 * 512 * 1024, h.card().blocks() as u64 * 512);
+        assert_eq!(
+            (c_size + 1) as u64 * 512 * 1024,
+            h.card().blocks() as u64 * 512
+        );
         assert_eq!(csd[10] & 0x40, 0x40, "ERASE_BLK_EN");
     }
 
@@ -658,7 +721,11 @@ mod tests {
         h.byte(0x00);
         h.byte(0x00);
         assert_eq!(h.byte(0xFF) & 0x1F, RESP_CRC_ERROR);
-        assert!(h.card().image()[6 * BLOCK..7 * BLOCK].iter().all(|&b| b == 0));
+        assert!(
+            h.card().image()[6 * BLOCK..7 * BLOCK]
+                .iter()
+                .all(|&b| b == 0)
+        );
         // Out-of-range writes are parameter errors.
         while h.byte(0xFF) != 0xFF {}
         let past = h.card().blocks();
@@ -691,9 +758,16 @@ mod tests {
         while h.byte(0xFF) != 0xFF {
             busy += 1;
         }
-        assert!(busy > 0 && busy <= WRITE_BUSY_BYTES, "busy persisted across CS: {busy}");
+        assert!(
+            busy > 0 && busy <= WRITE_BUSY_BYTES,
+            "busy persisted across CS: {busy}"
+        );
         for blk in 0..3usize {
-            assert!(h.card().image()[(10 + blk) * BLOCK..(11 + blk) * BLOCK].iter().all(|&b| b == 0x40 + blk as u8));
+            assert!(
+                h.card().image()[(10 + blk) * BLOCK..(11 + blk) * BLOCK]
+                    .iter()
+                    .all(|&b| b == 0x40 + blk as u8)
+            );
         }
         assert_eq!(h.card().blocks_written, 3);
     }
@@ -720,7 +794,14 @@ mod tests {
 
     /// Send a command in one transaction, then poll for R1 a byte at a time.
     fn command_pulsed(h: &mut Host, cmd: u8, arg: u32) -> u8 {
-        let mut frame = [0x40 | cmd, (arg >> 24) as u8, (arg >> 16) as u8, (arg >> 8) as u8, arg as u8, 0];
+        let mut frame = [
+            0x40 | cmd,
+            (arg >> 24) as u8,
+            (arg >> 16) as u8,
+            (arg >> 8) as u8,
+            arg as u8,
+            0,
+        ];
         frame[5] = crc7(&frame[..5]) << 1 | 1;
         h.cs(false);
         for b in frame {
@@ -796,7 +877,10 @@ mod tests {
         let b = Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 4 }", &reg).unwrap();
         assert_eq!(b.device::<SdCard>("s").unwrap().blocks(), 8192);
         assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", size_mb = 4 }", &reg).is_ok(), "no CS: always selected");
-        assert!(Board::parse_with("parts.s = { kind = \"sdcard\", cs = 1 }", &reg).is_err(), "a chip select only means something on a bus");
+        assert!(
+            Board::parse_with("parts.s = { kind = \"sdcard\", cs = 1 }", &reg).is_err(),
+            "a chip select only means something on a bus"
+        );
         assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 0 }", &reg).is_err());
     }
 }

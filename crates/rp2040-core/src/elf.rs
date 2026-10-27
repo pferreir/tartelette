@@ -114,8 +114,7 @@ pub(crate) mod testutil {
 
 #[cfg(test)]
 mod tests {
-    use super::testutil::build;
-    use super::*;
+    use super::{testutil::build, *};
 
     #[test]
     fn rejects_malformed_headers() {

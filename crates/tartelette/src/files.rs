@@ -1,8 +1,9 @@
 //! Getting files in and out, natively (dialogs, paths) and in the browser
 //! (async pickers, downloads). Loaded files land in an [`Inbox`] that the app
 //! drains each frame, whichever way they arrived.
-use crate::session::Source;
 use std::sync::{Arc, Mutex};
+
+use crate::session::Source;
 
 /// What a loaded file is for.
 #[derive(Clone, Debug, PartialEq)]
@@ -46,9 +47,18 @@ fn dialog(slot: &Slot) -> rfd::AsyncFileDialog {
         return d;
     }
     match slot {
-        Slot::Firmware => d.set_title("Open firmware ELF").add_filter("ELF", &["elf", ""]).add_filter("Any", &["*"]),
-        Slot::Board => d.set_title("Open board file").add_filter("Board", &["toml"]).add_filter("Any", &["*"]),
-        Slot::Sd(_) => d.set_title("Open SD card image").add_filter("Disk image", &["img", "bin"]).add_filter("Any", &["*"]),
+        Slot::Firmware => d
+            .set_title("Open firmware ELF")
+            .add_filter("ELF", &["elf", ""])
+            .add_filter("Any", &["*"]),
+        Slot::Board => d
+            .set_title("Open board file")
+            .add_filter("Board", &["toml"])
+            .add_filter("Any", &["*"]),
+        Slot::Sd(_) => d
+            .set_title("Open SD card image")
+            .add_filter("Disk image", &["img", "bin"])
+            .add_filter("Any", &["*"]),
         Slot::Guess => d,
     }
 }
@@ -74,7 +84,10 @@ pub fn pick(slot: Slot, inbox: &Inbox, ctx: &egui::Context) {
 /// Files dropped onto the window.
 pub fn take_dropped(ctx: &egui::Context, inbox: &Inbox) {
     for f in ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files)) {
-        let name = f.path().file_name().map_or_else(|| "dropped file".into(), |n| n.to_string_lossy().into_owned());
+        let name = f.path().file_name().map_or_else(
+            || "dropped file".into(),
+            |n| n.to_string_lossy().into_owned(),
+        );
         #[cfg(not(target_arch = "wasm32"))]
         match f.bytes() {
             Ok(bytes) => {
@@ -104,7 +117,10 @@ pub fn save(name: &str, bytes: Vec<u8>) {
     {
         let name = name.to_string();
         spawn(async move {
-            if let Some(f) = rfd::AsyncFileDialog::new().set_file_name(&name).save_file().await
+            if let Some(f) = rfd::AsyncFileDialog::new()
+                .set_file_name(&name)
+                .save_file()
+                .await
                 && let Err(e) = f.write(&bytes).await
             {
                 log(&format!("{}: {e}", f.file_name()));
@@ -117,14 +133,18 @@ pub fn save(name: &str, bytes: Vec<u8>) {
 
 #[cfg(target_arch = "wasm32")]
 fn download(name: &str, bytes: &[u8]) {
-    use eframe::wasm_bindgen::JsCast;
-    use eframe::web_sys;
+    use eframe::{wasm_bindgen::JsCast, web_sys};
     let run = || -> Option<()> {
         let array = js_sys::Uint8Array::from(bytes);
         let parts = js_sys::Array::of1(&array);
         let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).ok()?;
         let url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
-        let a: web_sys::HtmlAnchorElement = web_sys::window()?.document()?.create_element("a").ok()?.dyn_into().ok()?;
+        let a: web_sys::HtmlAnchorElement = web_sys::window()?
+            .document()?
+            .create_element("a")
+            .ok()?
+            .dyn_into()
+            .ok()?;
         a.set_href(&url);
         a.set_download(name);
         a.click();

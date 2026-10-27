@@ -1,11 +1,15 @@
 //! The chip against a host that bit-bangs the gSPI protocol the way
 //! Embassy's `cyw43-pio` program does, and talks the WHD protocol the way
 //! `cyw43`'s runner and control do.
-use super::*;
-use crate::net::{self, LoopbackBackend};
-use crate::testutil::FakePins;
 use alloc::{format, vec};
+
 use pcb::{Board, Pins};
+
+use super::*;
+use crate::{
+    net::{self, LoopbackBackend},
+    testutil::FakePins,
+};
 
 const ON: usize = 23;
 const DIO: usize = 24;
@@ -167,7 +171,10 @@ impl Host {
         let words = self.xfer(&[cmd], pad + n + 1);
         let w = |x: u32| if self.swapped { swap16(x) } else { x };
         self.status = w(words[pad + n]);
-        let mut bytes: Vec<u8> = words[pad..pad + n].iter().flat_map(|&x| w(x).to_le_bytes()).collect();
+        let mut bytes: Vec<u8> = words[pad..pad + n]
+            .iter()
+            .flat_map(|&x| w(x).to_le_bytes())
+            .collect();
         bytes.truncate(len);
         bytes
     }
@@ -235,7 +242,6 @@ impl Host {
         self.set_window(addr);
         self.read(1, addr & 0x7FFF, len)
     }
-
 
     fn bp_write32(&mut self, addr: u32, v: u32) {
         self.set_window(addr);
@@ -368,11 +374,18 @@ impl Host {
 
     fn rx(&mut self, f: &[u8]) {
         assert_eq!(u16::from_le_bytes([f[0], f[1]]) as usize, f.len());
-        assert_eq!(u16::from_le_bytes([f[0], f[1]]), !u16::from_le_bytes([f[2], f[3]]));
+        assert_eq!(
+            u16::from_le_bytes([f[0], f[1]]),
+            !u16::from_le_bytes([f[2], f[3]])
+        );
         let ch = f[5] & 0xF;
         let credit = f[9];
         if ch < 3 {
-            self.seq_max = if credit.wrapping_sub(self.seq) > 0x40 { self.seq + 2 } else { credit };
+            self.seq_max = if credit.wrapping_sub(self.seq) > 0x40 {
+                self.seq + 2
+            } else {
+                credit
+            };
         }
         let p = &f[f[7] as usize..];
         match ch {
@@ -381,7 +394,11 @@ impl Host {
             0 => {
                 let len = u32::from_le_bytes(p[4..8].try_into().unwrap()) as usize;
                 let id = u16::from_le_bytes([p[10], p[11]]);
-                assert_eq!(u32::from_le_bytes(p[12..16].try_into().unwrap()), 0, "ioctl status");
+                assert_eq!(
+                    u32::from_le_bytes(p[12..16].try_into().unwrap()),
+                    0,
+                    "ioctl status"
+                );
                 if id == self.ioctl_id {
                     self.ioctl_resp = Some(p[16..16 + len].to_vec());
                 }
@@ -438,9 +455,14 @@ impl Host {
         p.extend_from_slice(&0u32.to_le_bytes());
         p.extend_from_slice(data);
         self.send_frame(0, 12, &p);
-        assert!(self.wait_irq(125_000 * 100), "no interrupt after ioctl {cmd}");
+        assert!(
+            self.wait_irq(125_000 * 100),
+            "no interrupt after ioctl {cmd}"
+        );
         self.service_irq();
-        self.ioctl_resp.take().unwrap_or_else(|| panic!("no response to ioctl {cmd}"))
+        self.ioctl_resp
+            .take()
+            .unwrap_or_else(|| panic!("no response to ioctl {cmd}"))
     }
 
     fn set_var(&mut self, name: &str, val: &[u8]) {
@@ -508,7 +530,9 @@ impl Host {
         p.extend_from_slice(&0u32.to_le_bytes());
         p.extend_from_slice(&[0; 2]);
         self.set_var("escan", &p);
-        self.collect_events(200, |h| h.events.iter().any(|e| e.kind == 69 && e.status == 0));
+        self.collect_events(200, |h| {
+            h.events.iter().any(|e| e.kind == 69 && e.status == 0)
+        });
         std::mem::take(&mut self.events)
     }
 
@@ -562,7 +586,10 @@ fn bring_up_reaches_f2_ready() {
     assert!(h.chip().firmware_running());
     // The firmware's shared-memory descriptor is where the driver looks for it.
     let ram = h.chip().chip.bp.ram();
-    assert_ne!(u32::from_le_bytes(ram[0x6FFFC..0x70000].try_into().unwrap()), 0);
+    assert_ne!(
+        u32::from_le_bytes(ram[0x6FFFC..0x70000].try_into().unwrap()),
+        0
+    );
 }
 
 #[test]
@@ -590,7 +617,11 @@ fn control_init_and_led() {
     h.set_var("gpioout", &[1, 0, 0, 0, 1, 0, 0, 0]);
     assert_eq!(h.led_events, [1, 0, 1]);
     assert!(h.chip().led());
-    assert!(h.chip().unknown_requests().is_empty(), "{:?}", h.chip().unknown_requests());
+    assert!(
+        h.chip().unknown_requests().is_empty(),
+        "{:?}",
+        h.chip().unknown_requests()
+    );
 }
 
 #[test]
@@ -630,7 +661,13 @@ fn scan_lists_the_configured_networks() {
         let rssi = i16::from_le_bytes([b[78], b[79]]);
         let chanspec = u16::from_le_bytes([b[72], b[73]]);
         let cap = u16::from_le_bytes([b[16], b[17]]);
-        (ssid, rssi, chanspec & 0xFF, cap & 0x10 != 0, b[8..14].to_vec())
+        (
+            ssid,
+            rssi,
+            chanspec & 0xFF,
+            cap & 0x10 != 0,
+            b[8..14].to_vec(),
+        )
     };
     assert_eq!(info(found[0]).0, "TarteletteNet");
     assert_eq!(info(found[0]).1, -45);
@@ -638,7 +675,10 @@ fn scan_lists_the_configured_networks() {
     assert!(info(found[0]).3, "WPA2 network should advertise privacy");
     assert_eq!(info(found[1]).0, "FreeCafe");
     assert!(!info(found[1]).3);
-    assert_eq!(u32::from_le_bytes(found[0].data[4..8].try_into().unwrap()), 109);
+    assert_eq!(
+        u32::from_le_bytes(found[0].data[4..8].try_into().unwrap()),
+        109
+    );
     assert_eq!(ev.last().unwrap().status, 0);
 }
 
@@ -646,7 +686,10 @@ fn scan_lists_the_configured_networks() {
 fn with_no_network_scans_are_empty_and_say_so() {
     let mut h = booted(BOARD);
     let ev = h.escan(None);
-    assert!(ev.iter().all(|e| e.status != 8), "got a result with no network");
+    assert!(
+        ev.iter().all(|e| e.status != 8),
+        "got a result with no network"
+    );
     assert_eq!(ev.last().unwrap().status, 0);
 }
 
@@ -657,7 +700,13 @@ fn with_a_network_scan_finds_the_access_points() {
     assert_eq!(h.escan(None).iter().filter(|e| e.status == 8).count(), 2);
     let ev = h.escan(Some("FreeCafe"));
     assert_eq!(ev.iter().filter(|e| e.status == 8).count(), 1);
-    assert_eq!(h.escan(Some("Nope")).iter().filter(|e| e.status == 8).count(), 0);
+    assert_eq!(
+        h.escan(Some("Nope"))
+            .iter()
+            .filter(|e| e.status == 8)
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -674,7 +723,11 @@ fn join_open_and_wpa2_succeed_and_wrong_password_fails_cleanly() {
     h.chip_mut().set_backend(LoopbackBackend::boxed());
 
     let ev = h.join("TarteletteNet", Some("hunter22"));
-    assert_eq!(ev.iter().map(|e| e.kind).collect::<Vec<_>>(), [3, 7, 46, 16, 0, 1], "auth, assoc, psk_sup, link, set_ssid, join");
+    assert_eq!(
+        ev.iter().map(|e| e.kind).collect::<Vec<_>>(),
+        [3, 7, 46, 16, 0, 1],
+        "auth, assoc, psk_sup, link, set_ssid, join"
+    );
     assert!(ev.iter().all(|e| e.status == 0 || e.kind == 46));
     assert_eq!(ev[3].flags & 1, 1, "link-up flag");
     assert_eq!(h.chip().link(), Link::Up(0));
@@ -693,8 +746,15 @@ fn join_open_and_wpa2_succeed_and_wrong_password_fails_cleanly() {
     assert_eq!(ev.last().unwrap().status, 3);
 
     let ev = h.join("FreeCafe", None);
-    assert!(ev.iter().any(|e| (e.kind, e.status) == (0, 0)), "SET_SSID success");
-    assert_eq!((ev.last().unwrap().kind, ev.last().unwrap().status), (1, 0), "then JOIN");
+    assert!(
+        ev.iter().any(|e| (e.kind, e.status) == (0, 0)),
+        "SET_SSID success"
+    );
+    assert_eq!(
+        (ev.last().unwrap().kind, ev.last().unwrap().status),
+        (1, 0),
+        "then JOIN"
+    );
     assert_eq!(h.chip().link(), Link::Up(1));
 }
 
@@ -770,7 +830,13 @@ fn dhcp_and_udp_echo_over_the_data_channel() {
     assert_eq!(&reply[20..22], &[0, 2]);
     assert_eq!(&reply[22..28], &net::GATEWAY_MAC);
 
-    let echo = net::udp_frame(net::GATEWAY_MAC, mac, (net::GUEST_IP, 5000), (net::GATEWAY_IP, 7), b"hello pico");
+    let echo = net::udp_frame(
+        net::GATEWAY_MAC,
+        mac,
+        (net::GUEST_IP, 5000),
+        (net::GATEWAY_IP, 7),
+        b"hello pico",
+    );
     let mut p = vec![0x20, 0, 0, 0];
     p.extend_from_slice(&echo);
     h.send_frame(2, 14, &p);
@@ -778,24 +844,57 @@ fn dhcp_and_udp_echo_over_the_data_channel() {
     let back = h.data_frames.remove(0);
     let ip = net::parse_ipv4(&back).unwrap();
     let udp = net::parse_udp(ip.payload).unwrap();
-    assert_eq!((udp.src_port, udp.dst_port, udp.data), (7, 5000, &b"hello pico"[..]));
+    assert_eq!(
+        (udp.src_port, udp.dst_port, udp.data),
+        (7, 5000, &b"hello pico"[..])
+    );
     assert_eq!(h.chip().lease(), None, "no DHCPREQUEST yet");
 }
 
 #[test]
 fn board_file_errors() {
     let e = |t: &str| Board::parse_with(t, &crate::registry()).unwrap_err().msg;
-    let w = |extra: &str| format!("parts.w = {{ kind = \"cyw43439\", on = 23, dio = 24, cs = 25, clk = 29{extra} }}");
+    let w = |extra: &str| {
+        format!("parts.w = {{ kind = \"cyw43439\", on = 23, dio = 24, cs = 25, clk = 29{extra} }}")
+    };
     assert!(Board::parse_with(&w(""), &crate::registry()).is_ok());
-    assert_eq!(e("parts.w = { kind = \"cyw43439\", dio = 24, cs = 25, clk = 29 }"), "missing on (WL_ON: power and reset)");
+    assert_eq!(
+        e("parts.w = { kind = \"cyw43439\", dio = 24, cs = 25, clk = 29 }"),
+        "missing on (WL_ON: power and reset)"
+    );
     assert!(e(&w(", mac = \"1:2:3\"")).starts_with("w: mac must be"));
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"wpa2\" }]")), "w: aps[0]: a wpa2 network needs a passphrase");
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"wpa2\", passphrase = \"short\" }]")), "w: aps[0]: passphrase must be 8..63 characters");
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\", passphrase = \"long enough\" }]")), "w: aps[0]: an open network has no passphrase");
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\", security = \"sort\" }]")), "aps[0]: security must be open or wpa2");
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\", channel = 99 }]")), "aps[0]: channel must be 1..14");
-    assert_eq!(e(&w(", aps = [{ ssid = \"x\" }, { ssid = \"x\" }]")), "w: aps[1]: SSID \"x\" is listed twice");
-    assert_eq!(e(&w(", ap1 = \"x\"")), "unknown parameter ap1 (did you mean aps?)");
+    assert_eq!(
+        e(&w(", aps = [{ ssid = \"x\", security = \"wpa2\" }]")),
+        "w: aps[0]: a wpa2 network needs a passphrase"
+    );
+    assert_eq!(
+        e(&w(
+            ", aps = [{ ssid = \"x\", security = \"wpa2\", passphrase = \"short\" }]"
+        )),
+        "w: aps[0]: passphrase must be 8..63 characters"
+    );
+    assert_eq!(
+        e(&w(
+            ", aps = [{ ssid = \"x\", passphrase = \"long enough\" }]"
+        )),
+        "w: aps[0]: an open network has no passphrase"
+    );
+    assert_eq!(
+        e(&w(", aps = [{ ssid = \"x\", security = \"sort\" }]")),
+        "aps[0]: security must be open or wpa2"
+    );
+    assert_eq!(
+        e(&w(", aps = [{ ssid = \"x\", channel = 99 }]")),
+        "aps[0]: channel must be 1..14"
+    );
+    assert_eq!(
+        e(&w(", aps = [{ ssid = \"x\" }, { ssid = \"x\" }]")),
+        "w: aps[1]: SSID \"x\" is listed twice"
+    );
+    assert_eq!(
+        e(&w(", ap1 = \"x\"")),
+        "unknown parameter ap1 (did you mean aps?)"
+    );
 }
 
 // ---- Bluetooth, the way `cyw43`'s bluetooth.rs drives it ----
@@ -826,9 +925,17 @@ impl Host {
         self.bp_write32(0x1964_0894, 3);
         self.advance(2 * MS);
         self.bp_write(0x1900_1000, &[0xA5; 64]);
-        assert_eq!(self.bp_read32(BT_CTRL) & 1 << 24, 0, "not ready the moment the patch is in");
+        assert_eq!(
+            self.bp_read32(BT_CTRL) & 1 << 24,
+            0,
+            "not ready the moment the patch is in"
+        );
         self.advance(3 * MS);
-        assert_eq!(self.bp_read32(BT_CTRL) & (1 << 24 | 1 << 8), 1 << 24 | 1 << 8, "ready and awake");
+        assert_eq!(
+            self.bp_read32(BT_CTRL) & (1 << 24 | 1 << 8),
+            1 << 24 | 1 << 8,
+            "ready and awake"
+        );
         let base = self.bp_read32(WLAN_RAM_BASE);
         assert_ne!(base, 0);
         for off in [0x2000, 0x2004, 0x2008, 0x200C] {
@@ -836,7 +943,11 @@ impl Host {
         }
         let v = self.bp_read32(HOST_CTRL);
         self.bp_write32(HOST_CTRL, v | 1 << 24);
-        BtHost { base, h2b: 0, b2h: 0 }
+        BtHost {
+            base,
+            h2b: 0,
+            b2h: 0,
+        }
     }
 
     /// `hci_write`: header and padded payload into the ring, advance the
@@ -886,7 +997,13 @@ impl Host {
     }
 
     /// Send a command and collect what comes back within `ms`.
-    fn hci_command(&mut self, bt: &mut BtHost, opcode: u16, params: &[u8], ms: u64) -> Vec<(u8, Vec<u8>)> {
+    fn hci_command(
+        &mut self,
+        bt: &mut BtHost,
+        opcode: u16,
+        params: &[u8],
+        ms: u64,
+    ) -> Vec<(u8, Vec<u8>)> {
         let mut p = opcode.to_le_bytes().to_vec();
         p.push(params.len() as u8);
         p.extend_from_slice(params);
@@ -906,15 +1023,27 @@ fn bluetooth_comes_up_and_carries_hci_both_ways() {
     let mut bt = h.bt_init();
     assert!(h.chip().bt_up());
     let got = h.hci_command(&mut bt, 0x0C03, &[], 0);
-    assert_eq!(got, [(4, vec![0x0E, 4, 1, 0x03, 0x0C, 0])], "Reset completes");
+    assert_eq!(
+        got,
+        [(4, vec![0x0E, 4, 1, 0x03, 0x0C, 0])],
+        "Reset completes"
+    );
     // The interrupt line went up with the data and down with the clear.
     assert_eq!(h.read16(0, 0x04) & 0x2000, 0);
     let mut p = 0x1009u16.to_le_bytes().to_vec();
     p.push(0);
     h.hci_write(&mut bt, 1, &p);
-    assert_ne!(h.read16(0, 0x04) & 0x2000, 0, "F1_INTR while the ring has data");
+    assert_ne!(
+        h.read16(0, 0x04) & 0x2000,
+        0,
+        "F1_INTR while the ring has data"
+    );
     let got = h.hci_read(&mut bt);
-    assert_eq!(got[0].1[..7], [0x0E, 10, 1, 0x09, 0x10, 0, 0x02], "BD_ADDR is the MAC plus one");
+    assert_eq!(
+        got[0].1[..7],
+        [0x0E, 10, 1, 0x09, 0x10, 0, 0x02],
+        "BD_ADDR is the MAC plus one"
+    );
     assert_eq!(h.read16(0, 0x04) & 0x2000, 0);
 }
 
@@ -948,13 +1077,28 @@ fn mock_devices_show_up_in_scans_and_survive_a_power_cycle() {
     use crate::hci::{peers, virt::VirtualController};
     let mut h = Host::new(BOARD);
     let addr = h.chip().mac();
-    h.chip_mut().set_bt_backend(Box::new(VirtualController::new(bt::bt_address(addr), peers::neighbourhood())));
+    h.chip_mut().set_bt_backend(Box::new(VirtualController::new(
+        bt::bt_address(addr),
+        peers::neighbourhood(),
+    )));
     h.bring_up();
     h.init_control();
     let mut bt = h.bt_init();
     h.hci_command(&mut bt, 0x200B, &[0, 0x10, 0, 0x10, 0, 0, 0], 0);
     let got = h.hci_command(&mut bt, 0x200C, &[1, 1], 30);
-    let reports: Vec<_> = got.iter().filter(|(k, p)| *k == 4 && p[0] == 0x3E && p[2] == 0x02).map(|(_, p)| p[6..12].to_vec()).collect();
-    assert_eq!(reports, [peers::MIDI_ADDR.to_vec(), peers::BATTERY_ADDR.to_vec(), peers::PRINTER_ADDR.to_vec()], "one passive report each");
+    let reports: Vec<_> = got
+        .iter()
+        .filter(|(k, p)| *k == 4 && p[0] == 0x3E && p[2] == 0x02)
+        .map(|(_, p)| p[6..12].to_vec())
+        .collect();
+    assert_eq!(
+        reports,
+        [
+            peers::MIDI_ADDR.to_vec(),
+            peers::BATTERY_ADDR.to_vec(),
+            peers::PRINTER_ADDR.to_vec()
+        ],
+        "one passive report each"
+    );
     assert!(h.chip().bt_backend().available());
 }

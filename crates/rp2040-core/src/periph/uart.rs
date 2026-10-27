@@ -4,8 +4,9 @@
 //! (drained by the host) and the TX FIFO always reads empty. Baud rate
 //! registers are stored but have no effect yet. Interrupts are not wired
 //! up; `RIS`/`MIS` are reported but nothing raises an IRQ line.
-use super::Peripheral;
 use alloc::{collections::VecDeque, vec::Vec};
+
+use super::Peripheral;
 
 const FR_RXFE: u32 = 1 << 4;
 const FR_RXFF: u32 = 1 << 6;

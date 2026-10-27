@@ -92,7 +92,11 @@ impl Ppb {
             return None;
         }
         // Thread mode runs below every configurable priority (0..=3).
-        let current = if ipsr == 0 { 4 } else { self.priority_of_active(ipsr) };
+        let current = if ipsr == 0 {
+            4
+        } else {
+            self.priority_of_active(ipsr)
+        };
         let mut best: Option<(u8, u8)> = None;
         let mut consider = |exc: u8| {
             let p = self.priority(exc);
@@ -186,10 +190,16 @@ impl Ppb {
 
     /// Core cycles until SysTick next wraps, if it can ever raise an interrupt.
     pub fn cycles_to_event(&self) -> Option<u64> {
-        if self.syst_csr & (SYST_ENABLE | SYST_TICKINT) != (SYST_ENABLE | SYST_TICKINT) || self.syst_rvr == 0 {
+        if self.syst_csr & (SYST_ENABLE | SYST_TICKINT) != (SYST_ENABLE | SYST_TICKINT)
+            || self.syst_rvr == 0
+        {
             return None;
         }
-        let ticks = if self.syst_cvr == 0 { self.syst_rvr as u64 + 1 } else { self.syst_cvr as u64 };
+        let ticks = if self.syst_cvr == 0 {
+            self.syst_rvr as u64 + 1
+        } else {
+            self.syst_cvr as u64
+        };
         Some(if self.syst_csr & SYST_CLKSOURCE != 0 {
             ticks
         } else {

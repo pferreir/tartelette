@@ -16,7 +16,9 @@ pub struct Clocks {
 
 impl Clocks {
     pub fn new() -> Self {
-        Self { regs: RegStub::new(&[]) }
+        Self {
+            regs: RegStub::new(&[]),
+        }
     }
 }
 

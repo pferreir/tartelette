@@ -30,7 +30,11 @@ impl Cpu {
         self.cycles += 15;
     }
 
-    fn exception_return<B: Bus + ?Sized>(&mut self, bus: &mut B, exc_return: u32) -> Result<u32, Fault> {
+    fn exception_return<B: Bus + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        exc_return: u32,
+    ) -> Result<u32, Fault> {
         let (use_psp, to_handler) = match exc_return & 0xF {
             0x1 => (false, true),
             0x9 => (false, false),
@@ -52,14 +56,22 @@ impl Cpu {
             self.spsel = use_psp;
         }
         let new_sp = (frame + 32) | ((xpsr >> 9) & 1) << 2;
-        if use_psp { self.psp = new_sp } else { self.msp = new_sp }
+        if use_psp {
+            self.psp = new_sp
+        } else {
+            self.msp = new_sp
+        }
         self.cycles += 12;
         Ok(w[6] & !1)
     }
 
     /// Interworking branch (BX, POP {pc}, LDR pc, ...). Handles EXC_RETURN.
     /// Returns the new pc.
-    pub(super) fn bx_write<B: Bus + ?Sized>(&mut self, bus: &mut B, addr: u32) -> Result<u32, Fault> {
+    pub(super) fn bx_write<B: Bus + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        addr: u32,
+    ) -> Result<u32, Fault> {
         if addr >= 0xFFFF_FFF0 && self.ipsr != 0 {
             self.exception_return(bus, addr)
         } else if addr & 1 == 0 {

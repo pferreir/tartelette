@@ -71,7 +71,12 @@ impl Cpu {
 
     /// Start executing at `pc` with the given initial main stack pointer.
     pub fn reset_to(&mut self, sp: u32, pc: u32) {
-        *self = Self { msp: sp & !3, pc: pc & !1, vtor: self.vtor, ..Self::default() };
+        *self = Self {
+            msp: sp & !3,
+            pc: pc & !1,
+            vtor: self.vtor,
+            ..Self::default()
+        };
     }
 
     /// Reset using the vector table at `vtor` (initial SP, reset handler).
@@ -120,7 +125,10 @@ impl Cpu {
     }
 
     fn flags(&self) -> u32 {
-        (self.n as u32) << 31 | (self.z as u32) << 30 | (self.c as u32) << 29 | (self.v as u32) << 28
+        (self.n as u32) << 31
+            | (self.z as u32) << 30
+            | (self.c as u32) << 29
+            | (self.v as u32) << 28
     }
     fn set_flags(&mut self, x: u32) {
         self.n = x >> 31 & 1 != 0;
@@ -169,10 +177,18 @@ impl Cpu {
     // ---- memory access with alignment checks -----------------------------
 
     fn ld32<B: Bus + ?Sized>(&self, bus: &mut B, a: u32) -> Result<u32, Fault> {
-        if a & 3 != 0 { Err(Fault) } else { Ok(bus.read32(a)) }
+        if a & 3 != 0 {
+            Err(Fault)
+        } else {
+            Ok(bus.read32(a))
+        }
     }
     fn ld16<B: Bus + ?Sized>(&self, bus: &mut B, a: u32) -> Result<u16, Fault> {
-        if a & 1 != 0 { Err(Fault) } else { Ok(bus.read16(a)) }
+        if a & 1 != 0 {
+            Err(Fault)
+        } else {
+            Ok(bus.read16(a))
+        }
     }
     fn st32<B: Bus + ?Sized>(&self, bus: &mut B, a: u32, v: u32) -> Result<(), Fault> {
         if a & 3 != 0 {

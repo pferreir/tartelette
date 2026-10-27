@@ -10,8 +10,9 @@
 //! One transaction (CS low) is: a command word; for a write, the data words;
 //! then, for a read, the data words (preceded by a padding word for the
 //! backplane function) and finally one status word.
-use super::chip::Chip;
 use alloc::vec::Vec;
+
+use super::chip::Chip;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum State {
@@ -51,7 +52,16 @@ impl Default for Gspi {
 
 impl Gspi {
     pub fn new() -> Self {
-        Self { state: State::Idle, shift: 0, nbits: 0, cmd: Command::default(), words_in: Vec::new(), need: 0, out: Vec::new(), out_pos: 0 }
+        Self {
+            state: State::Idle,
+            shift: 0,
+            nbits: 0,
+            cmd: Command::default(),
+            words_in: Vec::new(),
+            need: 0,
+            out: Vec::new(),
+            out_pos: 0,
+        }
     }
 
     /// The chip is driving DIO (CS low, past the command).
@@ -60,7 +70,10 @@ impl Gspi {
     }
 
     pub fn cs_fall(&mut self) {
-        *self = Self { state: State::Command, ..Self::new() };
+        *self = Self {
+            state: State::Command,
+            ..Self::new()
+        };
     }
 
     pub fn cs_rise(&mut self) {
@@ -90,7 +103,11 @@ impl Gspi {
         self.out_pos += 1;
         // Past the end the line is parked low so a leftover 1 isn't mistaken
         // for the interrupt request.
-        Some(self.out.get(pos / 32).is_some_and(|w| w >> (31 - pos % 32) & 1 != 0))
+        Some(
+            self.out
+                .get(pos / 32)
+                .is_some_and(|w| w >> (31 - pos % 32) & 1 != 0),
+        )
     }
 
     fn word(&mut self, mut w: u32, chip: &mut Chip) {
@@ -101,7 +118,11 @@ impl Gspi {
         match self.state {
             State::Command => {
                 let write = w >> 31 != 0;
-                self.cmd = Command { func: (w >> 28 & 3) as u8, addr: w >> 11 & 0x1_FFFF, len: (w & 0x7FF) as usize };
+                self.cmd = Command {
+                    func: (w >> 28 & 3) as u8,
+                    addr: w >> 11 & 0x1_FFFF,
+                    len: (w & 0x7FF) as usize,
+                };
                 if write {
                     self.need = self.cmd.len.div_ceil(4);
                     self.state = State::WriteData;

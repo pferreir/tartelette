@@ -18,7 +18,15 @@
 //! Time on the guest runs on emulated time, the host side on real time; they
 //! don't have to agree. Not modelled: IPv6, ICMP to the outside, inbound
 //! connections (see [`Slirp::forward`]).
-use pcb_devices::net::{self, Gateway, GATEWAY_IP, GATEWAY_MAC, GUEST_IP, NetBackend};
+use std::{
+    collections::{HashMap, VecDeque},
+    io::{self, Read, Write},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs, UdpSocket},
+    sync::mpsc::{self, Receiver, Sender, TryRecvError},
+    time::Duration,
+};
+
+use pcb_devices::net::{self, GATEWAY_IP, GATEWAY_MAC, GUEST_IP, Gateway, NetBackend};
 use smoltcp::{
     iface::{Config, Interface, SocketHandle, SocketSet},
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
@@ -26,11 +34,6 @@ use smoltcp::{
     time::Instant,
     wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpListenEndpoint, Ipv4Address},
 };
-use std::collections::{HashMap, VecDeque};
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::time::Duration;
 
 const TCP_BUFFER: usize = 32 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -88,9 +91,17 @@ impl Device for Wire {
 /// Where a connection from the guest stands.
 enum Tcp {
     /// The host side is connecting; the guest's SYN waits.
-    Connecting { syn: Vec<u8>, result: Receiver<io::Result<TcpStream>> },
+    Connecting {
+        syn: Vec<u8>,
+        result: Receiver<io::Result<TcpStream>>,
+    },
     /// Spliced.
-    Open { handle: SocketHandle, stream: TcpStream, shut_remote: bool, remote_eof: bool },
+    Open {
+        handle: SocketHandle,
+        stream: TcpStream,
+        shut_remote: bool,
+        remote_eof: bool,
+    },
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
@@ -106,7 +117,11 @@ struct UdpFlow {
 
 /// Where the guest's traffic to `10.0.2.2` goes on the host.
 fn host_side(ip: [u8; 4]) -> Ipv4Addr {
-    if ip == GATEWAY_IP { Ipv4Addr::LOCALHOST } else { Ipv4Addr::from(ip) }
+    if ip == GATEWAY_IP {
+        Ipv4Addr::LOCALHOST
+    } else {
+        Ipv4Addr::from(ip)
+    }
 }
 
 pub struct Slirp {
@@ -146,7 +161,9 @@ impl Slirp {
             let _ = a.push(IpCidr::new(IpAddress::v4(10, 0, 2, 3), 24));
         });
         iface.set_any_ip(true);
-        let _ = iface.routes_mut().add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2));
+        let _ = iface
+            .routes_mut()
+            .add_default_ipv4_route(Ipv4Address::new(10, 0, 2, 2));
         let (dns_tx, dns_rx) = mpsc::channel();
         Self {
             start: std::time::Instant::now(),
@@ -198,7 +215,9 @@ impl Slirp {
             net::ETH_ARP => return self.wire.rx.push_back(frame.to_vec()),
             _ => return,
         }
-        let Some(ip) = net::parse_ipv4(frame) else { return };
+        let Some(ip) = net::parse_ipv4(frame) else {
+            return;
+        };
         match ip.proto {
             17 => self.udp_from_guest(frame, &ip),
             6 => self.tcp_from_guest(frame, &ip),
@@ -208,7 +227,9 @@ impl Slirp {
     }
 
     fn udp_from_guest(&mut self, frame: &[u8], ip: &net::Ipv4) {
-        let Some(udp) = net::parse_udp(ip.payload) else { return };
+        let Some(udp) = net::parse_udp(ip.payload) else {
+            return;
+        };
         if udp.dst_port == 67 {
             let _ = self.gateway.handle(frame);
             while let Some(f) = self.gateway.out.pop_front() {
@@ -216,8 +237,12 @@ impl Slirp {
             }
             return;
         }
-        let flow = Flow { src: (ip.src, udp.src_port), dst: (ip.dst, udp.dst_port) };
-        if ip.dst == net::DNS_IP && udp.dst_port == 53 || ip.dst == GATEWAY_IP && udp.dst_port == 53 {
+        let flow = Flow {
+            src: (ip.src, udp.src_port),
+            dst: (ip.dst, udp.dst_port),
+        };
+        if ip.dst == net::DNS_IP && udp.dst_port == 53 || ip.dst == GATEWAY_IP && udp.dst_port == 53
+        {
             return self.dns_query(flow, udp.data);
         }
         // Broadcast and multicast don't leave the machine.
@@ -228,24 +253,39 @@ impl Slirp {
             if self.udp.len() >= MAX_UDP_FLOWS {
                 self.expire_udp(true);
             }
-            let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else { return };
+            let Ok(socket) = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+                return;
+            };
             if socket.set_nonblocking(true).is_err() {
                 return;
             }
-            self.udp.insert(flow, UdpFlow { socket, last_used: std::time::Instant::now() });
+            self.udp.insert(
+                flow,
+                UdpFlow {
+                    socket,
+                    last_used: std::time::Instant::now(),
+                },
+            );
         }
         if let Some(f) = self.udp.get_mut(&flow) {
             f.last_used = std::time::Instant::now();
-            let _ = f.socket.send_to(udp.data, SocketAddrV4::new(host_side(ip.dst), udp.dst_port));
+            let _ = f
+                .socket
+                .send_to(udp.data, SocketAddrV4::new(host_side(ip.dst), udp.dst_port));
         }
     }
 
     fn expire_udp(&mut self, force_one: bool) {
         let now = std::time::Instant::now();
-        self.udp.retain(|_, f| now.duration_since(f.last_used) < UDP_IDLE);
+        self.udp
+            .retain(|_, f| now.duration_since(f.last_used) < UDP_IDLE);
         if force_one
             && self.udp.len() >= MAX_UDP_FLOWS
-            && let Some(oldest) = self.udp.iter().min_by_key(|(_, f)| f.last_used).map(|(k, _)| *k)
+            && let Some(oldest) = self
+                .udp
+                .iter()
+                .min_by_key(|(_, f)| f.last_used)
+                .map(|(k, _)| *k)
         {
             self.udp.remove(&oldest);
         }
@@ -255,7 +295,9 @@ impl Slirp {
         if self.dns_pending >= MAX_DNS_QUERIES {
             return;
         }
-        let Some(q) = dns::Query::parse(query) else { return };
+        let Some(q) = dns::Query::parse(query) else {
+            return;
+        };
         self.dns_pending += 1;
         let tx = self.dns_tx.clone();
         let query = query.to_vec();
@@ -280,7 +322,10 @@ impl Slirp {
         if seg.len() < 20 {
             return;
         }
-        let flow = Flow { src: (ip.src, net::be16(seg, 0)), dst: (ip.dst, net::be16(seg, 2)) };
+        let flow = Flow {
+            src: (ip.src, net::be16(seg, 0)),
+            dst: (ip.dst, net::be16(seg, 2)),
+        };
         let flags = seg[13];
         let (syn, ack, rst) = (flags & 0x02 != 0, flags & 0x10 != 0, flags & 0x04 != 0);
         match self.tcp.get(&flow).map(|t| matches!(t, Tcp::Open { .. })) {
@@ -300,7 +345,13 @@ impl Slirp {
                 std::thread::spawn(move || {
                     let _ = tx.send(TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT));
                 });
-                self.tcp.insert(flow, Tcp::Connecting { syn: frame.to_vec(), result: rx });
+                self.tcp.insert(
+                    flow,
+                    Tcp::Connecting {
+                        syn: frame.to_vec(),
+                        result: rx,
+                    },
+                );
             }
             // A segment for a connection we don't have: tell the guest.
             None if !rst => self.reset(&flow, seg),
@@ -317,8 +368,11 @@ impl Slirp {
         let data_off = (seg[12] >> 4) as usize * 4;
         let payload = seg.len().saturating_sub(data_off) as u32;
         let syn_fin = (flags & 0x02 != 0) as u32 + (flags & 0x01 != 0) as u32;
-        let (r_seq, r_ack, r_flags) =
-            if flags & 0x10 != 0 { (ack, 0, 0x04u8) } else { (0, seq.wrapping_add(payload + syn_fin), 0x14u8) };
+        let (r_seq, r_ack, r_flags) = if flags & 0x10 != 0 {
+            (ack, 0, 0x04u8)
+        } else {
+            (0, seq.wrapping_add(payload + syn_fin), 0x14u8)
+        };
         let mut tcp = vec![0u8; 20];
         tcp[0..2].copy_from_slice(&flow.dst.1.to_be_bytes());
         tcp[2..4].copy_from_slice(&flow.src.1.to_be_bytes());
@@ -328,7 +382,14 @@ impl Slirp {
         tcp[13] = r_flags;
         let c = net::transport_checksum(flow.dst.0, flow.src.0, 6, &tcp);
         tcp[16..18].copy_from_slice(&c.to_be_bytes());
-        self.out.push_back(net::ipv4_frame(mac, GATEWAY_MAC, flow.dst.0, flow.src.0, 6, &tcp));
+        self.out.push_back(net::ipv4_frame(
+            mac,
+            GATEWAY_MAC,
+            flow.dst.0,
+            flow.src.0,
+            6,
+            &tcp,
+        ));
     }
 
     // ---- the pump ----
@@ -358,18 +419,39 @@ impl Slirp {
             }
         }
         for (flow, result) in done {
-            let Some(Tcp::Connecting { syn, .. }) = self.tcp.remove(&flow) else { continue };
+            let Some(Tcp::Connecting { syn, .. }) = self.tcp.remove(&flow) else {
+                continue;
+            };
             match result {
                 Some(Ok(stream)) if stream.set_nonblocking(true).is_ok() => {
                     let _ = stream.set_nodelay(true);
-                    let mut socket = tcp::Socket::new(tcp::SocketBuffer::new(vec![0; TCP_BUFFER]), tcp::SocketBuffer::new(vec![0; TCP_BUFFER]));
+                    let mut socket = tcp::Socket::new(
+                        tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
+                        tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
+                    );
                     socket.set_nagle_enabled(false);
-                    let ep = IpListenEndpoint { addr: Some(IpAddress::v4(flow.dst.0[0], flow.dst.0[1], flow.dst.0[2], flow.dst.0[3])), port: flow.dst.1 };
+                    let ep = IpListenEndpoint {
+                        addr: Some(IpAddress::v4(
+                            flow.dst.0[0],
+                            flow.dst.0[1],
+                            flow.dst.0[2],
+                            flow.dst.0[3],
+                        )),
+                        port: flow.dst.1,
+                    };
                     if socket.listen(ep).is_ok() {
                         let handle = self.sockets.add(socket);
                         // Hand smoltcp the SYN the guest sent while we were connecting.
                         self.wire.rx.push_back(syn);
-                        self.tcp.insert(flow, Tcp::Open { handle, stream, shut_remote: false, remote_eof: false });
+                        self.tcp.insert(
+                            flow,
+                            Tcp::Open {
+                                handle,
+                                stream,
+                                shut_remote: false,
+                                remote_eof: false,
+                            },
+                        );
                     }
                 }
                 _ => {
@@ -386,7 +468,15 @@ impl Slirp {
         let mut closed = Vec::new();
         let mut buf = [0u8; 8192];
         for (flow, conn) in self.tcp.iter_mut() {
-            let Tcp::Open { handle, stream, shut_remote, remote_eof } = conn else { continue };
+            let Tcp::Open {
+                handle,
+                stream,
+                shut_remote,
+                remote_eof,
+            } = conn
+            else {
+                continue;
+            };
             let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
             // Guest -> host.
             let mut broken = false;
@@ -404,7 +494,13 @@ impl Slirp {
                 }
             }
             // The guest said FIN (and everything before it has been passed on).
-            let guest_fin = matches!(socket.state(), tcp::State::CloseWait | tcp::State::LastAck | tcp::State::Closing | tcp::State::TimeWait);
+            let guest_fin = matches!(
+                socket.state(),
+                tcp::State::CloseWait
+                    | tcp::State::LastAck
+                    | tcp::State::Closing
+                    | tcp::State::TimeWait
+            );
             if guest_fin && socket.recv_queue() == 0 && !*shut_remote {
                 let _ = stream.shutdown(std::net::Shutdown::Write);
                 *shut_remote = true;
@@ -434,7 +530,9 @@ impl Slirp {
             if broken {
                 socket.abort();
             }
-            if socket.state() == tcp::State::Closed || (socket.state() == tcp::State::TimeWait && *remote_eof) {
+            if socket.state() == tcp::State::Closed
+                || (socket.state() == tcp::State::TimeWait && *remote_eof)
+            {
                 closed.push(*flow);
             }
         }
@@ -451,7 +549,13 @@ impl Slirp {
         let mut replies = Vec::new();
         for (flow, f) in &self.udp {
             while let Ok((n, _)) = f.socket.recv_from(&mut buf) {
-                replies.push(net::udp_frame(mac, GATEWAY_MAC, flow.dst, flow.src, &buf[..n]));
+                replies.push(net::udp_frame(
+                    mac,
+                    GATEWAY_MAC,
+                    flow.dst,
+                    flow.src,
+                    &buf[..n],
+                ));
             }
         }
         self.out.extend(replies);
@@ -462,7 +566,13 @@ impl Slirp {
         let Some(mac) = self.guest_mac else { return };
         while let Ok((flow, response)) = self.dns_rx.try_recv() {
             self.dns_pending = self.dns_pending.saturating_sub(1);
-            self.out.push_back(net::udp_frame(mac, GATEWAY_MAC, flow.dst, flow.src, &response));
+            self.out.push_back(net::udp_frame(
+                mac,
+                GATEWAY_MAC,
+                flow.dst,
+                flow.src,
+                &response,
+            ));
         }
     }
 
@@ -482,19 +592,44 @@ impl Slirp {
             if stream.set_nonblocking(true).is_err() || self.tcp.len() >= MAX_TCP_CONNS {
                 continue;
             }
-            let mut socket = tcp::Socket::new(tcp::SocketBuffer::new(vec![0; TCP_BUFFER]), tcp::SocketBuffer::new(vec![0; TCP_BUFFER]));
+            let mut socket = tcp::Socket::new(
+                tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
+                tcp::SocketBuffer::new(vec![0; TCP_BUFFER]),
+            );
             socket.set_nagle_enabled(false);
             let local_port = self.next_port;
-            self.next_port = if self.next_port == u16::MAX { 40000 } else { self.next_port + 1 };
+            self.next_port = if self.next_port == u16::MAX {
+                40000
+            } else {
+                self.next_port + 1
+            };
             let remote = (IpAddress::Ipv4(Ipv4Address::from(GUEST_IP)), guest_port);
-            if socket.connect(self.iface.context(), remote, (IpAddress::v4(10, 0, 2, 2), local_port)).is_err() {
+            if socket
+                .connect(
+                    self.iface.context(),
+                    remote,
+                    (IpAddress::v4(10, 0, 2, 2), local_port),
+                )
+                .is_err()
+            {
                 continue;
             }
             let handle = self.sockets.add(socket);
             // Keyed the way the guest's own segments will arrive. The connection is
             // spliced as soon as the guest's handshake completes.
-            let flow = Flow { src: (GUEST_IP, guest_port), dst: (GATEWAY_IP, local_port) };
-            self.tcp.insert(flow, Tcp::Open { handle, stream, shut_remote: false, remote_eof: false });
+            let flow = Flow {
+                src: (GUEST_IP, guest_port),
+                dst: (GATEWAY_IP, local_port),
+            };
+            self.tcp.insert(
+                flow,
+                Tcp::Open {
+                    handle,
+                    stream,
+                    shut_remote: false,
+                    remote_eof: false,
+                },
+            );
         }
     }
 }
@@ -572,7 +707,11 @@ mod dns {
                 i += 1 + len;
             }
             let qtype = u16::from_be_bytes([*msg.get(i)?, *msg.get(i + 1)?]);
-            Some(Query { name, qtype, end: i + 4 })
+            Some(Query {
+                name,
+                qtype,
+                end: i + 4,
+            })
         }
     }
 

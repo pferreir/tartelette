@@ -3,8 +3,7 @@
 //! on Unicorn (QEMU Cortex-M0) from an identical random state, then compares
 //! architectural state and memory.
 
-use armv6m::bus::Bus;
-use armv6m::cpu::Cpu;
+use armv6m::{bus::Bus, cpu::Cpu};
 use unicorn_engine::{Arch, Mode, Prot, RegisterARM, Unicorn, uc_error};
 
 pub const BASE: u32 = 0x2000_0000;
@@ -33,11 +32,15 @@ impl MemBus {
         Some(off)
     }
     fn rd(&mut self, addr: u32, n: usize) -> u32 {
-        let Some(off) = self.touch(addr, n) else { return 0 };
+        let Some(off) = self.touch(addr, n) else {
+            return 0;
+        };
         (0..n).fold(0, |v, i| v | (self.mem[off + i] as u32) << (8 * i))
     }
     fn wr(&mut self, addr: u32, n: usize, val: u32) {
-        let Some(off) = self.touch(addr, n) else { return };
+        let Some(off) = self.touch(addr, n) else {
+            return;
+        };
         for i in 0..n {
             self.mem[off + i] = (val >> (8 * i)) as u8;
         }
@@ -45,12 +48,24 @@ impl MemBus {
 }
 
 impl Bus for MemBus {
-    fn read8(&mut self, a: u32) -> u8 { self.rd(a, 1) as u8 }
-    fn read16(&mut self, a: u32) -> u16 { self.rd(a, 2) as u16 }
-    fn read32(&mut self, a: u32) -> u32 { self.rd(a, 4) }
-    fn write8(&mut self, a: u32, v: u8) { self.wr(a, 1, v as u32) }
-    fn write16(&mut self, a: u32, v: u16) { self.wr(a, 2, v as u32) }
-    fn write32(&mut self, a: u32, v: u32) { self.wr(a, 4, v) }
+    fn read8(&mut self, a: u32) -> u8 {
+        self.rd(a, 1) as u8
+    }
+    fn read16(&mut self, a: u32) -> u16 {
+        self.rd(a, 2) as u16
+    }
+    fn read32(&mut self, a: u32) -> u32 {
+        self.rd(a, 4)
+    }
+    fn write8(&mut self, a: u32, v: u8) {
+        self.wr(a, 1, v as u32)
+    }
+    fn write16(&mut self, a: u32, v: u16) {
+        self.wr(a, 2, v as u32)
+    }
+    fn write32(&mut self, a: u32, v: u32) {
+        self.wr(a, 4, v)
+    }
 }
 
 /// Architectural state we compare (thread mode only).
@@ -118,7 +133,10 @@ impl State {
         let mut d = vec![];
         for i in 0..13 {
             if self.r[i] != other.r[i] {
-                d.push(format!("r{i}: ours={:#010x} uc={:#010x}", self.r[i], other.r[i]));
+                d.push(format!(
+                    "r{i}: ours={:#010x} uc={:#010x}",
+                    self.r[i], other.r[i]
+                ));
             }
         }
         macro_rules! f {
@@ -127,15 +145,37 @@ impl State {
             )*};
         }
         f!(msp, psp, lr, pc, nzcv);
-        if self.primask != other.primask { d.push(format!("primask: ours={} uc={}", self.primask, other.primask)); }
-        if self.spsel != other.spsel { d.push(format!("spsel: ours={} uc={}", self.spsel, other.spsel)); }
+        if self.primask != other.primask {
+            d.push(format!(
+                "primask: ours={} uc={}",
+                self.primask, other.primask
+            ));
+        }
+        if self.spsel != other.spsel {
+            d.push(format!("spsel: ours={} uc={}", self.spsel, other.spsel));
+        }
         d
     }
 }
 
 const INTERESTING: [u32; 17] = [
-    0, 1, 2, 3, 0x1f, 0x20, 0x21, 0xff, 0x100, 0x8000, 0xffff, 0x7fff_ffff, 0x8000_0000,
-    0x8000_0001, 0xffff_0000, 0xffff_fffe, 0xffff_ffff,
+    0,
+    1,
+    2,
+    3,
+    0x1f,
+    0x20,
+    0x21,
+    0xff,
+    0x100,
+    0x8000,
+    0xffff,
+    0x7fff_ffff,
+    0x8000_0000,
+    0x8000_0001,
+    0xffff_0000,
+    0xffff_fffe,
+    0xffff_ffff,
 ];
 
 /// Mix of RAM pointers (any alignment), small offsets, edge values, noise.
@@ -150,15 +190,27 @@ pub fn rand_val(rng: &mut fastrand::Rng) -> u32 {
 
 pub fn new_unicorn() -> Unicorn<'static, ()> {
     let mut uc = Unicorn::new(Arch::ARM, Mode::MCLASS | Mode::THUMB).expect("unicorn");
-    uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M0).expect("cortex-m0 model");
-    uc.mem_map(BASE as u64, SIZE as u64, Prot::ALL).expect("map");
+    uc.ctl_set_cpu_model(UC_CPU_ARM_CORTEX_M0)
+        .expect("cortex-m0 model");
+    uc.mem_map(BASE as u64, SIZE as u64, Prot::ALL)
+        .expect("map");
     uc
 }
 
 const GP: [RegisterARM; 13] = [
-    RegisterARM::R0, RegisterARM::R1, RegisterARM::R2, RegisterARM::R3, RegisterARM::R4,
-    RegisterARM::R5, RegisterARM::R6, RegisterARM::R7, RegisterARM::R8, RegisterARM::R9,
-    RegisterARM::R10, RegisterARM::R11, RegisterARM::R12,
+    RegisterARM::R0,
+    RegisterARM::R1,
+    RegisterARM::R2,
+    RegisterARM::R3,
+    RegisterARM::R4,
+    RegisterARM::R5,
+    RegisterARM::R6,
+    RegisterARM::R7,
+    RegisterARM::R8,
+    RegisterARM::R9,
+    RegisterARM::R10,
+    RegisterARM::R11,
+    RegisterARM::R12,
 ];
 
 pub fn uc_set_state(uc: &mut Unicorn<'_, ()>, s: &State) {
@@ -224,7 +276,15 @@ pub struct StepResult {
 
 impl Pair {
     pub fn new() -> Self {
-        Pair { uc: new_unicorn(), cpu: Cpu::new(), bus: MemBus { mem: vec![0; SIZE], accesses: 0, first_unmapped: None } }
+        Pair {
+            uc: new_unicorn(),
+            cpu: Cpu::new(),
+            bus: MemBus {
+                mem: vec![0; SIZE],
+                accesses: 0,
+                first_unmapped: None,
+            },
+        }
     }
 
     /// Load identical state and memory into both sides.
@@ -235,7 +295,9 @@ impl Pair {
         self.cpu = st.to_cpu();
         self.uc.mem_write(BASE as u64, mem).unwrap();
         // The same code address holds a different instruction every case.
-        self.uc.ctl_remove_cache(BASE as u64, (BASE as u64) + SIZE as u64).unwrap();
+        self.uc
+            .ctl_remove_cache(BASE as u64, (BASE as u64) + SIZE as u64)
+            .unwrap();
         uc_set_state(&mut self.uc, st);
     }
 
@@ -249,7 +311,10 @@ impl Pair {
         // vector read); only an unmapped access before those is the
         // instruction's own.
         let entry = if self.cpu.ipsr != 0 { 9 } else { 0 };
-        let data_unmapped = self.bus.first_unmapped.is_some_and(|i| i + entry < self.bus.accesses);
+        let data_unmapped = self
+            .bus
+            .first_unmapped
+            .is_some_and(|i| i + entry < self.bus.accesses);
         let ours = if data_unmapped {
             Class::Unmapped
         } else if self.cpu.ipsr != 0 || self.cpu.bkpt.is_some() {
@@ -274,7 +339,9 @@ impl Pair {
             // the same emu_start; the caller resolves that by comparing state.
             Err(e @ uc_error::FETCH_UNMAPPED) => (Class::Trap, Some(e)),
             // M-profile turns a bus error on a data access into an exception.
-            Err(e @ (uc_error::READ_UNMAPPED | uc_error::WRITE_UNMAPPED)) => (Class::Unmapped, Some(e)),
+            Err(e @ (uc_error::READ_UNMAPPED | uc_error::WRITE_UNMAPPED)) => {
+                (Class::Unmapped, Some(e))
+            }
             Err(e) => (Class::Trap, Some(e)),
         };
         let (uc_state, uc_mem) = (uc_get_state(&self.uc), self.uc_mem());
@@ -283,7 +350,13 @@ impl Pair {
             // exception state, which would poison every following case.
             self.uc = new_unicorn();
         }
-        StepResult { uc_state, uc_mem, ours, theirs, uc_err }
+        StepResult {
+            uc_state,
+            uc_mem,
+            ours,
+            theirs,
+            uc_err,
+        }
     }
 
     fn uc_mem(&self) -> Vec<u8> {
@@ -294,11 +367,17 @@ impl Pair {
 }
 
 pub fn rounds() -> u32 {
-    std::env::var("DIFFTEST_ROUNDS").ok().and_then(|s| s.parse().ok()).unwrap_or(4)
+    std::env::var("DIFFTEST_ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4)
 }
 
 pub fn seed() -> u64 {
-    std::env::var("DIFFTEST_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0x5eed_0001)
+    std::env::var("DIFFTEST_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0x5eed_0001)
 }
 
 /// Random memory with `code` placed at CODE.
@@ -352,7 +431,11 @@ pub fn not_comparable(hw: u16, hw2: Option<u16>, st: &State) -> bool {
         if hw & 0xFFF0 == 0xF380 && h2 == 0x8814 {
             let rn = (hw & 0xF) as usize;
             let sp = if st.spsel { st.psp } else { st.msp };
-            let v = match rn { 0..=12 => st.r[rn], 13 => sp, _ => st.lr };
+            let v = match rn {
+                0..=12 => st.r[rn],
+                13 => sp,
+                _ => st.lr,
+            };
             return v & 1 != 0;
         }
     }
@@ -372,8 +455,8 @@ pub fn v7m_only(hw: u16, hw2: Option<u16>) -> bool {
     }
     match hw {
         0xB100..=0xBBFF if hw & 0xF500 == 0xB100 => true, // CBZ / CBNZ
-        0xB600..=0xB6FF => hw & 0xFFEF != 0xB662, // SETEND, CPS a/f
-        0xBF00..=0xBFFF => hw & 0xF != 0, // IT
+        0xB600..=0xB6FF => hw & 0xFFEF != 0xB662,         // SETEND, CPS a/f
+        0xBF00..=0xBFFF => hw & 0xF != 0,                 // IT
         _ => false,
     }
 }
@@ -387,7 +470,11 @@ pub fn misaligned_access(hw: u16, st: &State) -> bool {
     let sp = if st.spsel { st.psp } else { st.msp };
     let (addr, align) = match hw >> 11 {
         0x0A | 0x0B => {
-            let size = match hw >> 9 & 7 { 0 | 4 => 4, 1 | 5 | 7 => 2, _ => 1 };
+            let size = match hw >> 9 & 7 {
+                0 | 4 => 4,
+                1 | 5 | 7 => 2,
+                _ => 1,
+            };
             (r(hw >> 3).wrapping_add(r(hw >> 6)), size)
         }
         0x0C | 0x0D => (r(hw >> 3).wrapping_add((h >> 6 & 0x1F) * 4), 4),
@@ -398,7 +485,6 @@ pub fn misaligned_access(hw: u16, st: &State) -> bool {
     };
     addr % align != 0
 }
-
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -438,7 +524,10 @@ pub fn judge(res: &StepResult, pair: &Pair, hw: u16, hw2: Option<u16>, before: &
         return Verdict::Deviation("unaligned access");
     }
     if res.ours != res.theirs {
-        return Verdict::Mismatch(format!("class {:?} vs {:?} ({:?})", res.ours, res.theirs, res.uc_err));
+        return Verdict::Mismatch(format!(
+            "class {:?} vs {:?} ({:?})",
+            res.ours, res.theirs, res.uc_err
+        ));
     }
     if res.ours == Class::Ok {
         let d = ours_state.diff(&res.uc_state);

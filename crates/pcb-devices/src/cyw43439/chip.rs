@@ -2,10 +2,9 @@
 //! (F0), the backplane function (F1: its own registers plus a window onto
 //! the internal bus, where the Bluetooth side also lives), and the WLAN data
 //! function (F2).
-use super::backplane::Backplane;
-use super::bt::Bt;
-use super::whd::Whd;
 use alloc::{vec, vec::Vec};
+
+use super::{backplane::Backplane, bt::Bt, whd::Whd};
 
 // F0 registers.
 const BUS_CTRL: usize = 0x0;
@@ -89,7 +88,8 @@ impl Chip {
 
     /// The bus logic needs a moment after WL_ON rises before it answers.
     pub fn ready(&self) -> bool {
-        self.power_on_at.is_some_and(|t| self.now >= t + 20 * self.cycles_per_ms)
+        self.power_on_at
+            .is_some_and(|t| self.now >= t + 20 * self.cycles_per_ms)
     }
 
     /// Until the host writes the bus control register the chip talks in
@@ -100,18 +100,29 @@ impl Chip {
 
     /// Whether the firmware is running and the WLAN function accepts frames.
     pub fn f2_ready(&self) -> bool {
-        self.fw_at.is_some_and(|t| self.now >= t + 3 * self.cycles_per_ms)
+        self.fw_at
+            .is_some_and(|t| self.now >= t + 3 * self.cycles_per_ms)
     }
 
     pub fn interrupt(&self) -> u16 {
         self.irq_sticky
-            | if self.whd.has_frame() { IRQ_F2_PACKET_AVAILABLE } else { 0 }
-            | if self.bt.interrupt(&self.bp) { IRQ_F1_INTR } else { 0 }
+            | if self.whd.has_frame() {
+                IRQ_F2_PACKET_AVAILABLE
+            } else {
+                0
+            }
+            | if self.bt.interrupt(&self.bp) {
+                IRQ_F1_INTR
+            } else {
+                0
+            }
     }
 
     /// Should the chip be raising its interrupt line (DIO) now?
     pub fn irq_pending(&self) -> bool {
-        self.ready() && self.bus_ctrl[BUS_CTRL] & CTRL_IRQ_HIGH != 0 && self.interrupt() & self.irq_enable != 0
+        self.ready()
+            && self.bus_ctrl[BUS_CTRL] & CTRL_IRQ_HIGH != 0
+            && self.interrupt() & self.irq_enable != 0
     }
 
     pub fn status(&self) -> u32 {
@@ -136,7 +147,13 @@ impl Chip {
         if func != 1 {
             return 0;
         }
-        let bytes = [self.f0[RESP_DELAY_F1], self.bus_ctrl[BUS_CTRL_RESPONSE_DELAY]].into_iter().find(|&b| b != 0).unwrap_or(4);
+        let bytes = [
+            self.f0[RESP_DELAY_F1],
+            self.bus_ctrl[BUS_CTRL_RESPONSE_DELAY],
+        ]
+        .into_iter()
+        .find(|&b| b != 0)
+        .unwrap_or(4);
         bytes as usize / 4
     }
 
@@ -147,7 +164,14 @@ impl Chip {
         if self.trace.len() == TRACE_LEN {
             self.trace.pop_front();
         }
-        self.trace.push_back(Transaction { cycle: self.now, write, func, addr, len, head });
+        self.trace.push_back(Transaction {
+            cycle: self.now,
+            write,
+            func,
+            addr,
+            len,
+            head,
+        });
     }
 
     pub fn read(&mut self, func: u8, addr: u32, len: usize) -> Vec<u8> {
@@ -162,7 +186,9 @@ impl Chip {
         }
         match func {
             0 => self.f0_read(addr as usize, len),
-            1 if addr & 0x1_0000 != 0 => (0..len).map(|i| self.f1_read((addr as usize & 0xFFFF) + i)).collect(),
+            1 if addr & 0x1_0000 != 0 => (0..len)
+                .map(|i| self.f1_read((addr as usize & 0xFFFF) + i))
+                .collect(),
             1 => {
                 let addr = self.window() | (addr & 0x7FFF);
                 match self.bt.read32(self.now, addr).filter(|_| len == 4) {
@@ -210,7 +236,9 @@ impl Chip {
     }
 
     fn window(&self) -> u32 {
-        (self.f1[F1_WINDOW_LOW] as u32) << 8 | (self.f1[F1_WINDOW_MID] as u32) << 16 | (self.f1[F1_WINDOW_HIGH] as u32) << 24
+        (self.f1[F1_WINDOW_LOW] as u32) << 8
+            | (self.f1[F1_WINDOW_MID] as u32) << 16
+            | (self.f1[F1_WINDOW_HIGH] as u32) << 24
     }
 
     fn f0_read(&self, addr: usize, len: usize) -> Vec<u8> {
@@ -220,7 +248,9 @@ impl Chip {
         r[INTERRUPT_ENABLE..INTERRUPT_ENABLE + 2].copy_from_slice(&self.irq_enable.to_le_bytes());
         r[STATUS..STATUS + 4].copy_from_slice(&self.status().to_le_bytes());
         r[TEST_RO..TEST_RO + 4].copy_from_slice(&FEEDBEAD.to_le_bytes());
-        (0..len).map(|i| r.get(addr + i).copied().unwrap_or(0)).collect()
+        (0..len)
+            .map(|i| r.get(addr + i).copied().unwrap_or(0))
+            .collect()
     }
 
     fn f0_write(&mut self, addr: usize, data: &[u8]) {
@@ -245,14 +275,18 @@ impl Chip {
     }
 
     fn f1_read(&self, off: usize) -> u8 {
-        let Some(&stored) = self.f1.get(off) else { return 0 };
+        let Some(&stored) = self.f1.get(off) else {
+            return 0;
+        };
         if off != F1_CLOCK_CSR {
             return stored;
         }
         // Clock control: requests read back; the clocks come up after a
         // delay once the firmware is running.
         let fw_up = self.fw_at.is_some();
-        let ht_ok = self.fw_at.is_some_and(|t| self.now >= t + 2 * self.cycles_per_ms);
+        let ht_ok = self
+            .fw_at
+            .is_some_and(|t| self.now >= t + 2 * self.cycles_per_ms);
         let alp = stored & 0x18 != 0 || fw_up;
         let ht = (stored & 0x10 != 0 || fw_up) && ht_ok;
         stored & 0x3F | if alp { 0x40 } else { 0 } | if ht { 0x80 } else { 0 }

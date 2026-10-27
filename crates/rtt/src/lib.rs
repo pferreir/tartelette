@@ -65,7 +65,11 @@ impl Rtt {
     /// (for instance, a defmt version this decoder does not speak).
     pub fn new(elf: &[u8]) -> Result<Option<Self>, String> {
         let file = object::File::parse(elf).map_err(|e| format!("cannot read symbols: {e}"))?;
-        let Some(control) = file.symbols().find(|s| s.name() == Ok("_SEGGER_RTT")).map(|s| s.address() as u32) else {
+        let Some(control) = file
+            .symbols()
+            .find(|s| s.name() == Ok("_SEGGER_RTT"))
+            .map(|s| s.address() as u32)
+        else {
             return Ok(None);
         };
         let Some(table) = Table::parse(elf).map_err(|e| format!("defmt: {e}"))? else {
@@ -75,13 +79,19 @@ impl Rtt {
         // table is small (one string per log call) and made once per run of
         // the firmware, so it is leaked rather than made self-referential.
         let table: &'static Table = Box::leak(Box::new(table));
-        Ok(Some(Self { control, decoder: table.new_stream_decoder(), malformed: 0 }))
+        Ok(Some(Self {
+            control,
+            decoder: table.new_stream_decoder(),
+            malformed: 0,
+        }))
     }
 
     /// Empty the firmware's RTT buffer and add the messages in it to `out`.
     pub fn poll(&mut self, sys: &mut System, out: &mut Vec<Line>) {
         let ram = &mut sys.bus.sram.data;
-        let Some(start) = self.control.checked_sub(SRAM_BASE) else { return };
+        let Some(start) = self.control.checked_sub(SRAM_BASE) else {
+            return;
+        };
         let bytes = drain(ram, start as usize);
         if bytes.is_empty() {
             return;
@@ -119,18 +129,28 @@ fn drain(ram: &mut [u8], control: usize) -> Vec<u8> {
     if ram.get(control..control + ID.len()) != Some(ID) || ram.len() < at(MIN_BLOCK) {
         return Vec::new();
     }
-    let (Some(max_up), Some(buf), Some(size), Some(write), Some(read)) =
-        (word(ram, at(MAX_UP)), word(ram, at(BUF)), word(ram, at(SIZE)), word(ram, at(WRITE)), word(ram, at(READ)))
-    else {
+    let (Some(max_up), Some(buf), Some(size), Some(write), Some(read)) = (
+        word(ram, at(MAX_UP)),
+        word(ram, at(BUF)),
+        word(ram, at(SIZE)),
+        word(ram, at(WRITE)),
+        word(ram, at(READ)),
+    ) else {
         return Vec::new();
     };
     let (size, write, read) = (size as usize, write as usize, read as usize);
-    let Some(buf) = buf.checked_sub(SRAM_BASE).map(|b| b as usize) else { return Vec::new() };
+    let Some(buf) = buf.checked_sub(SRAM_BASE).map(|b| b as usize) else {
+        return Vec::new();
+    };
     if max_up == 0 || size == 0 || write >= size || read >= size || buf + size > ram.len() {
         return Vec::new();
     }
     let ring = &ram[buf..buf + size];
-    let bytes = if write >= read { ring[read..write].to_vec() } else { [&ring[read..], &ring[..write]].concat() };
+    let bytes = if write >= read {
+        ring[read..write].to_vec()
+    } else {
+        [&ring[read..], &ring[..write]].concat()
+    };
     ram[at(READ)..at(READ) + 4].copy_from_slice(&(write as u32).to_le_bytes());
     bytes
 }
@@ -142,7 +162,8 @@ mod tests {
     /// RAM holding a control block at offset 0x40 and a ring of `size` bytes at 0x100.
     fn ram(size: u32, write: u32, read: u32) -> Vec<u8> {
         let mut r = vec![0u8; 0x400];
-        let put = |r: &mut Vec<u8>, off: usize, v: u32| r[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        let put =
+            |r: &mut Vec<u8>, off: usize, v: u32| r[off..off + 4].copy_from_slice(&v.to_le_bytes());
         r[0x40..0x40 + ID.len()].copy_from_slice(ID);
         put(&mut r, 0x40 + MAX_UP as usize, 1);
         put(&mut r, 0x40 + BUF as usize, SRAM_BASE + 0x100);
@@ -160,7 +181,10 @@ mod tests {
         let mut r = ram(16, 5, 2);
         assert_eq!(drain(&mut r, 0x40), [2, 3, 4]);
         assert_eq!(word(&r, 0x40 + READ as usize), Some(5));
-        assert!(drain(&mut r, 0x40).is_empty(), "nothing new the second time");
+        assert!(
+            drain(&mut r, 0x40).is_empty(),
+            "nothing new the second time"
+        );
     }
 
     #[test]
@@ -179,6 +203,9 @@ mod tests {
         assert!(drain(&mut r, 0x40).is_empty());
         let mut r = ram(0, 0, 0);
         assert!(drain(&mut r, 0x40).is_empty());
-        assert!(drain(&mut r, 0x3FF).is_empty(), "block runs off the end of RAM");
+        assert!(
+            drain(&mut r, 0x3FF).is_empty(),
+            "block runs off the end of RAM"
+        );
     }
 }

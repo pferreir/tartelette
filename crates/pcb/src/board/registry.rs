@@ -1,7 +1,8 @@
 //! Device kinds by name (what `kind = "..."` in a board file can mean), and
 //! the chip's rules for which pins each bus signal may use.
-use super::spec::Kind;
 use alloc::{string::String, vec::Vec};
+
+use super::spec::Kind;
 
 /// Says whether bus signal `signal` (`"sck"`, `"sda"`, ...) of controller
 /// `bus` (`"spi0"`, ...) can be routed to GPIO `pin`; `Err` explains where
@@ -16,7 +17,10 @@ pub struct Registry {
 impl Registry {
     /// No kinds at all, and no pin rules.
     pub fn empty() -> Self {
-        Self { kinds: Vec::new(), pin_check: None }
+        Self {
+            kinds: Vec::new(),
+            pin_check: None,
+        }
     }
 
     /// Make a kind available to board files. Re-registering a name replaces
