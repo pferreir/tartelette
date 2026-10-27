@@ -38,15 +38,6 @@ const INTENSITY: u8 = match option_env!("INTENSITY") {
     Some(s) => parse_u64(s) as u8,
     None => 100,
 };
-/// Send 4-bit rows (`PRINT_MODE=gray`), black dots at the darkest level,
-/// instead of 1-bit ones: the printer heats per level, so this can print
-/// darker and more evenly, at four times the data.
-const GRAY: bool = match option_env!("PRINT_MODE") {
-    Some(s) => s.as_bytes()[0] == b'g',
-    None => false,
-};
-/// Bytes per row on the wire.
-const WIRE_ROW: usize = if GRAY { ROW_BYTES * 4 } else { ROW_BYTES };
 /// Pause after each row (`ROW_GAP_MS` at build time). None by default:
 /// the printer burns rows as they arrive, and every gap in the stream stops
 /// the motor and leaves the print patchy, so data goes as fast as the link
@@ -238,27 +229,15 @@ async fn session<C: Controller>(client: &GattClient<'_, C, DefaultPacketPool, 4>
     let rows = PAPER.lock(|p| p.borrow().job_rows());
     with(|s| s.job_rows = rows as u16);
     let n = (rows as u16).to_le_bytes();
-    let ack = ask(client, &control, &mut replies, PRINT_CMD, &[n[0], n[1], 0x30, if GRAY { 0x02 } else { 0x00 }], Some(Duration::from_secs(5))).await.map_err(|_| (Stage::Send, "mxw01: print refused"))?;
+    let ack = ask(client, &control, &mut replies, PRINT_CMD, &[n[0], n[1], 0x30, 0x00], Some(Duration::from_secs(5))).await.map_err(|_| (Stage::Send, "mxw01: print refused"))?;
     if ack.first() != Some(&0) {
         return Err((Stage::Send, "mxw01: print refused"));
     }
-    let chunk = (mtu as usize).saturating_sub(3).clamp(20, WIRE_ROW);
+    let chunk = (mtu as usize).saturating_sub(3).clamp(20, ROW_BYTES);
     let t = Instant::now();
-    let mut row = [0u8; WIRE_ROW];
+    let mut row = [0u8; ROW_BYTES];
     for y in 0..rows {
-        PAPER.lock(|p| {
-            let p = p.borrow();
-            let bits = p.row(y);
-            if GRAY {
-                // Two dots a byte, the left one in the high nibble.
-                for (j, b) in row.iter_mut().enumerate() {
-                    let dot = |x: usize| bits[x / 8] >> (x % 8) & 1 != 0;
-                    *b = if dot(2 * j) { 0xF0 } else { 0 } | if dot(2 * j + 1) { 0x0F } else { 0 };
-                }
-            } else {
-                row.copy_from_slice(bits);
-            }
-        });
+        PAPER.lock(|p| row.copy_from_slice(p.borrow().row(y)));
         for part in row.chunks(chunk) {
             client.write_characteristic_without_response(&data, part).await.map_err(|_| (Stage::Send, "ble: write failed"))?;
         }

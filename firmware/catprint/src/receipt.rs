@@ -2,15 +2,17 @@
 use core::fmt::Write as _;
 
 use embassy_time::Instant;
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_8X13, FONT_8X13_BOLD, FONT_9X15_BOLD, FONT_9X18_BOLD};
+use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X13_BOLD, FONT_8X13_BOLD, FONT_9X15_BOLD, FONT_9X18_BOLD};
 use heapless::{String, Vec};
 
 use crate::astro;
 use crate::paper::{Paper, ROW_BYTES, W};
 use crate::web::Probe;
 
-const BODY: &embedded_graphics::mono_font::MonoFont = &FONT_8X13;
-const SMALL: &embedded_graphics::mono_font::MonoFont = &FONT_6X10;
+// Bold faces throughout: the head can't heat a lone dot enough, so strokes
+// one dot wide print faint.
+const BODY: &embedded_graphics::mono_font::MonoFont = &FONT_8X13_BOLD;
+const SMALL: &embedded_graphics::mono_font::MonoFont = &FONT_6X13_BOLD;
 const HEAD: &embedded_graphics::mono_font::MonoFont = &FONT_9X15_BOLD;
 /// Characters per body line.
 const COLS: usize = 48;
@@ -168,7 +170,7 @@ fn masthead(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
     p.hline(0, W - 1, 50, 0);
     p.y = 56;
     p.text_center(p.y, "ALL THE BITS THAT FIT TO PRINT", SMALL, 1, true);
-    p.y += 14;
+    p.y += 16;
     p.hline(0, W - 1, p.y, 0);
     p.hline(0, W - 1, p.y + 2, 0);
     p.y += 6;
@@ -284,7 +286,7 @@ fn weather(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
         // Within the bar, clear of the label above and the hours below.
         p.fill(x - 1, y0 - 2, 3, h + 4, true);
         let lx = if x > W - 24 { x - 22 } else { x + 4 };
-        p.fill(lx - 1, y0 + 2, 20, 11, false);
+        p.fill(lx - 1, y0 + 2, 20, 15, false);
         p.text(lx, y0 + 3, "NOW", SMALL, 1, true);
     }
     p.y = y0 + h + 18;
@@ -355,10 +357,13 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
     p.hline(x0, x0 + 360, y0, 0);
     p.hline(x0, x0 + 360, y0 + 180, 0);
     let at = |lat: f32, lon: f32| (x0 + 180 + lon as i32, y0 + 90 - lat as i32);
-    let tag = |p: &mut Paper, x: i32, y: i32, t: &str| {
-        let tx = if x > x0 + 300 { x - 8 - t.len() as i32 * 6 } else { x + 8 };
-        p.fill(tx - 1, y - 5, t.len() as i32 * 6 + 2, 11, false);
-        p.text(tx, y - 4, t, SMALL, 1, true);
+    // A label beside a marker: to the right unless asked (or out of room).
+    let tag = |p: &mut Paper, x: i32, y: i32, t: &str, left: Option<bool>| {
+        let w = t.len() as i32 * 6;
+        let left = left.unwrap_or(x > x0 + 300);
+        let tx = if left { (x - 8 - w).max(x0 + 1) } else { (x + 8).min(x0 + 359 - w) };
+        p.fill(tx - 1, y - 7, w + 2, 15, false);
+        p.text(tx, y - 6, t, SMALL, 1, true);
     };
     if let Some((lat, lon)) = sun {
         let (x, y) = at(lat, lon);
@@ -368,29 +373,45 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
             let (c, s) = (libm::cosf(a), libm::sinf(a));
             p.line(x + (c * 5.0) as i32, y + (s * 5.0) as i32, x + (c * 7.0) as i32, y + (s * 7.0) as i32);
         }
-        tag(p, x, y, "SUN");
+        tag(p, x, y, "SUN", None);
     }
-    if let Some(g) = &r.geo {
-        let (x, y) = at(g.lat, g.lon);
-        p.disc(x, y, 5, false);
-        p.circle(x, y, 5);
-        p.disc(x, y, 1, true);
-        tag(p, x, y, "YOU");
-    }
-    if let Some((lat, lon)) = r.iss {
-        let (x, y) = at(lat, lon);
+    let you = r.geo.as_ref().map(|g| at(g.lat, g.lon));
+    let iss = r.iss.map(|(lat, lon)| at(lat, lon));
+    // The station passing overhead: labels on opposite sides, so neither
+    // covers the other.
+    let iss_left = match (you, iss) {
+        (Some(u), Some(i)) if (u.0 - i.0).abs() < 48 && (u.1 - i.1).abs() < 16 => Some(i.0 < u.0),
+        _ => None,
+    };
+    // Right over you: you become a ring around it (below), labels outside.
+    let over = matches!((you, iss), (Some(u), Some(i)) if (i.0 - u.0).abs() < 9 && (i.1 - u.1).abs() < 7);
+    let past_ring = |x: i32, left: Option<bool>| if over { x + if left == Some(true) { -6 } else { 6 } } else { x };
+    if let Some((x, y)) = iss {
         p.fill(x - 7, y - 4, 15, 9, false);
         p.fill(x - 1, y - 1, 3, 3, true);
         p.hline(x - 6, x + 6, y, 0);
         p.fill(x - 6, y - 3, 3, 7, true);
         p.fill(x + 4, y - 3, 3, 7, true);
-        tag(p, x, y, "ISS");
+        tag(p, past_ring(x, iss_left), y, "ISS", iss_left);
+    }
+    // You last, so you're never hidden.
+    if let Some((x, y)) = you {
+        if over {
+            p.circle(x, y, 10);
+            p.circle(x, y, 11);
+        } else {
+            p.disc(x, y, 5, false);
+            p.circle(x, y, 5);
+            p.disc(x, y, 1, true);
+        }
+        let side = iss_left.map(|l| !l);
+        tag(p, past_ring(x, side), y, "YOU", side);
     }
     p.y = y0 + 184;
     p.text(x0 - 6, p.y, "180W", SMALL, 1, true);
     p.text_center(p.y, "0", SMALL, 1, true);
     p.text_right(x0 + 366, p.y, "180E", SMALL, 1, true);
-    p.y += 14;
+    p.y += 16;
 
     match r.iss {
         Some((lat, lon)) => {
@@ -502,10 +523,10 @@ fn footer(p: &mut Paper, unix: Option<i64>) {
         let d: Vec<u8, 12> = digits.bytes().map(|b| b - b'0').collect();
         barcode(p, &d, 48);
         p.text_center(p.y, &s::<40>(format_args!("unix {}  0x{:08X}", t, t)), SMALL, 1, true);
-        p.y += 14;
+        p.y += 16;
     }
     // The size line knows how long the receipt ends up.
-    let rows = p.y + 14 + 16 + TAIL;
+    let rows = p.y + 16 + 16 + TAIL;
     let line: String<64> = s(format_args!(
         "{} rows = {}.{} mm = {} bytes over BLE",
         rows,
@@ -514,9 +535,9 @@ fn footer(p: &mut Paper, unix: Option<i64>) {
         rows as usize * ROW_BYTES
     ));
     p.text_center(p.y, &line, SMALL, 1, true);
-    p.y += 14;
+    p.y += 16;
     p.hline(0, W - 1, p.y + 6, 4);
-    p.fill(W / 2 - 22, p.y, 44, 13, false);
+    p.fill(W / 2 - 22, p.y, 44, 15, false);
     p.text_center(p.y, "8< TEAR", SMALL, 1, true);
     p.y += 16 + TAIL;
 }

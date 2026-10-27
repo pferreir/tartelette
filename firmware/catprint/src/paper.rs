@@ -176,8 +176,9 @@ impl Paper {
         let base = self.y + font.baseline as i32;
         let mut x = kw + cw / 2;
         while x < W - vw - cw / 2 {
-            self.set(x, base, true);
-            x += 4;
+            // Two dots wide: a lone dot barely prints.
+            self.fill(x, base, 2, 1, true);
+            x += 5;
         }
         self.y += font.character_size.height as i32 + 2;
     }
