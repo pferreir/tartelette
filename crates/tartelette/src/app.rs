@@ -24,6 +24,8 @@ const SPEEDS: &[(f64, &str)] = &[
 const LOGO_HEIGHT: f32 = 96.0;
 const MIDI_UART: usize = 0;
 const LOG_TAB: usize = 2;
+const USB_SERIAL_TAB: usize = 3;
+const USB_LOG_TAB: usize = 4;
 const LINE_ENDINGS: &[(&str, &str)] = &[("\n", "LF"), ("\r", "CR"), ("\r\n", "CRLF"), ("", "none")];
 
 pub struct App {
@@ -40,7 +42,8 @@ pub struct App {
     errors: Vec<String>,
     inbox: Inbox,
     midi: Midi,
-    /// 0 and 1: a UART; `LOG_TAB`: the firmware's log.
+    /// 0 and 1: a UART; `LOG_TAB`: the firmware's log; then the USB
+    /// serial port and the USB traffic log.
     console_tab: usize,
     log_min: rtt::Level,
     uart_line: String,
@@ -250,10 +253,14 @@ impl App {
             for n in 0..2 {
                 ui.selectable_value(&mut self.console_tab, n, format!("UART{n}"));
             }
+            ui.selectable_value(&mut self.console_tab, USB_SERIAL_TAB, "USB serial");
+            ui.selectable_value(&mut self.console_tab, USB_LOG_TAB, "USB");
             ui.selectable_value(&mut self.console_tab, LOG_TAB, "Log");
             if ui.small_button("Clear").clicked() {
                 match self.console_tab {
                     LOG_TAB => s.log.clear(),
+                    USB_SERIAL_TAB => s.usb.console.clear(),
+                    USB_LOG_TAB => s.usb.log.clear(),
                     n => s.uart[n].clear(),
                 }
             }
@@ -278,7 +285,21 @@ impl App {
             self.log_view(ui, s);
             return;
         }
+        if self.console_tab == USB_LOG_TAB {
+            usb_log_view(ui, s);
+            return;
+        }
         let n = self.console_tab;
+        if n == USB_SERIAL_TAB
+            && let Some(name) = s.usb.serial_bridge()
+        {
+            ui.label(
+                RichText::new(format!(
+                    "bridged to {name}: open it with a terminal program"
+                ))
+                .weak(),
+            );
+        }
         ui.horizontal(|ui| {
             let send = ui.add(
                 egui::TextEdit::singleline(&mut self.uart_line)
@@ -295,15 +316,22 @@ impl App {
                 });
             if send.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let line = std::mem::take(&mut self.uart_line) + LINE_ENDINGS[self.line_ending].0;
-                s.send(n, line.as_bytes());
+                match n {
+                    USB_SERIAL_TAB => s.usb.input.extend(line.as_bytes()),
+                    n => s.send(n, line.as_bytes()),
+                }
                 send.request_focus();
             }
         });
+        let text = match n {
+            USB_SERIAL_TAB => &s.usb.console,
+            n => &s.uart[n],
+        };
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .auto_shrink(false)
             .show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(&s.uart[n]).monospace()).wrap());
+                ui.add(egui::Label::new(RichText::new(text).monospace()).wrap());
             });
     }
 
@@ -440,6 +468,39 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+}
+
+/// What is on the USB port, the MIDI bridge's ports, then the traffic: one
+/// line per transfer or packet.
+fn usb_log_view(ui: &mut egui::Ui, s: &mut Session) {
+    ui.horizontal(|ui| {
+        match &s.usb.summary {
+            Some(d) => ui.label(d),
+            None => ui.label(RichText::new("no USB device configured").weak()),
+        };
+        if crate::usb::UsbSide::has_midi(s.sys.usb_host()) {
+            ui.separator();
+            s.usb.midi.ui(ui);
+            if let Some(e) = &s.usb.midi.error {
+                ui.label(RichText::new(e).color(ui.visuals().error_fg_color));
+            }
+        }
+    });
+    let row = ui.text_style_height(&egui::TextStyle::Monospace);
+    let entries = &s.usb.log;
+    if entries.is_empty() {
+        ui.label(RichText::new("no USB traffic yet").weak());
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .stick_to_bottom(true)
+        .auto_shrink(false)
+        .show_rows(ui, row, entries.len(), |ui, rows| {
+            for e in entries.range(rows) {
+                let text = format!("{:9.6} {}", e.at, e.event.describe());
+                ui.add(egui::Label::new(RichText::new(text).monospace()).truncate());
+            }
+        });
 }
 
 /// `time  LEVEL  message`, the level in its colour.

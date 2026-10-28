@@ -13,11 +13,18 @@ crates/
   armv6m/        Cpu, Bus trait, Ram, exceptions, Ppb (NVIC/SysTick/SCB)   deps: none
   pcb/           device framework + Board (no chip knowledge)              deps: toml
   pcb-devices/   stock device models + `registry()`                        deps: pcb
-  rp2040-core/   peripherals, ELF loading, SystemBus, System               deps: armv6m, pcb
+  usbhost/       USB host for the emulated device: enumeration, CDC-ACM,   deps: none
+                 HID, USB-MIDI, traffic log
+  rp2040-core/   peripherals, ELF loading, SystemBus, System               deps: armv6m, pcb, usbhost
   netstack/      user-mode network (slirp-style NAT) for the Wi-Fi chip    deps: pcb-devices, smoltcp (std)
+  usbbridge/     the USB device's serial port as a pty, HID as UHID        deps: usbhost, libc (Linux)
   tartelette/    front panel (native + web, eframe), headless runner and   deps: rp2040-core, pcb, pcb-devices, netstack (native)
                  `mkdisk` (native, clap); end-to-end tests
   cpu-difftest/  differential tests of the CPU against Unicorn             dev-deps: armv6m
+scripts/         pgo-build.sh (an opt-in PGO release build), web-check.sh and
+                 web-bench.sh (the browser build in a headless browser)
+bench/web/       the emulator core as a bare wasm module for web-bench.sh, and
+                 cdp.mjs, the DevTools driver both browser scripts use
 firmware/
   examples/      Pico W firmware that runs on real boards and in the emulator
   tests/         bare-metal firmware for the emulator's tests (emulator only)
@@ -39,6 +46,22 @@ cargo install --locked --git ssh://git@git.turbofish.cc:22122/pedro/tartelette-r
 The boards in `boards/` and shields in `boards/shields/` are built in, so
 `--board pico-w --shield pico-display-2` works anywhere; paths to files work too.
 
+### Release builds with PGO
+
+`scripts/pgo-build.sh` builds a profile-guided (PGO) binary at
+`target/pgo/tartelette`, 1.1–1.4× faster than a plain release build. It's
+opt-in, meant for release builds in CI: it builds an instrumented
+tartelette, runs it on a training corpus of the repository's firmware, and
+rebuilds with the profile (a few minutes). It needs `llvm-profdata` from
+rustc's LLVM (`rustup component add llvm-tools`, or `LLVM_PROFDATA=...`).
+`CYW43_FIRMWARE_DIR` adds the Pico W Wi-Fi example to the corpus and
+`PGO_FIRMWARE="a.uf2 b.elf"` any other firmware.
+
+```sh
+rustup component add llvm-tools
+scripts/pgo-build.sh
+```
+
 ## Running
 
 ```sh
@@ -51,6 +74,11 @@ cd crates/tartelette && trunk serve --release   # web: open the page, then open/
 The firmware can be an ELF or a UF2 (as dragged onto a Pico in BOOTSEL mode).
 An ELF is better when you have one: a UF2 has no symbols, so there is no defmt
 log.
+
+The web build uses WebAssembly tail calls (`.cargo/config.toml`), which the
+CPU interpreter's threaded dispatch needs to be fast in the browser: Chrome
+and Edge 112+, Firefox 121+, Safari 18.2+. Without that flag the build still
+works, about 20% slower.
 
 From the checkout, `cargo run --release -p tartelette --` does the same as
 `tartelette`. See `tartelette --help` for every option. Headless, UART0 goes to stdout and
@@ -126,9 +154,59 @@ the Pico Display Pack) whose `cargo run` runs it in the emulator or flashes a
 real board; see `firmware/README.md`. The radio firmware blobs are Infineon's
 and not in the repository (`CYW43_FIRMWARE_DIR`).
 
+## USB
+
+The USB controller (`rp2040-core/src/periph/usb.rs`) is modelled in device
+mode after the datasheet: registers, DPRAM buffer control words (AVAILABLE,
+FULL, PID, STALL, double buffering), BUFF_STATUS and the SIE_STATUS
+interrupts. On the other end of the cable is `usbhost`, a small deterministic
+host that enumerates the device the way a PC does, one transaction at a time
+at full-speed timing, and drives the functions it knows: CDC-ACM serial
+ports, HID interfaces and USB-MIDI. It works with TinyUSB (MicroPython,
+pico-sdk), embassy-usb and usb-device (rp2040-hal), unmodified.
+
+Without anything else, the serial port is the console's **USB serial** tab
+(headless: stdin and stdout), and the **USB** tab (headless: `--usb-log`)
+shows the traffic: enumeration, every control transfer decoded, every packet.
+That works everywhere, browser included.
+
+`--usb-bridge` hands functions to this computer instead:
+
+| Bridge   | Becomes                                   | Where |
+|----------|-------------------------------------------|-------|
+| `serial` | a pseudo-terminal (`--usb-tty-link PATH` adds a symlink); DTR follows whether a program has it open | Linux |
+| `hid`    | a kernel input device through `/dev/uhid` (an emulated keyboard types for real) | Linux; needs access to `/dev/uhid` |
+| `midi`   | virtual MIDI ports `tartelette: USB MIDI out` / `USB MIDI in` | Linux (ALSA), macOS (CoreMIDI) |
+
+Elsewhere (Windows, the browser via WebMIDI) the USB tab connects the MIDI
+interface to existing ports instead.
+
+```sh
+tartelette micropython.uf2 --headless                                     # REPL on stdin/stdout
+tartelette micropython.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM  # then: mpremote connect /tmp/ttyACM
+tartelette synth.elf --usb-bridge midi --usb-log --headless --speed 1
+```
+
+`firmware/examples/pico-usb` (embassy-usb) and `pico-usb-hal` (rp2040-hal)
+are the same composite device, a serial port, a keyboard and a MIDI
+interface, used by the end-to-end tests.
+
 ## Testing
 
 ```sh
 cargo test --workspace   # cpu-difftest is slow (~1 min)
 cargo build -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
 ```
+
+The browser build is checked in a headless Chromium-family browser
+(`thorium-browser`, `chromium` or `google-chrome`, or `CHROME=...`), driven
+over the DevTools protocol by `bench/web/cdp.mjs` (Node 22+, no packages):
+
+```sh
+scripts/web-check.sh [FIRMWARE] [SCREENSHOT]   # trunk build, drop a firmware on it, fail on page exceptions, screenshot
+scripts/web-bench.sh [ROUNDS]                  # time the core in the browser with and without wasm tail calls
+```
+
+`web-check.sh` runs `firmware/tests/cpu-bench` by default; `WAIT_MS` and
+`CLICK="X,Y"` (e.g. `283,632`, the console's USB serial tab) help with
+others. `web-bench.sh` takes `MICROPYTHON_UF2=...` to add MicroPython.

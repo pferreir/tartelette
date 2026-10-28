@@ -1,6 +1,8 @@
 //! Headless runs (native only): the firmware runs as fast as it can on a
-//! schedule of inputs, and its output streams to the terminal. UART0 goes to
-//! stdout; UART1, board events and the firmware's log go to stderr.
+//! schedule of inputs, and its output streams to the terminal. UART0 and the
+//! USB serial port (unless bridged) go to stdout, and stdin goes to the USB
+//! serial port; UART1, board events, the firmware's log and the USB log go
+//! to stderr.
 use std::{io::Write, path::Path};
 
 use pcb_devices::{cyw43439::Cyw43439, sdcard::SdCard, st7789::St7789};
@@ -63,6 +65,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         eprintln!("--log: {note}");
     }
 
+    if !s.usb.serial_bridged() {
+        s.usb.keep_fresh();
+    }
+    let stdin = read_stdin();
+    let mut stdin_open = true;
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
     let end = h.max_cycles.unwrap_or(u64::MAX); // the core starts at cycle 0
     let mut pending = inputs.into_iter().peekable();
@@ -111,6 +118,26 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         for w in std::mem::take(&mut sys.warnings) {
             let _ = writeln!(err, "[{:>10.1} us] warning: {w}", us(sys.cycles()));
         }
+        loop {
+            match stdin.try_recv() {
+                Ok(chunk) => s.usb.input.extend(chunk),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    stdin_open = false;
+                    break;
+                }
+            }
+        }
+        s.exchange_usb();
+        let _ = out.write_all(&s.usb.take_fresh());
+        for e in s.usb.log.drain(..) {
+            if h.usb_log {
+                let _ = writeln!(err, "[{:>10.1} us] usb {}", e.at * 1e6, e.event.describe());
+            }
+        }
+        for w in std::mem::take(&mut s.warnings) {
+            let _ = writeln!(err, "[{:>10.1} us] {w}", us(s.sys.cycles()));
+        }
         if h.log {
             let t = us(s.sys.cycles());
             for l in s.poll_log() {
@@ -125,6 +152,17 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             // Asleep with nothing to wake it, but an input is still coming.
             StopReason::Sleeping if pending.peek().is_some_and(|i| i.cycle < end) => {
                 s.sys.idle_until(pending.peek().map_or(end, |i| i.cycle));
+            }
+            // A USB device waits for its host: for stdin, or for programs
+            // on the far side of a bridge. Time passes as in real life.
+            StopReason::Sleeping
+                if s.sys.usb_host().device().is_some() && (stdin_open || s.usb.bridged()) =>
+            {
+                const MS: u64 = 1000 * CYCLES_PER_US;
+                if h.speed.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                s.sys.idle_until((s.sys.cycles() + MS).min(end));
             }
             r => break r,
         }
@@ -179,6 +217,23 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         s.sys.cores[0].pc
     );
     Ok(())
+}
+
+/// Stdin, a chunk at a time, for the USB serial port. The reading thread
+/// ends with stdin (or with the process).
+fn read_stdin() -> std::sync::mpsc::Receiver<Vec<u8>> {
+    use std::io::Read;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        let mut stdin = std::io::stdin().lock();
+        while let Ok(n @ 1..) = stdin.read(&mut buf) {
+            if tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    rx
 }
 
 /// The display's picture, in the format the file's extension names.

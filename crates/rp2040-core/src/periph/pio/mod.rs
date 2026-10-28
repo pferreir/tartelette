@@ -110,45 +110,51 @@ impl Pio {
         self.sm[n].enabled || self.sm[n].forced.is_some()
     }
 
+    /// The machines that run (bit n = machine n): enabled, or executing an
+    /// instruction written to SMn_INSTR.
+    fn running(&self) -> u8 {
+        (0..NUM_SM).fold(0, |m, n| m | (self.runs(n) as u8) << n)
+    }
+
     /// Nothing can happen here until the outside acts: every running machine
     /// is parked and has already seen the current pad levels.
     pub fn parked(&self, pads: u32) -> bool {
-        (0..NUM_SM).all(|n| !self.runs(n) || self.settled >> n & 1 != 0)
-            && (!(0..NUM_SM).any(|n| self.runs(n))
-                || (self.pipe == [pads, pads] && self.shared.inputs == pads))
+        let running = self.running();
+        running & !self.settled == 0
+            && (running == 0 || (self.pipe == [pads, pads] && self.shared.inputs == pads))
     }
 
     /// Some machine is running and not parked on an external condition.
     pub fn active(&self) -> bool {
-        (0..NUM_SM).any(|n| self.runs(n) && self.settled >> n & 1 == 0)
+        self.running() & !self.settled != 0
     }
 
     /// Step the block through `cycles` system clock cycles starting after
     /// absolute cycle `start`.
     pub fn advance(&mut self, start: u64, cycles: u64, env: &mut dyn PioEnv) {
+        // Which machines run changes only through registers, or when one
+        // that runs only for a forced instruction has executed it.
+        let mut running = self.running();
         let mut done = 0;
         while done < cycles {
             let pads = env.pads_in();
-            let running = (0..NUM_SM).any(|n| self.runs(n));
-            if !running {
+            if running == 0 {
                 self.pipe = [pads, pads];
                 return;
             }
+            let caught_up = self.pipe == [pads, pads] && self.shared.inputs == pads;
             // Everything is parked, the synchronizer has caught up, and the
             // machines last looked at exactly these pad levels: nothing can
             // happen until the outside world acts, so skip the rest.
-            let all_settled = (0..NUM_SM)
-                .filter(|&n| self.runs(n))
-                .all(|n| self.settled >> n & 1 != 0);
-            if all_settled && self.pipe == [pads, pads] && self.shared.inputs == pads {
+            if caught_up && running & !self.settled == 0 {
                 self.skip(cycles - done);
                 return;
             }
             // The synchronizer has caught up: cycles before the next divider
             // tick change nothing, so jump to just before it.
-            if self.pipe == [pads, pads] && self.shared.inputs == pads {
+            if caught_up {
                 let wait = (0..NUM_SM)
-                    .filter(|&n| self.runs(n))
+                    .filter(|&n| running >> n & 1 != 0)
                     .map(|n| {
                         let sm = &self.sm[n];
                         (sm.div256().saturating_sub(sm.acc) as u64)
@@ -159,9 +165,9 @@ impl Pio {
                     .unwrap_or(1);
                 let idle = (wait - 1).min(cycles - done);
                 if idle > 0 {
-                    for n in 0..NUM_SM {
-                        if self.runs(n) {
-                            self.sm[n].acc += 256 * idle as u32;
+                    for (n, sm) in self.sm.iter_mut().enumerate() {
+                        if running >> n & 1 != 0 {
+                            sm.acc += 256 * idle as u32;
                         }
                     }
                     done += idle;
@@ -178,8 +184,9 @@ impl Pio {
             self.pipe = [pads, self.pipe[0]];
             let (old_out, old_oe) = (self.shared.out, self.shared.oe);
             let mut changed_any = false;
+            let mut forced_ran = false;
             for n in 0..NUM_SM {
-                if !self.runs(n) {
+                if running >> n & 1 == 0 {
                     continue;
                 }
                 let div = self.sm[n].div256();
@@ -189,6 +196,7 @@ impl Pio {
                 }
                 self.sm[n].acc -= div;
                 self.ticked = true;
+                forced_ran |= !self.sm[n].enabled;
                 let progressed = self.sm[n].tick(n, &self.imem, &mut self.shared);
                 if progressed {
                     changed_any = true;
@@ -198,6 +206,9 @@ impl Pio {
             }
             if changed_any {
                 self.settled = 0;
+            }
+            if forced_ran {
+                running = self.running();
             }
             done += 1;
             if (self.shared.out, self.shared.oe) != (old_out, old_oe) {

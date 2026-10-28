@@ -1,0 +1,11 @@
+[build]
+target = "thumbv6m-none-eabi"
+
+# `cargo run` runs the firmware in tartelette, or flashes a real board with
+# TARTELETTE_RUNNER=probe-rs or picotool: see ../run. Add `--usb-bridge
+# serial,midi` (Linux) to reach the device from other programs.
+[target.thumbv6m-none-eabi]
+runner = ["../run", "pico-w", "--"]
+
+[env]
+DEFMT_LOG = "debug"

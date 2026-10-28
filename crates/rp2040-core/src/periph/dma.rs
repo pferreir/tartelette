@@ -115,6 +115,11 @@ pub struct Dma {
     sniff_data: u32,
     /// Channel served last, for round-robin arbitration.
     last: usize,
+    /// Channels mid-sequence (bit n = channel n) and the TREQs they wait
+    /// on: kept up to date wherever a channel starts, stops or is
+    /// reconfigured, since the system asks for them for every item.
+    running: u16,
+    needed: u64,
 }
 
 impl Dma {
@@ -128,6 +133,19 @@ impl Dma {
             sniff_ctrl: 0,
             sniff_data: 0,
             last: NUM_CHANNELS - 1,
+            running: 0,
+            needed: 0,
+        }
+    }
+
+    /// Work out [`Dma::running`] and [`Dma::needed`] again.
+    fn recount(&mut self) {
+        (self.running, self.needed) = (0, 0);
+        for (n, c) in self.ch.iter().enumerate() {
+            if self.running(c) {
+                self.running |= 1 << n;
+                self.needed |= 1 << c.treq();
+            }
         }
     }
 
@@ -149,16 +167,13 @@ impl Dma {
 
     /// Some channel is mid-sequence (it may still be waiting for a request).
     pub fn active(&self) -> bool {
-        self.ch.iter().any(|c| self.running(c))
+        self.running != 0
     }
 
     /// Which TREQ numbers the running channels are waiting on (bit n = TREQ
     /// n). The system answers with the same layout for [`pick`](Self::pick).
     pub fn needed_dreqs(&self) -> u64 {
-        self.ch
-            .iter()
-            .filter(|c| self.running(c))
-            .fold(0, |m, c| m | 1 << c.treq())
+        self.needed
     }
 
     fn treq_ok(&self, c: &Channel, dreq: u64) -> bool {
@@ -172,8 +187,8 @@ impl Dma {
     /// Could any channel move an item now, or (timer-paced ones) soon
     /// without anything outside the controller changing?
     pub fn can_run(&self, dreq: u64) -> bool {
-        self.ch.iter().any(|c| {
-            self.running(c)
+        self.ch.iter().enumerate().any(|(n, c)| {
+            self.running >> n & 1 != 0
                 && match c.treq() {
                     t @ TREQ_TIMER0..=0x3E => {
                         let timer = &self.timers[(t - TREQ_TIMER0) as usize];
@@ -195,7 +210,7 @@ impl Dma {
         for _ in 0..NUM_CHANNELS {
             idx = if idx + 1 == NUM_CHANNELS { 0 } else { idx + 1 };
             let c = &self.ch[idx];
-            if !(self.running(c) && self.treq_ok(c, dreq)) {
+            if !(self.running >> idx & 1 != 0 && self.treq_ok(c, dreq)) {
                 continue;
             }
             if c.ctrl & CTRL_HIGH_PRIORITY != 0 {
@@ -255,6 +270,7 @@ impl Dma {
             if chain != t.channel && chain < NUM_CHANNELS {
                 self.trigger(chain);
             }
+            self.recount();
         }
     }
 
@@ -358,6 +374,7 @@ impl Dma {
             if trigger {
                 self.trigger(n);
             }
+            self.recount();
             return;
         }
         match off {
@@ -370,14 +387,20 @@ impl Dma {
                 let t = &mut self.timers[((off - 0x420) >> 2) as usize];
                 (t.x, t.y, t.credit, t.tokens) = ((val >> 16) as u16, val as u16, 0, 0);
             }
-            0x430 => (0..NUM_CHANNELS)
-                .filter(|n| val >> n & 1 != 0)
-                .for_each(|n| self.trigger(n)),
+            0x430 => {
+                (0..NUM_CHANNELS)
+                    .filter(|n| val >> n & 1 != 0)
+                    .for_each(|n| self.trigger(n));
+                self.recount();
+            }
             0x434 => self.sniff_ctrl = val,
             0x438 => self.sniff_data = val,
-            0x444 => (0..NUM_CHANNELS)
-                .filter(|n| val >> n & 1 != 0)
-                .for_each(|n| self.abort(n)),
+            0x444 => {
+                (0..NUM_CHANNELS)
+                    .filter(|n| val >> n & 1 != 0)
+                    .for_each(|n| self.abort(n));
+                self.recount();
+            }
             _ => {}
         }
     }

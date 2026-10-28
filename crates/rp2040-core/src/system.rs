@@ -5,7 +5,8 @@
 //! handshake, exactly as on the chip). Core 0 boot is "HLE": the ELF is loaded
 //! straight into flash/SRAM and core 0 starts at the program's vector table, as
 //! if boot2 had already run. The XIP SSI answers flash commands (see
-//! [`Ssi`]); XIP control and USB are not modelled.
+//! [`Ssi`]); XIP control is not modelled. The USB controller is a device
+//! with [`usbhost::Host`] on the other end of the cable (see [`Usb`]).
 use alloc::{string::String, vec::Vec};
 
 use pcb::{Board, InputResult};
@@ -23,11 +24,13 @@ use crate::{
         pio::{Pio, PioEnv},
         psm::Psm,
         resets::Resets,
+        rtc::Rtc,
         sio::Sio,
         spi::Spi,
         ssi::Ssi,
         timer::Timer,
         uart::Uart,
+        usb::{self, Usb},
     },
     ppb::Ppb,
     uf2::{self, Uf2Error},
@@ -50,9 +53,13 @@ pub const SRAM_BASE: u32 = 0x2000_0000;
 pub const SRAM_SIZE: u32 = 0x42000; // 264 KiB
 pub const APB_BASE: u32 = 0x4000_0000;
 pub const DMA_BASE: u32 = 0x5000_0000;
+pub const USBCTRL_DPRAM_BASE: u32 = 0x5010_0000;
+pub const USBCTRL_REGS_BASE: u32 = 0x5011_0000;
 pub const PIO0_BASE: u32 = 0x5020_0000;
 pub const PIO1_BASE: u32 = 0x5030_0000;
 pub const SIO_BASE: u32 = 0xD000_0000;
+/// SIO FIFO_RD: reading pops the inter-core FIFO.
+const SIO_FIFO_RD: u32 = 0x058;
 pub const PPB_BASE: u32 = 0xE000_0000;
 
 const FLASH_DEFAULT: usize = 2 << 20;
@@ -60,6 +67,7 @@ const FLASH_DEFAULT: usize = 2 << 20;
 const BOOT2_SIZE: u32 = 0x100;
 
 // APB blocks are 16 KiB apart: block = (addr - APB_BASE) >> 14.
+const APB_SYSINFO: u32 = 0;
 const APB_CLOCKS: u32 = 2;
 const APB_PSM: u32 = 4;
 const APB_RESETS: u32 = 3;
@@ -74,12 +82,14 @@ const APB_ROSC: u32 = 24;
 const APB_PLL_SYS: u32 = 10;
 const APB_PLL_USB: u32 = 11;
 const APB_TIMER: u32 = 21;
+const APB_RTC: u32 = 23;
 const APB_UART0: u32 = 13;
 const APB_SPI0: u32 = 15;
 const APB_SPI1: u32 = 16;
 const APB_I2C0: u32 = 17;
 const APB_I2C1: u32 = 18;
 const APB_UART1: u32 = 14;
+pub const IRQ_USBCTRL: u32 = 5;
 pub const IRQ_PIO0_0: u32 = 7;
 pub const IRQ_PIO0_1: u32 = 8;
 pub const IRQ_PIO1_0: u32 = 9;
@@ -100,6 +110,7 @@ const APB_BLOCKS: usize = 32;
 const RESET_DMA: u32 = 2;
 /// RESETS bits of PIO0 and PIO1.
 const RESET_PIO: [u32; 2] = [10, 11];
+const RESET_USBCTRL: u32 = 24;
 
 /// RESETS bit that holds each APB block in reset (None = always out of reset).
 const fn reset_bit(block: u32) -> Option<u32> {
@@ -136,6 +147,9 @@ const ROSC_FORCED: &[(u32, u32)] = &[(0x18, 1 << 31 | 1 << 12)]; // STATUS.STABL
 // PERFSEL0..3 reset to 0x1F ("none"): pico_rand claims a free counter by
 // looking for that value, and hard-asserts if none is left.
 const BUSCTRL_RESET: &[(u32, u32)] = &[(0x0C, 0x1F), (0x14, 0x1F), (0x1C, 0x1F), (0x24, 0x1F)];
+// CHIP_ID of a B2 RP2040 (revision 2, part 2, Raspberry Pi): drivers skip
+// the B0/B1 errata workarounds (TinyUSB's USB enumeration fix, ...).
+const SYSINFO_RESET: &[(u32, u32)] = &[(0x00, 0x2000_2927)];
 
 pub struct SystemBus {
     pub bootrom: Ram,
@@ -153,6 +167,8 @@ pub struct SystemBus {
     pub sio: Sio,
     pub psm: Psm,
     pub clocks: Clocks,
+    pub rtc: Rtc,
+    pub usb: Usb,
     /// Each core has its own NVIC/SysTick/SCB.
     pub ppb: [Ppb; 2],
     stubs: Vec<RegStub>,
@@ -191,6 +207,7 @@ impl SystemBus {
                 };
                 let reset = match b {
                     APB_BUSCTRL => BUSCTRL_RESET,
+                    APB_SYSINFO => SYSINFO_RESET,
                     _ => &[],
                 };
                 RegStub::with_reset(forced, reset)
@@ -216,6 +233,8 @@ impl SystemBus {
             sio: Sio::new(),
             psm: Psm::new(),
             clocks: Clocks::new(),
+            rtc: Rtc::new(),
+            usb: Usb::new(),
             ppb: [Ppb::new(CYCLES_PER_US), Ppb::new(CYCLES_PER_US)],
             stubs,
             vtor: [0; 2],
@@ -247,6 +266,19 @@ impl SystemBus {
                 ppb.advance(to - from);
             }
             self.update_uarts(to);
+            self.update_usb(to);
+        }
+    }
+
+    /// Let the USB frame counter run up to `to` (a SOF interrupt may fire).
+    fn update_usb(&mut self, to: u64) {
+        if self.usb.held() {
+            return;
+        }
+        let before = self.usb.irq();
+        self.usb.update(to);
+        if self.usb.irq() != before {
+            self.lines_dirty = true;
         }
     }
 
@@ -300,7 +332,7 @@ impl SystemBus {
     // ---- 32-bit word access; sub-word accesses are derived from these ----
 
     fn mmio_read(&mut self, addr: u32) -> u32 {
-        self.lines_dirty = true;
+        self.lines_dirty |= Self::read_moves_lines(addr);
         self.touched |= Self::needs_sync(addr);
         if !(addr >> 28 == 0xD && !Gpio::is_sio_gpio(addr.wrapping_sub(SIO_BASE))) {
             self.sync_to_now();
@@ -317,6 +349,10 @@ impl SystemBus {
             0x5 if addr - DMA_BASE < 0x4000 && !self.resets.in_reset(RESET_DMA) => {
                 self.dma.read(addr & 0xFFF)
             }
+            0x5 if addr >> 16 == USBCTRL_REGS_BASE >> 16 => match self.usb.held() {
+                true => 0,
+                false => self.usb.read(addr & 0xFFF),
+            },
             0x5 => match self.pio_at(addr) {
                 Some(b) => self.pio[b].read(addr & 0xFFF),
                 None => 0,
@@ -364,6 +400,27 @@ impl SystemBus {
                 };
                 self.dma.write(off, val)
             }
+            0x5 if addr >> 16 == USBCTRL_REGS_BASE >> 16 => {
+                if self.usb.held() {
+                    return;
+                }
+                // Atomic aliases as for PIO; in the write-one-to-clear
+                // registers every alias clears the bits it names.
+                let off = addr & 0xFFF;
+                let val = match addr >> 12 & 3 {
+                    0 => val,
+                    _ if Usb::write_clears(off) => val,
+                    alias => {
+                        let cur = self.usb.read(off);
+                        match alias {
+                            1 => cur ^ val,
+                            2 => cur | val,
+                            _ => cur & !val,
+                        }
+                    }
+                };
+                self.usb.write(off, val);
+            }
             0x5 => {
                 if let Some(b) = self.pio_at(addr) {
                     let off = addr & 0xFFF;
@@ -384,6 +441,27 @@ impl SystemBus {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Can reading `addr` change an interrupt line? Only reads with side
+    /// effects can: popping a FIFO the line watches (SIO FIFO_RD, the UART,
+    /// SPI, I2C and PIO RX FIFOs) or a read-to-clear (I2C's CLR_* registers,
+    /// USB SOF_RD). Reads of everything else (the hot ones: SIO CPUID, the
+    /// timer, GPIO, NVIC) leave the lines alone, so the cores' NVIC inputs
+    /// needn't be recomputed after them. Time catching up on a read raises
+    /// its own flag (see `sync_to_now`).
+    #[inline]
+    fn read_moves_lines(addr: u32) -> bool {
+        match addr >> 28 {
+            0xD => addr.wrapping_sub(SIO_BASE) == SIO_FIFO_RD,
+            0x4 => matches!(
+                addr.wrapping_sub(APB_BASE) >> 14,
+                APB_UART0 | APB_UART1 | APB_SPI0 | APB_SPI1 | APB_I2C0 | APB_I2C1
+            ),
+            0x5 if addr >> 16 == USBCTRL_REGS_BASE >> 16 => addr & 0xFFF == usb::SOF_RD,
+            0x5 => addr >> 20 == PIO0_BASE >> 20 || addr >> 20 == PIO1_BASE >> 20,
+            _ => false,
         }
     }
 
@@ -456,6 +534,7 @@ impl SystemBus {
             | (self.pio[0].irq(1) as u32) << IRQ_PIO0_1
             | (self.pio[1].irq(0) as u32) << IRQ_PIO1_0
             | (self.pio[1].irq(1) as u32) << IRQ_PIO1_1
+            | (self.usb.irq() as u32) << IRQ_USBCTRL
     }
 
     /// Current level of every DMA request in `needed` (bit n = TREQ n).
@@ -494,20 +573,12 @@ impl SystemBus {
 
     /// Core cycles until a device will next change state on its own.
     fn cycles_to_event(&self) -> Option<u64> {
-        [
-            self.timer.cycles_to_event(),
-            self.ppb[0].cycles_to_event(),
-            self.ppb[1].cycles_to_event(),
-            self.uart[0]
-                .next_event()
-                .map(|t| t.saturating_sub(self.time)),
-            self.uart[1]
-                .next_event()
-                .map(|t| t.saturating_sub(self.time)),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        let until = |t: Option<u64>| t.map(|t| t.saturating_sub(self.time));
+        let mut e = earliest(self.timer.cycles_to_event(), self.ppb[0].cycles_to_event());
+        e = earliest(e, self.ppb[1].cycles_to_event());
+        e = earliest(e, until(self.uart[0].next_event()));
+        e = earliest(e, until(self.uart[1].next_event()));
+        earliest(e, until(self.usb.next_event()))
     }
 
     /// Run `f` on the peripheral behind `addr` and its register offset;
@@ -539,6 +610,10 @@ impl SystemBus {
             APB_SPI0 => f(&mut self.spi[0], off),
             APB_SPI1 => f(&mut self.spi[1], off),
             APB_CLOCKS => f(&mut self.clocks, off),
+            APB_RTC => {
+                self.rtc.now = self.time;
+                f(&mut self.rtc, off)
+            }
             b => f(&mut self.stubs[b as usize], off),
         })
     }
@@ -560,6 +635,9 @@ impl SystemBus {
             p.write(off, val)
         });
         let rel = addr.wrapping_sub(APB_BASE);
+        if rel >> 14 == APB_RESETS {
+            self.usb.set_held(self.resets.in_reset(RESET_USBCTRL));
+        }
         if rel >> 14 == APB_IO_QSPI && rel & 0xFFF == QSPI_SS_CTRL {
             let outover = self.stubs[APB_IO_QSPI as usize].read(QSPI_SS_CTRL) >> 8 & 3;
             self.ssi.set_cs_override(outover, &mut self.flash.data);
@@ -572,7 +650,27 @@ impl SystemBus {
             0x00 if a < BOOTROM_SIZE => self.bootrom.read32(a),
             0x10..=0x13 => self.flash.read32(a & 0xFF_FFFF),
             0x20 | 0x21 if a & 0xFF_FFFF < SRAM_SIZE => self.sram.read32(a & 0xFF_FFFF),
+            0x50 if Self::is_dpram(a) => {
+                let o = (a & 0xFFF) as usize;
+                u32::from_le_bytes(self.usb.dpram[o..o + 4].try_into().unwrap())
+            }
             _ => self.mmio_read(a),
+        }
+    }
+
+    /// USB DPRAM: memory, with byte and halfword writes like SRAM.
+    #[inline]
+    fn is_dpram(addr: u32) -> bool {
+        addr & !0xFFF == USBCTRL_DPRAM_BASE
+    }
+
+    fn write_dpram(&mut self, addr: u32, bytes: &[u8]) {
+        let o = (addr & 0xFFF) as usize;
+        self.usb.dpram[o..o + bytes.len()].copy_from_slice(bytes);
+        if (o as u32) < usb::DPRAM_CONTROL_END {
+            self.usb.dpram_written(o as u32);
+            // The host may have an endpoint to try again.
+            self.touched = true;
         }
     }
 }
@@ -606,6 +704,7 @@ impl Bus for SystemBus {
     fn write8(&mut self, addr: u32, val: u8) {
         match addr >> 24 {
             0x20 | 0x21 if addr & 0xFF_FFFF < SRAM_SIZE => self.sram.write8(addr & 0xFF_FFFF, val),
+            0x50 if Self::is_dpram(addr) => self.write_dpram(addr, &[val]),
             0x00 | 0x10..=0x13 => {}
             _ => self.mmio_write(addr & !3, val as u32 * 0x0101_0101),
         }
@@ -613,6 +712,7 @@ impl Bus for SystemBus {
     fn write16(&mut self, addr: u32, val: u16) {
         match addr >> 24 {
             0x20 | 0x21 if addr & 0xFF_FFFF < SRAM_SIZE => self.sram.write16(addr & 0xFF_FFFF, val),
+            0x50 if Self::is_dpram(addr & !1) => self.write_dpram(addr & !1, &val.to_le_bytes()),
             0x00 | 0x10..=0x13 => {}
             _ => self.mmio_write(addr & !3, val as u32 * 0x0001_0001),
         }
@@ -620,9 +720,19 @@ impl Bus for SystemBus {
     fn write32(&mut self, addr: u32, val: u32) {
         match addr >> 24 {
             0x20 | 0x21 if addr & 0xFF_FFFF < SRAM_SIZE => self.sram.write32(addr & 0xFF_FFFF, val),
+            0x50 if Self::is_dpram(addr & !3) => self.write_dpram(addr & !3, &val.to_le_bytes()),
             0x00 | 0x10..=0x13 => {}
             _ => self.mmio_write(addr, val),
         }
+    }
+    #[inline]
+    fn instruction_start(&mut self, cycles: u64) {
+        self.now = cycles;
+    }
+    /// The accesses that end a batch (see `System::run_batch`).
+    #[inline]
+    fn interrupted(&self) -> bool {
+        self.touched | self.lines_dirty
     }
 }
 
@@ -655,6 +765,16 @@ pub enum StopReason {
     Breakpoint(u8),
     /// Core is in WFI/WFE and nothing can wake it yet.
     Sleeping,
+}
+
+/// The earlier of two optional times (`None`: never). These are worked out
+/// for every segment and batch, so no iterator chains.
+#[inline]
+fn earliest(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (x, None) | (None, x) => x,
+    }
 }
 
 /// What a PIO block sees of the rest of the board while it runs: the pads,
@@ -704,6 +824,10 @@ pub struct System {
     pub warnings: Vec<String>,
     /// Buses whose wiring was checked: I2C0, I2C1, SPI0, SPI1.
     wiring_checked: [bool; 4],
+    /// The PC on the other end of the USB cable.
+    usb_host: usbhost::Host,
+    /// When the host wants to be polled next.
+    usb_wake: Option<u64>,
 }
 
 impl System {
@@ -717,6 +841,8 @@ impl System {
             batching: true,
             warnings: Vec::new(),
             wiring_checked: [false; 4],
+            usb_host: usbhost::Host::new(CYCLES_PER_US),
+            usb_wake: None,
         };
         sys.reset_core1();
         sys
@@ -860,6 +986,33 @@ impl System {
         self.bus.lines_dirty = true;
         self.quiet = false;
         self.refresh_core_views();
+    }
+
+    /// The USB host: what it found on the device, its traffic log.
+    pub fn usb_host(&self) -> &usbhost::Host {
+        &self.usb_host
+    }
+
+    /// Change something on the USB host side (queue data for the device,
+    /// take what it sent); the host looks at the bus again right away.
+    pub fn with_usb_host<R>(&mut self, f: impl FnOnce(&mut usbhost::Host) -> R) -> R {
+        let r = f(&mut self.usb_host);
+        self.bus.usb.kicked = true;
+        self.bus.touched = true;
+        self.quiet = false;
+        r
+    }
+
+    /// Let the USB host run its transactions due now.
+    fn service_usb(&mut self) {
+        let now = self.bus.time;
+        let kicked = core::mem::take(&mut self.bus.usb.kicked);
+        self.bus.usb.update(now);
+        self.usb_wake = self
+            .usb_host
+            .poll(&mut self.bus.usb, now, kicked)
+            .map(|t| t.max(now + 1));
+        self.bus.lines_dirty = true;
     }
 
     /// Press or release a board button. False if there is no such button.
@@ -1021,13 +1174,23 @@ impl System {
     /// everything running (PIO sampling its pins, DMA, the cores).
     fn advance_to(&mut self, to: u64) {
         loop {
-            let due = self.board.next_timer().filter(|&t| t <= to);
-            self.advance_segment(due.map_or(to, |t| t.max(self.bus.time)));
-            let Some(t) = due else { break };
-            self.board
-                .fire_timers(&mut self.bus.gpio, t.max(self.bus.time));
-            self.quiet = false;
-            self.sync_board();
+            let board = self.board.next_timer().filter(|&t| t <= to);
+            let usb = self.usb_wake.filter(|&t| t <= to);
+            let Some(due) = earliest(board, usb) else {
+                self.advance_segment(to);
+                break;
+            };
+            self.advance_segment(due.max(self.bus.time));
+            if board.is_some_and(|t| t <= due) {
+                self.board
+                    .fire_timers(&mut self.bus.gpio, due.max(self.bus.time));
+                self.quiet = false;
+                self.sync_board();
+            }
+            if self.usb_wake.is_some_and(|t| t <= self.bus.time) {
+                self.service_usb();
+                self.refresh_core_views();
+            }
         }
     }
 
@@ -1049,6 +1212,9 @@ impl System {
         self.bus.touched = false;
         self.bus.flush_pio();
         self.service_buses();
+        if self.bus.usb.kicked {
+            self.service_usb();
+        }
         if to > from {
             self.bus.time = to;
             self.run_dma(to - from);
@@ -1084,6 +1250,7 @@ impl System {
             ppb.advance(to - from);
         }
         self.bus.update_uarts(to);
+        self.bus.update_usb(to);
         // A sleeping core's clock keeps pace with real time.
         for (cpu, held) in self.cores.iter_mut().zip(self.held) {
             if cpu.sleeping && !held {
@@ -1194,11 +1361,7 @@ impl System {
     fn batch_limit(&self) -> u64 {
         let event = self.bus.cycles_to_event().map(|c| self.bus.time + c);
         let timer = self.board.next_timer();
-        [event, timer]
-            .into_iter()
-            .flatten()
-            .min()
-            .unwrap_or(u64::MAX)
+        earliest(earliest(event, timer), self.usb_wake).unwrap_or(u64::MAX)
     }
 
     /// Like `step_core`, but keeps executing `core` while the devices can
@@ -1218,10 +1381,26 @@ impl System {
                     self.bus.ppb[core].acknowledge(exc);
                     cpu.take_exception(&mut self.bus, exc);
                 }
-                None => {
+                None if cpu.sleeping => {
                     cpu.step(&mut self.bus);
                 }
+                // Run until one of the checks below could come out
+                // differently: the limits (the other core's turn included:
+                // it goes first once it is behind, or level and lower
+                // numbered), an access that needs the system, or a change
+                // to the core's own state. Between those, no exception
+                // can become pending, so none is looked for.
+                None => {
+                    let o = &self.cores[other];
+                    let turn = match !self.held[other] && !o.sleeping {
+                        true => o.cycles + (other > core) as u64,
+                        false => u64::MAX,
+                    };
+                    let cpu = &mut self.cores[core];
+                    cpu.run_threaded(&mut self.bus, limit.min(end).min(turn));
+                }
             }
+            let cpu = &mut self.cores[core];
             self.bus.ppb[core].ipsr = cpu.ipsr;
             let c = cpu.cycles;
             // Everything below the hot path starts from a register access
@@ -1302,10 +1481,13 @@ impl System {
                     .board
                     .next_timer()
                     .map(|t| t.saturating_sub(self.bus.time).max(1));
-                let event = [self.bus.cycles_to_event(), timer]
-                    .into_iter()
-                    .flatten()
-                    .min();
+                let usb = match self.bus.usb.kicked {
+                    true => Some(1),
+                    false => self
+                        .usb_wake
+                        .map(|t| t.saturating_sub(self.bus.time).max(1)),
+                };
+                let event = earliest(earliest(self.bus.cycles_to_event(), timer), usb);
                 let slice = match (event, self.dma_runnable() || self.pio_active()) {
                     (None, false) => return StopReason::Sleeping,
                     (Some(c), false) => c,

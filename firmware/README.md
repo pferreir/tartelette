@@ -19,6 +19,8 @@ the same ELF runs in tartelette and on the board.
 | `pico-w-wifi`  | `pico-w`         | `wifi_blinky` blinks the LED (on the Wi-Fi chip), `wifi_scan` logs the networks around, `wifi_join` joins one, gets a DHCP lease and echoes a UDP datagram off 10.0.2.2:7 (the emulator's gateway) |
 | `pico-w-ble`   | `pico-w`         | trouble's example apps: `ble_scanner`, `ble_bas_peripheral` (a battery service) and `ble_bas_central` (reads one) |
 | `netscope`     | `pico-w` + `pico-display-2` | NETSCOPE, an internet sonar: probes a few hosts (DNS, NTP, HTTP, TCP) and plots their round trips on a radar scope. A retest, B/X page, Y ms or km of light |
+| `pico-usb`     | `pico-w`         | `usb_composite`: a USB serial port that echoes in upper case (a `!` types an `a`), a boot keyboard and a MIDI interface that echoes notes an octave up, on embassy-usb |
+| `pico-usb-hal` | `pico-w`         | the same `usb_composite` on rp2040-hal and usb-device (usbd-serial, usbd-hid, usbd-midi) |
 | `catprint`     | `pico-w` + `pico-display-2` | THE DAILY BIT: fetches the time, place, weather and ISS crew over Wi-Fi and prints a receipt on an MXW01 "cat printer" over Bluetooth LE. A new edition, B reprint, X/Y scroll |
 
 The boards are in `../boards/`. `pico-display-2` is a shield

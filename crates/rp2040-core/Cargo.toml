@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 armv6m = { path = "../armv6m" }
 pcb = { path = "../pcb" }
+usbhost = { path = "../usbhost" }
 
 [dev-dependencies]
 pcb-devices = { path = "../pcb-devices" }

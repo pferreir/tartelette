@@ -1,0 +1,5 @@
+# The browser build: WebAssembly tail calls (Chrome/Edge 112+, Firefox 121+,
+# Safari 18.2+) let the CPU interpreter use threaded dispatch, as it does
+# natively (crates/armv6m/src/cpu/threaded.rs).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+tail-call"]

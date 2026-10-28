@@ -1,0 +1,31 @@
+[package]
+name = "pico-usb-hal"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone (not part of the emulator workspace). The USB composite device
+# of `../pico-usb` (serial port, HID keyboard, USB-MIDI) on rp2040-hal and
+# the usb-device class crates, polled from the main loop; see ../README.md.
+# The emulator's tests run it (crates/tartelette/tests/usb_firmware.rs).
+
+[workspace]
+
+[dependencies]
+rp2040-hal = { version = "0.12", features = ["rt", "critical-section-impl", "defmt"] }
+rp2040-boot2 = "0.3"
+# The configuration descriptor (199 bytes) is built whole in the control
+# buffer, 128 bytes by default.
+usb-device = { version = "0.3", features = ["control-buffer-256"] }
+usbd-serial = "0.2"
+usbd-hid = "0.10"
+usbd-midi = "0.5"
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+cortex-m = "0.7.6"
+cortex-m-rt = "0.7.0"
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"

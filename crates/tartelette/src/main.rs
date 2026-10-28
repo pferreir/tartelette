@@ -13,10 +13,12 @@ mod files;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 mod midi;
+mod midi_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod mkdisk;
 mod panel;
 mod session;
+mod usb;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch;
 

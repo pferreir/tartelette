@@ -1,0 +1,13 @@
+[package]
+name = "cpu-bench"
+version = "0.1.0"
+edition = "2024"
+
+# Standalone (not part of the emulator workspace): bare-metal test firmware.
+[workspace]
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+opt-level = "s"

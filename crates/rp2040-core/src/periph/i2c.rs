@@ -125,7 +125,7 @@ impl I2c {
 
     /// Level of the controller's interrupt line.
     pub fn irq(&self) -> bool {
-        self.raw_status() & self.intr_mask != 0
+        self.intr_mask != 0 && self.raw_status() & self.intr_mask != 0
     }
 
     /// DMA request levels (DMA_CR enables them): the TX side wants more

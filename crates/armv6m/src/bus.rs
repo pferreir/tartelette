@@ -15,6 +15,17 @@ pub trait Bus {
     fn write8(&mut self, addr: u32, val: u8);
     fn write16(&mut self, addr: u32, val: u16);
     fn write32(&mut self, addr: u32, val: u32);
+    /// For [`Cpu::run_threaded`](crate::cpu::Cpu::run_threaded): the core
+    /// is about to execute an instruction starting at cycle `cycles`.
+    #[inline]
+    fn instruction_start(&mut self, _cycles: u64) {}
+    /// For [`Cpu::run_threaded`](crate::cpu::Cpu::run_threaded): an access
+    /// since the run started needs the system to look (a device may have
+    /// work, an interrupt line may have moved), so the run should stop.
+    #[inline]
+    fn interrupted(&self) -> bool {
+        false
+    }
 }
 
 /// Plain little-endian byte memory, addressed by offset. Building block for

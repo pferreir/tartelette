@@ -10,11 +10,13 @@ pub mod i2c;
 pub mod pio;
 pub mod psm;
 pub mod resets;
+pub mod rtc;
 pub mod sio;
 pub mod spi;
 pub mod ssi;
 pub mod timer;
 pub mod uart;
+pub mod usb;
 
 pub trait Peripheral {
     /// Read the 32-bit register at byte offset `off` (0..0x1000).

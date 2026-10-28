@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- Runs bench/web's module, built as tail.wasm (tail calls) and loop.wasm
+     (without), on cpu-bench.elf, and with ?mp=1 also on micropython.uf2 (a
+     compute loop typed into its REPL over the emulated USB). The results go
+     to window.results; the title turns to "done" (or "error"). -->
+<html><head><meta charset="utf-8"><title>running</title></head><body>
+<script type="module">
+async function bench(variant, fw, fn) {
+  const { instance } = await WebAssembly.instantiateStreaming(fetch(variant + '.wasm'), {});
+  const e = instance.exports;
+  const bytes = new Uint8Array(await (await fetch(fw)).arrayBuffer());
+  const p = e.alloc(bytes.length);
+  new Uint8Array(e.memory.buffer, p, bytes.length).set(bytes);
+  if (!e.load(p, bytes.length)) throw new Error(`${fw}: cannot load`);
+  const t = performance.now();
+  const cycles = e[fn]();
+  const ms = performance.now() - t;
+  const out = new TextDecoder().decode(new Uint8Array(e.memory.buffer, e.output_ptr(), e.output_len()));
+  return { variant, firmware: fw, ms: Math.round(ms), mcycles: Math.round(cycles / 1e6), out: out.trim().split('\n').slice(-2).join(' | ') };
+}
+try {
+  const rounds = Number(new URLSearchParams(location.search).get('rounds') ?? 3);
+  const results = [];
+  for (let round = 0; round < rounds; round++)
+    for (const v of ['loop', 'tail']) results.push(await bench(v, 'cpu-bench.elf', 'run_to_bkpt'));
+  if (new URLSearchParams(location.search).has('mp'))
+    for (const v of ['loop', 'tail']) results.push(await bench(v, 'micropython.uf2', 'micropython'));
+  window.results = results;
+  document.title = 'done';
+} catch (err) {
+  window.results = String(err);
+  document.title = 'error';
+}
+</script></body></html>

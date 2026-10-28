@@ -90,6 +90,8 @@ pub struct Network {
     /// (host port, guest port): the host's `127.0.0.1:HOST` forwarded to a
     /// TCP port on the guest (user mode only).
     pub forwards: Vec<(u16, u16)>,
+    /// Which of the USB device's functions reach the host OS.
+    pub usb: crate::usb::UsbBridges,
 }
 
 /// A message of the firmware's defmt log and the emulated time it was read at.
@@ -112,6 +114,8 @@ pub struct Session {
     pub log_note: Option<String>,
     /// Wiring problems the emulator spotted, since the UI last took them.
     pub warnings: Vec<String>,
+    /// The USB host's side: serial console, traffic log, bridges.
+    pub usb: crate::usb::UsbSide,
     rtt: Option<rtt::Rtt>,
 }
 
@@ -134,6 +138,7 @@ impl Session {
             sys.set_board(b);
         }
         connect_network(&mut sys.board, net)?;
+        let usb = crate::usb::UsbSide::new(&net.usb)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
             _ if uf2 => (
                 None,
@@ -154,7 +159,14 @@ impl Session {
             log: VecDeque::new(),
             log_note,
             warnings: Vec::new(),
+            usb,
             rtt,
+        })
+        .map(|mut s: Self| {
+            // A bridged port is closed until a program opens it.
+            let lines = !s.usb.serial_bridged();
+            s.sys.with_usb_host(|h| h.serial_lines = lines);
+            s
         })
     }
 
@@ -217,12 +229,22 @@ impl Session {
         }
         self.events.append(&mut self.sys.board.events);
         self.warnings.append(&mut self.sys.warnings);
+        self.exchange_usb();
         let lines = self.poll_log();
         let at = self.seconds();
         self.log
             .extend(lines.into_iter().map(|line| LogEntry { at, line }));
         let extra = self.log.len().saturating_sub(LOG_KEEP);
         self.log.drain(..extra);
+    }
+
+    /// Move data between the USB host's functions and the console, log and
+    /// bridges.
+    pub fn exchange_usb(&mut self) {
+        let usb = &mut self.usb;
+        self.sys
+            .with_usb_host(|h| usb.exchange(h, |cycles| cycles as f64 / CYCLES_PER_SEC));
+        self.warnings.append(&mut self.usb.notes);
     }
 
     /// Read out what the firmware has logged since the last call.
@@ -443,6 +465,9 @@ pub fn lock(r: &Shared) -> MutexGuard<'_, Run> {
     r.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+// In the browser the run never leaves the UI thread, and a USB MIDI bridge
+// holds WebMIDI connections (JS objects, not `Send`); natively they are.
+#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
 pub fn start(session: Session, running: bool, speed: f64) -> Shared {
     let mut clock = Clock::new();
     clock.running = running;

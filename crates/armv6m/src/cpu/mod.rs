@@ -12,6 +12,11 @@ use crate::bus::Bus;
 
 mod alu;
 mod exception;
+#[cfg(any(not(target_arch = "wasm32"), target_feature = "tail-call"))]
+mod threaded;
+#[cfg(not(any(not(target_arch = "wasm32"), target_feature = "tail-call")))]
+#[path = "threaded_loop.rs"]
+mod threaded;
 mod thumb16;
 mod thumb32;
 
@@ -62,6 +67,26 @@ pub struct Cpu {
     pub bkpt: Option<u8>,
     /// Cycles consumed since reset.
     pub cycles: u64,
+    /// Bookkeeping of [`Cpu::run_threaded`].
+    run: Run,
+}
+
+/// Scratch state of a threaded run, not of the core: left out of `Debug`,
+/// which tests compare to check that batched and step-by-step runs agree.
+#[derive(Clone, Default)]
+struct Run {
+    /// Where the run stops.
+    until: u64,
+    /// PRIMASK or IPSR changed (an exception was taken or returned from,
+    /// interrupts were masked or unmasked): which exception may be taken
+    /// next has to be looked at again, so the run stops.
+    resync: bool,
+}
+
+impl core::fmt::Debug for Run {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("..")
+    }
 }
 
 impl Cpu {
@@ -214,7 +239,14 @@ impl Cpu {
             self.cycles += 1;
             return 1;
         }
-        let cycles = match self.exec16(bus) {
+        let r = self.exec16(bus);
+        self.retire(bus, r)
+    }
+
+    /// Account for an executed instruction (or take the HardFault it raised).
+    #[inline(always)]
+    fn retire<B: Bus + ?Sized>(&mut self, bus: &mut B, r: Result<u32, Fault>) -> u32 {
+        let cycles = match r {
             Ok(c) => c,
             Err(Fault) => {
                 self.take_exception(bus, EXC_HARDFAULT);
@@ -223,6 +255,38 @@ impl Cpu {
         };
         self.cycles += cycles as u64;
         cycles
+    }
+
+    /// Execute instructions until the clock reaches `until`, or until
+    /// something needs the caller: the core sleeps, hits a BKPT, sends an
+    /// event or changes PRIMASK or IPSR, or the bus reports
+    /// an access that needs the system ([`Bus::interrupted`]). At least one
+    /// instruction runs. Nothing else is checked between instructions: the
+    /// caller makes sure no exception is pending and the core is awake.
+    ///
+    /// Natively each handler ends by tail-calling the next instruction's
+    /// handler (`become`), so the host predicts each jump from where it is
+    /// rather than through one shared dispatch site.
+    pub fn run_threaded<B: Bus + ?Sized>(&mut self, bus: &mut B, until: u64) {
+        self.run = Run {
+            until,
+            resync: false,
+        };
+        bus.instruction_start(self.cycles);
+        let pc = self.pc;
+        let hw = bus.fetch16(pc) as u32;
+        threaded::run(self, bus, hw, pc)
+    }
+
+    /// Should a threaded run stop before the next instruction?
+    #[inline(always)]
+    fn run_ends<B: Bus + ?Sized>(&self, bus: &B) -> bool {
+        self.cycles >= self.run.until
+            || self.sleeping
+            || self.sev_sent
+            || self.run.resync
+            || self.bkpt.is_some()
+            || bus.interrupted()
     }
 }
 

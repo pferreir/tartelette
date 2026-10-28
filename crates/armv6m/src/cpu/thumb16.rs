@@ -9,7 +9,7 @@ type Handler<B> = fn(&mut Cpu, &mut B, u32, u32) -> R;
 /// top five bits only; the data-processing ALU ops and the register-offset
 /// loads and stores get one handler per operation, so each runs without a
 /// second dispatch.
-struct Table<B: ?Sized>(core::marker::PhantomData<B>);
+pub(super) struct Table<B: ?Sized>(core::marker::PhantomData<B>);
 
 impl<B: Bus + ?Sized> Table<B> {
     const CLASS: [Handler<B>; 32] = [
@@ -74,7 +74,7 @@ impl<B: Bus + ?Sized> Table<B> {
         Cpu::op_ldst_reg::<B, 6>,
         Cpu::op_ldst_reg::<B, 7>,
     ];
-    const H: [Handler<B>; 1024] = {
+    pub(super) const H: [Handler<B>; 1024] = {
         let mut t = [Cpu::op_undefined as Handler<B>; 1024];
         let mut i = 0;
         while i < 1024 {
@@ -100,6 +100,7 @@ impl Cpu {
         Table::<B>::H[(hw >> 6) as usize](self, bus, hw, pc)
     }
 
+    #[inline(always)]
     fn op_shift_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
@@ -116,6 +117,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_add_sub<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
@@ -136,6 +138,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_mov_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let imm8 = hw & 0xFF;
         self.r[((hw >> 8) & 7) as usize] = imm8;
@@ -144,6 +147,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_cmp_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let (res, c, v) = add_with_carry(self.r[((hw >> 8) & 7) as usize], !(hw & 0xFF), true);
         self.set_nzcv(res, c, v);
@@ -151,6 +155,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_add_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd8 = ((hw >> 8) & 7) as usize;
         let (res, c, v) = add_with_carry(self.r[rd8], hw & 0xFF, false);
@@ -160,6 +165,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_sub_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd8 = ((hw >> 8) & 7) as usize;
         let (res, c, v) = add_with_carry(self.r[rd8], !(hw & 0xFF), true);
@@ -169,6 +175,7 @@ impl Cpu {
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_special<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         // special data / branch exchange
         let mut next = pc.wrapping_add(2);
@@ -211,6 +218,7 @@ impl Cpu {
         Ok(cycles)
     }
 
+    #[inline(always)]
     fn op_ldr_literal<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let pc_aligned = pc.wrapping_add(4) & !3;
         self.r[((hw >> 8) & 7) as usize] = self.ld32(bus, pc_aligned + (hw & 0xFF) * 4)?;
@@ -218,6 +226,7 @@ impl Cpu {
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_ldst_reg<B: Bus + ?Sized, const OP: u32>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
@@ -237,6 +246,7 @@ impl Cpu {
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_ldst_imm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rn = ((hw >> 3) & 7) as usize;
@@ -254,6 +264,7 @@ impl Cpu {
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_str_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         self.st32(
             bus,
@@ -264,6 +275,7 @@ impl Cpu {
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_ldr_sp<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         self.r[((hw >> 8) & 7) as usize] =
             self.ld32(bus, self.sp().wrapping_add((hw & 0xFF) * 4))?;
@@ -271,18 +283,21 @@ impl Cpu {
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_adr<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         self.r[((hw >> 8) & 7) as usize] = (pc.wrapping_add(4) & !3) + (hw & 0xFF) * 4;
         self.pc = pc.wrapping_add(2);
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_add_sp_imm<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         self.r[((hw >> 8) & 7) as usize] = self.sp().wrapping_add((hw & 0xFF) * 4);
         self.pc = pc.wrapping_add(2);
         Ok(1)
     }
 
+    #[inline(always)]
     fn op_misc<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let mut next = pc.wrapping_add(2);
         let cycles = self.exec_misc(bus, hw, &mut next)?;
@@ -290,6 +305,7 @@ impl Cpu {
         Ok(cycles)
     }
 
+    #[inline(always)]
     fn op_stm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let rd8 = ((hw >> 8) & 7) as usize;
         let mut cycles = 1;
@@ -306,6 +322,7 @@ impl Cpu {
         Ok(cycles)
     }
 
+    #[inline(always)]
     fn op_ldm<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let rd8 = ((hw >> 8) & 7) as usize;
         let mut cycles = 1;
@@ -324,6 +341,7 @@ impl Cpu {
         Ok(cycles)
     }
 
+    #[inline(always)]
     fn op_cond_branch<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let next = pc.wrapping_add(2);
         let cond = (hw >> 8) & 0xF;
@@ -346,12 +364,14 @@ impl Cpu {
         }
     }
 
+    #[inline(always)]
     fn op_branch<B: Bus + ?Sized>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let off = (((hw & 0x7FF) << 21) as i32) >> 20;
         self.pc = pc.wrapping_add(4).wrapping_add(off as u32);
         Ok(2)
     }
 
+    #[inline(always)]
     fn op_wide<B: Bus + ?Sized>(&mut self, bus: &mut B, hw: u32, pc: u32) -> R {
         let hw2 = bus.fetch16(pc.wrapping_add(2)) as u32;
         let mut next = pc.wrapping_add(4);
@@ -360,10 +380,12 @@ impl Cpu {
         Ok(cycles)
     }
 
+    #[inline(always)]
     fn op_undefined<B: Bus + ?Sized>(&mut self, _: &mut B, _: u32, _: u32) -> R {
         Err(Fault)
     }
 
+    #[inline(always)]
     fn op_alu<B: Bus + ?Sized, const OP: u32>(&mut self, _: &mut B, hw: u32, pc: u32) -> R {
         let rd = (hw & 7) as usize;
         let rm = ((hw >> 3) & 7) as usize;
@@ -498,6 +520,7 @@ impl Cpu {
                 // CPSID i / CPSIE i
                 if hw & 0xFFEF == 0xB662 {
                     self.primask = hw & 0x10 != 0;
+                    self.run.resync = true;
                 } else {
                     return Err(Fault);
                 }

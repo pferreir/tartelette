@@ -109,7 +109,7 @@ impl Spi {
 
     /// Level of the combined interrupt line.
     pub fn irq(&self) -> bool {
-        self.ris() & self.imsc != 0
+        self.imsc != 0 && self.ris() & self.imsc != 0
     }
 
     /// DMA request levels (SSPDMACR enables them): TX while the FIFO has

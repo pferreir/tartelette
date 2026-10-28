@@ -77,6 +77,19 @@ pub struct RunArgs {
     /// from the system while running and needs CAP_NET_ADMIN)
     #[arg(long, value_name = "none|mock|hciN", default_value = "none", value_parser = bt_mode)]
     pub bt: BtMode,
+    /// Hand the emulated USB device's functions to this computer: `serial`
+    /// (its CDC-ACM port as a pseudo-terminal; Linux), `hid` (its HID
+    /// interfaces as input devices through /dev/uhid, so an emulated
+    /// keyboard types for real; Linux, needs access to /dev/uhid), `midi`
+    /// (its USB-MIDI interface as virtual MIDI ports; Linux and macOS).
+    /// Comma-separated. Without a bridge the serial port is in the console
+    /// (headless: stdin and stdout) and the rest in the USB log
+    #[arg(long, value_name = "serial,hid,midi", value_delimiter = ',', value_parser = ["serial", "hid", "midi"])]
+    pub usb_bridge: Vec<String>,
+    /// Also make a symlink at PATH to the serial port's pseudo-terminal (with
+    /// `--usb-bridge serial`), e.g. /tmp/ttyACM
+    #[arg(long, value_name = "PATH", requires = "usb_bridge")]
+    pub usb_tty_link: Option<PathBuf>,
     /// Run without a window
     #[arg(long)]
     pub headless: bool,
@@ -141,6 +154,12 @@ impl RunArgs {
             mode: self.net,
             bt: self.bt,
             forwards: self.forward.clone(),
+            usb: crate::usb::UsbBridges {
+                serial: self.usb_bridge.iter().any(|b| b == "serial"),
+                serial_link: self.usb_tty_link.clone(),
+                hid: self.usb_bridge.iter().any(|b| b == "hid"),
+                midi: self.usb_bridge.iter().any(|b| b == "midi"),
+            },
         }
     }
 }
@@ -177,6 +196,10 @@ pub struct Headless {
     /// emulated time it was read out at (to within about a millisecond)
     #[arg(long, requires = "headless")]
     pub log: bool,
+    /// Print the USB traffic to stderr: enumeration, every control transfer
+    /// and every packet on the other endpoints
+    #[arg(long, requires = "headless")]
+    pub usb_log: bool,
 }
 
 impl Headless {

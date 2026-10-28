@@ -5,7 +5,10 @@
 //! same 30 pins, so they are views over one [`Gpio`]. Everything is
 //! evaluated synchronously: any register write or external change calls
 //! [`Gpio::refresh`], which re-resolves every pin, latches edge events and
-//! records which pins changed for the board layer.
+//! records which pins changed for the board layer. The pins are resolved
+//! all at once, a bit per pin, from masks that the IO_BANK0 and PADS_BANK0
+//! settings are folded into when they change ([`Masks`]): PIO programs
+//! change their outputs every few cycles, and each change is a refresh.
 //!
 //! SIO (funcsel 5) and the two PIO blocks (funcsel 6 and 7) drive pins. Other
 //! functions leave the pin undriven until the UART/SPI/I2C/PWM models feed
@@ -64,6 +67,66 @@ pub struct Gpio {
     intf: [[u32; 4]; SETS],
     /// Pads whose voltage changed since the board last looked.
     changed: u32,
+    masks: Masks,
+}
+
+/// The per-pin settings of IO_BANK0 and PADS_BANK0 as one bit per pin.
+#[derive(Clone, Copy, Default)]
+struct Masks {
+    /// Pins whose function is SIO, PIO0 and PIO1.
+    sio: u32,
+    pio: [u32; 2],
+    /// An override (OUTOVER, OEOVER, INOVER): `inv` inverts the value, `force`
+    /// replaces it with `high` (set: high, clear: low).
+    out_inv: u32,
+    out_force: u32,
+    out_high: u32,
+    oe_inv: u32,
+    oe_force: u32,
+    oe_high: u32,
+    in_inv: u32,
+    in_force: u32,
+    in_high: u32,
+    /// Pad controls.
+    od: u32,
+    pull_up: u32,
+    pull_down: u32,
+    ie: u32,
+}
+
+impl Masks {
+    fn new(ctrl: &[u32; NUM_PINS], pads: &[u32; NUM_PINS]) -> Self {
+        let mut m = Self::default();
+        for pin in 0..NUM_PINS {
+            let (c, p, bit) = (ctrl[pin], pads[pin], 1 << pin);
+            let set = |mask: &mut u32, on: bool| {
+                if on {
+                    *mask |= bit;
+                }
+            };
+            let func = c & 0x1F;
+            set(&mut m.sio, func == FUNCSEL_SIO);
+            set(&mut m.pio[0], func == FUNCSEL_PIO0);
+            set(&mut m.pio[1], func == FUNCSEL_PIO0 + 1);
+            // Override fields: 0 as is, 1 inverted, 2 low, 3 high.
+            for (shift, inv, force, high) in [
+                (8, &mut m.out_inv, &mut m.out_force, &mut m.out_high),
+                (12, &mut m.oe_inv, &mut m.oe_force, &mut m.oe_high),
+                (16, &mut m.in_inv, &mut m.in_force, &mut m.in_high),
+            ] {
+                let over = c >> shift & 3;
+                set(inv, over == 1);
+                set(force, over >= 2);
+                set(high, over == 3);
+            }
+            let (pue, pde) = (p & PAD_PUE != 0, p & PAD_PDE != 0);
+            set(&mut m.od, p & PAD_OD != 0);
+            set(&mut m.pull_up, pue && !pde);
+            set(&mut m.pull_down, pde && !pue);
+            set(&mut m.ie, p & PAD_IE != 0);
+        }
+        m
+    }
 }
 
 /// What a pin's output stage is doing.
@@ -92,7 +155,9 @@ impl Gpio {
             inte: [[0; 4]; SETS],
             intf: [[0; 4]; SETS],
             changed: 0,
+            masks: Masks::default(),
         };
+        g.remask();
         g.refresh();
         g.edges = [0; 4];
         g.changed = 0;
@@ -198,49 +263,40 @@ impl Gpio {
         }
     }
 
+    /// Fold the pin settings into [`Masks`] after IO_BANK0 or PADS_BANK0 changed.
+    fn remask(&mut self) {
+        self.masks = Masks::new(&self.ctrl, &self.pads);
+    }
+
     /// Re-resolve every pin after any input changed.
     pub fn refresh(&mut self) {
+        let m = &self.masks;
         let (old_pad, old_in) = (self.pad_level, self.in_level);
-        let (mut pad, mut inp) = (0u32, 0u32);
-        for pin in 0..NUM_PINS {
-            let bit = 1 << pin;
-            let p = self.pads[pin];
-            let d = self.drive(pin);
-            let level = if d.oe && p & PAD_OD == 0 {
-                d.out
-            } else if self.ext_drive & bit != 0 {
-                self.ext_level & bit != 0
-            } else {
-                match (p & PAD_PUE != 0, p & PAD_PDE != 0) {
-                    (true, false) => true,
-                    (false, true) => false,
-                    // No pull, or both (bus keeper): the pin holds its last level.
-                    _ => old_pad & bit != 0,
-                }
-            };
-            pad |= (level as u32) << pin;
-            let seen = p & PAD_IE != 0 && level;
-            let seen = match self.ctrl[pin] >> 16 & 3 {
-                0 => seen,
-                1 => !seen,
-                2 => false,
-                _ => true,
-            };
-            inp |= (seen as u32) << pin;
-        }
+        let over = |v: u32, inv: u32, force: u32, high: u32| (v ^ inv) & !force | high;
+        let func_out =
+            self.sio_out & m.sio | self.pio_out[0] & m.pio[0] | self.pio_out[1] & m.pio[1];
+        let func_oe = self.sio_oe & m.sio | self.pio_oe[0] & m.pio[0] | self.pio_oe[1] & m.pio[1];
+        let out = over(func_out, m.out_inv, m.out_force, m.out_high);
+        let oe = over(func_oe, m.oe_inv, m.oe_force, m.oe_high);
+        // The chip drives the pad, else the board does, else the pulls; with
+        // no pull (or both: a bus keeper) the pad holds its last level.
+        let chip = oe & !m.od;
+        let board = self.ext_drive & !chip;
+        let floating = !(chip | board);
+        let keeper = !(m.pull_up | m.pull_down);
+        let pad = (chip & out | board & self.ext_level | floating & (m.pull_up | keeper & old_pad))
+            & PIN_MASK;
+        let inp = over(pad & m.ie, m.in_inv, m.in_force, m.in_high) & PIN_MASK;
         self.pad_level = pad;
         self.in_level = inp;
         self.changed |= pad ^ old_pad;
 
-        let flips = inp ^ old_in;
-        if flips != 0 {
-            for pin in 0..NUM_PINS {
-                if flips >> pin & 1 != 0 {
-                    let rising = inp >> pin & 1 != 0;
-                    self.edges[pin / 8] |=
-                        1 << ((pin as u32 % NIBBLES) * 4 + if rising { 3 } else { 2 });
-                }
-            }
+        let mut flips = inp ^ old_in;
+        while flips != 0 {
+            let pin = flips.trailing_zeros();
+            flips &= flips - 1;
+            let rising = inp >> pin & 1 != 0;
+            self.edges[pin as usize / 8] |= 1 << ((pin % NIBBLES) * 4 + if rising { 3 } else { 2 });
         }
     }
 
@@ -305,7 +361,10 @@ impl Gpio {
 
     pub fn io_write(&mut self, off: u32, val: u32) {
         match off {
-            0..0xF0 if off % 8 == 4 => self.ctrl[(off / 8) as usize] = val & CTRL_MASK,
+            0..0xF0 if off % 8 == 4 => {
+                self.ctrl[(off / 8) as usize] = val & CTRL_MASK;
+                self.remask();
+            }
             // Edge events are write-1-to-clear; level bits are read-only.
             0xF0..0x100 => self.edges[(off as usize - 0xF0) / 4] &= !(val & EDGE_BITS),
             0x100..0x190 => {
@@ -336,7 +395,8 @@ impl Gpio {
         match off {
             0 => self.voltage_select = val & 1,
             4..=0x78 if (off / 4 - 1) < NUM_PINS as u32 => {
-                self.pads[(off / 4 - 1) as usize] = val & PAD_MASK
+                self.pads[(off / 4 - 1) as usize] = val & PAD_MASK;
+                self.remask();
             }
             _ => {}
         }
@@ -431,6 +491,81 @@ mod tests {
     /// Route `pin` to SIO.
     fn sio_pin(g: &mut Gpio, pin: u32) {
         g.io_write(ctrl(pin), FUNCSEL_SIO);
+    }
+
+    /// The pin resolution `refresh` replaced, one pin at a time, straight
+    /// from the registers: what the masks must agree with.
+    fn refresh_reference(g: &Gpio) -> (u32, u32) {
+        let (mut pad, mut inp) = (0u32, 0u32);
+        for pin in 0..NUM_PINS {
+            let bit = 1 << pin;
+            let p = g.pads[pin];
+            let d = g.drive(pin);
+            let level = if d.oe && p & PAD_OD == 0 {
+                d.out
+            } else if g.ext_drive & bit != 0 {
+                g.ext_level & bit != 0
+            } else {
+                match (p & PAD_PUE != 0, p & PAD_PDE != 0) {
+                    (true, false) => true,
+                    (false, true) => false,
+                    _ => g.pad_level & bit != 0,
+                }
+            };
+            pad |= (level as u32) << pin;
+            let seen = p & PAD_IE != 0 && level;
+            let seen = match g.ctrl[pin] >> 16 & 3 {
+                0 => seen,
+                1 => !seen,
+                2 => false,
+                _ => true,
+            };
+            inp |= (seen as u32) << pin;
+        }
+        (pad, inp)
+    }
+
+    #[test]
+    fn the_bitwise_resolution_matches_the_per_pin_one() {
+        // A small xorshift: random functions, overrides, pads, outputs and
+        // board drive, each refresh checked against the per-pin reference.
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u32
+        };
+        let mut g = Gpio::new();
+        for round in 0..20_000 {
+            match next() % 6 {
+                0 => {
+                    let pin = next() % NUM_PINS as u32;
+                    let funcs = [FUNCSEL_SIO, FUNCSEL_PIO0, FUNCSEL_PIO0 + 1, 2, FUNCSEL_NULL];
+                    let f = funcs[(next() % 5) as usize];
+                    g.io_write(ctrl(pin), f | (next() & (3 << 8 | 3 << 12 | 3 << 16)));
+                }
+                1 => {
+                    let pin = next() % NUM_PINS as u32;
+                    g.pads_write(4 + 4 * pin, next() & PAD_MASK);
+                }
+                2 => g.sio_write(SIO_OUT, next()),
+                3 => g.sio_write(SIO_OE, next()),
+                4 => g.set_pio_outputs((next() & 1) as usize, next(), next()),
+                _ => {
+                    let pin = (next() % NUM_PINS as u32) as usize;
+                    let level = match next() % 3 {
+                        0 => None,
+                        n => Some(n == 1),
+                    };
+                    g.set_external(pin, level);
+                }
+            }
+            // Every operation refreshed. The reference's bus keepers read
+            // the levels after it, which for them are the levels before.
+            let (pad, inp) = refresh_reference(&g);
+            assert_eq!((g.pad_level, g.in_level), (pad, inp), "round {round}");
+        }
     }
 
     #[test]

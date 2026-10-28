@@ -2837,6 +2837,7 @@ dependencies = [
  "armv6m",
  "pcb",
  "pcb-devices",
+ "usbhost",
 ]
 
 [[package]]
@@ -3191,6 +3192,8 @@ dependencies = [
  "rfd",
  "rp2040-core",
  "rtt",
+ "usbbridge",
+ "usbhost",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
@@ -3438,6 +3441,18 @@ dependencies = [
  "heck",
  "pkg-config",
 ]
+
+[[package]]
+name = "usbbridge"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "usbhost",
+]
+
+[[package]]
+name = "usbhost"
+version = "0.1.0"
 
 [[package]]
 name = "utf8parse"

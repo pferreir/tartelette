@@ -27,6 +27,10 @@ impl Cpu {
         self.ipsr = exc;
         self.pc = bus.read32(self.vtor.wrapping_add(4 * exc as u32)) & !1;
         self.sleeping = false;
+        // Exception entry sets the event register, so that a WFE just after
+        // an interrupt handled work for the thread doesn't sleep through it.
+        self.event = true;
+        self.run.resync = true;
         self.cycles += 15;
     }
 
@@ -52,6 +56,7 @@ impl Cpu {
         let xpsr = w[7];
         self.set_flags(xpsr);
         self.ipsr = if to_handler { (xpsr & 0x3F) as u8 } else { 0 };
+        self.run.resync = true;
         if !to_handler {
             self.spsel = use_psp;
         }

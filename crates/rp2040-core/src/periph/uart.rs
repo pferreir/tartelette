@@ -165,7 +165,8 @@ impl Uart {
 
     /// Level of the UART's interrupt output (masked status != 0).
     pub fn irq(&self) -> bool {
-        self.ris() & self.imsc != 0
+        // The mask first: with nothing enabled there is no status to work out.
+        self.imsc != 0 && self.ris() & self.imsc != 0
     }
 
     fn ris(&self) -> u32 {
