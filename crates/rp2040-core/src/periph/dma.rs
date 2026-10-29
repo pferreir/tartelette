@@ -82,9 +82,19 @@ struct PaceTimer {
 }
 
 impl PaceTimer {
-    fn sync(&mut self, now: u64) {
-        let dt = now.saturating_sub(self.last_cycle);
+    /// Run the timer up to `now`. Its requests only count while a running
+    /// channel listens (`used`): a channel triggered later doesn't start
+    /// with the requests of the time it was idle.
+    fn sync(&mut self, now: u64, used: bool) {
+        if now <= self.last_cycle {
+            return;
+        }
+        let dt = now - self.last_cycle;
         self.last_cycle = now;
+        if !used {
+            self.tokens = 0;
+            return;
+        }
         if self.y == 0 || self.x == 0 {
             return;
         }
@@ -154,10 +164,13 @@ impl Dma {
         (self.intr | self.intf[line]) & self.inte[line] != 0
     }
 
-    /// Bring the pacing timers up to core cycle `now`.
+    /// Bring the pacing timers up to core cycle `now`. The system does this
+    /// before each register access too, so a channel starts counting its
+    /// timer's requests when it is triggered.
     pub fn sync_timers(&mut self, now: u64) {
-        for t in &mut self.timers {
-            t.sync(now);
+        let used = self.needed >> TREQ_TIMER0;
+        for (i, t) in self.timers.iter_mut().enumerate() {
+            t.sync(now, used >> i & 1 != 0);
         }
     }
 
@@ -660,6 +673,7 @@ mod tests {
         assert_eq!(run(&mut d, &mut mem, 0), 2, "the rest");
         // x/y = 3/2: 1.5 transfers per cycle on average.
         d.write(0x420, 3 << 16 | 2);
+        start(&mut d, 0, 0, 8, 8, ctrl(0, true, true, TREQ_TIMER0, 0));
         d.sync_timers(100);
         d.sync_timers(104);
         assert_eq!(d.timers[0].tokens, 6);
@@ -671,6 +685,28 @@ mod tests {
         assert!(e.can_run(0));
         e.write(0x420, 0);
         assert!(!e.can_run(0));
+    }
+
+    #[test]
+    fn an_idle_pacing_timer_saves_no_requests() {
+        let mut d = Dma::new();
+        let mut mem = [0u8; 16];
+        d.write(0x420, 1 << 16 | 10);
+        d.sync_timers(0);
+        d.sync_timers(10_000); // no channel listening
+        start(&mut d, 0, 0, 8, 4, ctrl(0, true, true, TREQ_TIMER0, 0));
+        d.sync_timers(10_000);
+        assert_eq!(
+            run(&mut d, &mut mem, 0),
+            0,
+            "nothing from before the trigger"
+        );
+        d.sync_timers(10_020);
+        assert_eq!(run(&mut d, &mut mem, 0), 2);
+        // Syncing to an earlier time (the bus can lag a core) changes nothing.
+        d.sync_timers(10_000);
+        d.sync_timers(10_020);
+        assert_eq!(run(&mut d, &mut mem, 0), 0);
     }
 
     #[test]

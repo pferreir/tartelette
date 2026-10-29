@@ -128,7 +128,26 @@ impl Session {
         shields: &[Source],
         net: &Network,
     ) -> Result<Self, String> {
+        Self::with_flash(firmware, board, shields, net, None)
+    }
+
+    /// Like `new`, with the flash chip holding `flash` (a whole-chip image)
+    /// before the firmware goes on top: what the firmware keeps in the rest
+    /// of the flash, like MicroPython's filesystem, is kept.
+    pub fn with_flash(
+        firmware: &Source,
+        board: Option<&Source>,
+        shields: &[Source],
+        net: &Network,
+        flash: Option<&[u8]>,
+    ) -> Result<Self, String> {
         let mut sys = System::new();
+        if let Some(image) = flash {
+            sys.bus
+                .load(rp2040_core::system::XIP_BASE, image)
+                .then_some(())
+                .ok_or("--flash: the image is larger than 16 MiB")?;
+        }
         let uf2 = rp2040_core::uf2::is_uf2(&firmware.bytes);
         sys.load_firmware(&firmware.bytes).map_err(|e| {
             let kind = if uf2 { "UF2" } else { "ELF" };
@@ -572,6 +591,42 @@ mod tests {
         let t = s.sys.cycles();
         assert_eq!(s.step(1000, far()), 0);
         assert_eq!(s.sys.cycles(), t);
+    }
+
+    #[test]
+    fn a_flash_image_goes_under_the_firmware() {
+        let fw = firmware("button-led");
+        let plain = Session::new(&fw, None, &[], &Network::default()).unwrap();
+        let image = vec![0xA5; 4 << 20];
+        let s = Session::with_flash(&fw, None, &[], &Network::default(), Some(&image)).unwrap();
+        let flash = &s.sys.bus.flash.data;
+        assert_eq!(flash.len(), 4 << 20, "the chip is as large as the image");
+        // The firmware is where it was; past it, the image is kept.
+        let fw_len = plain
+            .sys
+            .bus
+            .flash
+            .data
+            .iter()
+            .rposition(|&b| b != 0xFF)
+            .unwrap()
+            + 1;
+        assert_eq!(flash[..fw_len], plain.sys.bus.flash.data[..fw_len]);
+        assert!(
+            flash[fw_len.next_multiple_of(4096) + 4096..]
+                .iter()
+                .all(|&b| b == 0xA5)
+        );
+        assert!(
+            Session::with_flash(
+                &fw,
+                None,
+                &[],
+                &Network::default(),
+                Some(&vec![0; 17 << 20])
+            )
+            .is_err()
+        );
     }
 
     #[test]

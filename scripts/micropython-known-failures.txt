@@ -1,0 +1,3 @@
+# Tests from MicroPython's suite (tests/run-tests.py) known to fail in the
+# emulator, one per line with why after a #. scripts/micropython-tests.sh fails
+# on any other failure, and says when one of these passes.

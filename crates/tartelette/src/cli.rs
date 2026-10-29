@@ -10,8 +10,8 @@ use crate::session::{BtMode, NetMode, Network, Source};
 /// Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on an emulated board, with a front
 /// panel window or headless.
 ///
-/// Headless, UART0 output goes to stdout and UART1 output to stderr, with the
-/// board's events (LEDs, buttons, ...) logged to stderr at their time in
+/// Headless, UART0 output goes to stdout and UART1 output to stderr (see
+/// `--uart0` and `--uart1`), with the board's events (LEDs, buttons, ...) logged to stderr at their time in
 /// microseconds. With a window, the firmware and board reload when their
 /// files change.
 #[derive(Parser, Debug)]
@@ -176,6 +176,19 @@ pub struct Headless {
     /// Stop after N cycles (125 per microsecond)
     #[arg(long, value_name = "N", requires = "headless")]
     pub max_cycles: Option<u64>,
+    /// Where UART0's output goes: stdout, stderr, nowhere (none), or FILE
+    /// (made anew; `./stdout` for a file of that name)
+    #[arg(long, value_name = "stdout|stderr|none|FILE", default_value = "stdout", value_parser = output, requires = "headless")]
+    pub uart0: Output,
+    /// Where UART1's output goes, as for `--uart0`
+    #[arg(long, value_name = "stdout|stderr|none|FILE", default_value = "stderr", value_parser = output, requires = "headless")]
+    pub uart1: Output,
+    /// Keep the flash chip in FILE: it starts from FILE's contents (if it
+    /// exists) with the firmware on top, and is saved back at the end if the
+    /// firmware wrote to it. What the firmware keeps in flash (MicroPython's
+    /// filesystem, say) then lasts from one run to the next
+    #[arg(long, value_name = "FILE", requires = "headless")]
+    pub flash: Option<PathBuf>,
     /// Stop when an instruction faults, before the firmware's HardFault
     /// handler runs (which may hide the fault: a reset, a loop). Without it,
     /// each fault is a warning and the handler runs
@@ -304,6 +317,25 @@ fn us_to_cycles(s: &str) -> Result<u64, String> {
         .filter(|v| *v >= 0.0)
         .map(|v| (v * CYCLES_PER_US as f64) as u64)
         .ok_or_else(|| format!("{s:?} is not a time in microseconds"))
+}
+
+/// Where a headless run sends a stream of output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Output {
+    Stdout,
+    Stderr,
+    None,
+    File(PathBuf),
+}
+
+fn output(s: &str) -> Result<Output, String> {
+    Ok(match s {
+        "stdout" => Output::Stdout,
+        "stderr" => Output::Stderr,
+        "none" => Output::None,
+        "" => return Err("expected stdout, stderr, none or a file".into()),
+        file => Output::File(file.into()),
+    })
 }
 
 fn name_and_path(s: &str) -> Result<(String, PathBuf), String> {

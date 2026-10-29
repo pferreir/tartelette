@@ -56,6 +56,35 @@ fn cli_prints_uart0_to_stdout() {
 }
 
 #[test]
+fn cli_sends_uart0_where_asked() {
+    let elf = build_firmware();
+    let run = |to: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_tartelette"))
+            .arg(&elf)
+            .args(["--headless", "--uart0", to])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+        (text(&out.stdout), text(&out.stderr))
+    };
+    let (stdout, stderr) = run("stderr");
+    assert!(stdout.is_empty());
+    assert!(stderr.starts_with(EXPECTED), "{stderr}");
+
+    let (stdout, stderr) = run("none");
+    assert!(stdout.is_empty());
+    assert!(!stderr.contains("Hello"), "{stderr}");
+
+    let file = std::env::temp_dir().join(format!("tartelette-uart0-{}.txt", std::process::id()));
+    std::fs::write(&file, "old contents").unwrap();
+    let (stdout, _) = run(file.to_str().unwrap());
+    assert!(stdout.is_empty());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), EXPECTED);
+    std::fs::remove_file(&file).unwrap();
+}
+
+#[test]
 fn timer_alarm_systick_and_pendsv_interrupts() {
     let elf = std::fs::read(build_named("irq-timer")).unwrap();
     let mut sys = System::new();

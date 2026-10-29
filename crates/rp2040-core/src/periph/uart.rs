@@ -2,8 +2,10 @@
 //!
 //! Characters take the time the line format says they do: a frame is a start
 //! bit, 5..8 data bits, an optional parity bit and 1 or 2 stop bits, each
-//! lasting 16 × (IBRD + FBRD/64) cycles of clk_peri (taken to be clk_sys at
-//! 125 MHz, as the SDK and embassy set it up). Transmitted bytes reach `tx`
+//! lasting 16 × (IBRD + FBRD/64) cycles of clk_peri. The system tells the UART
+//! clk_peri's frequency ([`Uart::set_clk_peri`]): clk_sys's 125 MHz, as
+//! embassy sets it up, or the USB PLL's 48 MHz, as pico-sdk 2 and MicroPython
+//! do. Transmitted bytes reach `tx`
 //! when their stop bit ends; bytes sent from the host travel the same line at
 //! the same rate and land in the RX FIFO, overrunning it if the firmware does
 //! not keep up. Until the firmware programs a divisor (IBRD = 0) the line is
@@ -47,7 +49,12 @@ const FIFO_DEPTH: usize = 32;
 /// The receive timeout, in bit periods.
 const RT_BITS: u64 = 32;
 
+/// The emulator's clock, which the line's times are counted in.
+const CLK_SYS_HZ: u64 = crate::system::CYCLES_PER_US * 1_000_000;
+
 pub struct Uart {
+    /// clk_peri, which the baud rate divisors divide.
+    clk_peri_hz: u64,
     /// Bytes transmitted since the host last took them.
     pub tx: Vec<u8>,
     tx_fifo: VecDeque<u8>,
@@ -79,6 +86,7 @@ pub struct Uart {
 impl Uart {
     pub fn new() -> Self {
         Self {
+            clk_peri_hz: CLK_SYS_HZ,
             tx: Vec::new(),
             tx_fifo: VecDeque::new(),
             tx_shift: None,
@@ -202,20 +210,31 @@ impl Uart {
         [4, 8, 16, 24, 28][(self.ifls & 7).min(4) as usize]
     }
 
+    /// Set clk_peri's frequency (from the clock generators). Characters
+    /// already on the line keep the time they started with.
+    pub fn set_clk_peri(&mut self, hz: u64) {
+        self.clk_peri_hz = hz.max(1);
+    }
+
     /// The data bits of a character (all 8 on an untimed line, which has
     /// not been set up).
     fn data_mask(&self) -> u8 {
-        match self.bit_cycles() {
+        match self.line_cycles(1) {
             Some(_) => (0xFFu32 >> (3 - (self.lcr_h >> 5 & 3))) as u8,
             None => 0xFF,
         }
     }
 
-    /// clk_peri cycles per bit, or None while no divisor is programmed.
-    fn bit_cycles(&self) -> Option<u64> {
-        // 16 × (IBRD + FBRD/64); FBRD is ignored at the largest divisor.
+    /// The clk_sys cycles `bits` bit periods take, or None while no divisor
+    /// is programmed. Rounded once for them all, so a frame doesn't gather
+    /// the rounding of each of its bits.
+    fn line_cycles(&self, bits: u64) -> Option<u64> {
+        // A bit is 16 × (IBRD + FBRD/64) clk_peri cycles: the divisor in
+        // 64ths, over 4. FBRD is ignored at the largest divisor.
         let fbrd = if self.ibrd == 0xFFFF { 0 } else { self.fbrd };
-        (self.ibrd != 0).then_some(((self.ibrd as u64) << 6 | fbrd as u64) / 4)
+        let div64 = (self.ibrd as u64) << 6 | fbrd as u64;
+        let per = 4 * self.clk_peri_hz;
+        (self.ibrd != 0).then(|| (div64 * bits * CLK_SYS_HZ + per / 2) / per)
     }
 
     /// Cycles one character takes on the line.
@@ -223,7 +242,7 @@ impl Uart {
         let data = 5 + (self.lcr_h >> 5 & 3) as u64;
         let parity = (self.lcr_h & LCR_PEN != 0) as u64;
         let stop = if self.lcr_h & LCR_STP2 != 0 { 2 } else { 1 };
-        self.bit_cycles().map(|b| b * (1 + data + parity + stop))
+        self.line_cycles(1 + data + parity + stop)
     }
 
     /// Move the next character from the TX FIFO into the shift register, if
@@ -260,7 +279,7 @@ impl Uart {
             return;
         }
         self.rx_fifo.push_back((byte & self.data_mask()) as u16);
-        self.rt_at = self.bit_cycles().map(|b| self.cycles + RT_BITS * b);
+        self.rt_at = self.line_cycles(RT_BITS).map(|c| self.cycles + c);
     }
 
     /// Start the next character down the RX line, if one is waiting. Untimed,
@@ -479,6 +498,20 @@ mod tests {
     }
 
     #[test]
+    fn the_divisors_divide_clk_peri() {
+        // 115200 baud from 48 MHz, as MicroPython sets it up: 26 + 3/64.
+        let mut u = Uart::new();
+        u.set_clk_peri(48_000_000);
+        u.write(0x24, 26);
+        u.write(0x28, 3);
+        u.write(0x2C, 0x70);
+        u.write(0x30, 0x301);
+        u.write(0x00, b'a' as u32);
+        // A bit is 16 x 26.047 / 48 MHz = 8.68 us; the frame is rounded once.
+        assert_eq!(u.next_event(), Some(10853));
+    }
+
+    #[test]
     fn frame_length_follows_the_line_format() {
         let mut u = timed();
         u.write(0x2C, 0x70 | LCR_PEN | LCR_STP2); // 8E2: 12 bits
@@ -489,7 +522,8 @@ mod tests {
         u.write(0x28, 50);
         u.write(0x2C, 0x40); // 7N1, FIFOs off: 9 bits
         u.write(0x00, 0xFF);
-        assert_eq!(u.next_event(), Some(9 * ((813 << 6 | 50) / 4)));
+        // 9 x 13020.5 cycles, rounded once: 117184.5.
+        assert_eq!(u.next_event(), Some(117_185));
         u.update(u.next_event().unwrap());
         assert_eq!(u.tx, [0x7F]); // top bit doesn't fit in 7 data bits
     }

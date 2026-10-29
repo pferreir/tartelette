@@ -142,6 +142,12 @@ const fn reset_bit(block: u32) -> Option<u32> {
 // Status bits that init code spins on, forced to "ready".
 const XOSC_FORCED: &[(u32, u32)] = &[(0x04, 1 << 31)]; // STATUS.STABLE
 const PLL_FORCED: &[(u32, u32)] = &[(0x00, 1 << 31)]; // CS.LOCK
+// PLL registers.
+const PLL_CS: u32 = 0x0;
+const PLL_FBDIV_INT: u32 = 0x8;
+const PLL_PRIM: u32 = 0xC;
+/// CLOCKS: clk_peri's control (ENABLE, AUXSRC in bits 7:5; no divider).
+const CLK_PERI_CTRL: u32 = 0x48;
 // The ring oscillator runs from power-up (pico_rand asserts it does).
 const ROSC_FORCED: &[(u32, u32)] = &[(0x18, 1 << 31 | 1 << 12)]; // STATUS.STABLE, ENABLED
 // PERFSEL0..3 reset to 0x1F ("none"): pico_rand claims a free counter by
@@ -150,6 +156,8 @@ const BUSCTRL_RESET: &[(u32, u32)] = &[(0x0C, 0x1F), (0x14, 0x1F), (0x1C, 0x1F),
 // CHIP_ID of a B2 RP2040 (revision 2, part 2, Raspberry Pi): drivers skip
 // the B0/B1 errata workarounds (TinyUSB's USB enumeration fix, ...).
 const SYSINFO_RESET: &[(u32, u32)] = &[(0x00, 0x2000_2927)];
+// The PLLs: REFDIV = 1, POSTDIV1 = POSTDIV2 = 7.
+const PLL_RESET: &[(u32, u32)] = &[(PLL_CS, 1), (PLL_PRIM, 0x7_7000)];
 
 pub struct SystemBus {
     pub bootrom: Ram,
@@ -158,7 +166,9 @@ pub struct SystemBus {
     pub resets: Resets,
     pub uart: [Uart; 2],
     pub i2c: [I2c; 2],
-    pub spi: [Spi; 2],
+    /// Boxed: kept inline, the SPI controllers' wire state pushes the hot
+    /// fields of this struct apart, and PIO-heavy runs were 10% slower.
+    pub spi: alloc::boxed::Box<[Spi; 2]>,
     pub ssi: Ssi,
     pub dma: Dma,
     pub pio: [Pio; 2],
@@ -208,6 +218,7 @@ impl SystemBus {
                 let reset = match b {
                     APB_BUSCTRL => BUSCTRL_RESET,
                     APB_SYSINFO => SYSINFO_RESET,
+                    APB_PLL_SYS | APB_PLL_USB => PLL_RESET,
                     _ => &[],
                 };
                 RegStub::with_reset(forced, reset)
@@ -224,7 +235,7 @@ impl SystemBus {
             resets: Resets::new(),
             uart: [Uart::new(), Uart::new()],
             i2c: [I2c::new(), I2c::new()],
-            spi: [Spi::new(), Spi::new()],
+            spi: alloc::boxed::Box::new([Spi::new(), Spi::new()]),
             ssi: Ssi::new(),
             dma: Dma::new(),
             pio: [Pio::new(), Pio::new()],
@@ -282,12 +293,16 @@ impl SystemBus {
         }
     }
 
-    /// Run the UART lines up to `to`. A character that moved can raise an
-    /// interrupt or a DMA request, so everything gets a full sync.
+    /// Run the UART lines and SPI wires up to `to`. A character or frame
+    /// that moved can raise an interrupt or a DMA request, so everything
+    /// gets a full sync.
     fn update_uarts(&mut self, to: u64) {
         let mut changed = false;
         for uart in &mut self.uart {
             changed |= uart.update(to);
+        }
+        for spi in &mut self.spi {
+            changed |= spi.update(to);
         }
         if changed {
             self.lines_dirty = true;
@@ -398,6 +413,7 @@ impl SystemBus {
                     }
                     _ => val,
                 };
+                self.dma.sync_timers(self.time);
                 self.dma.write(off, val)
             }
             0x5 if addr >> 16 == USBCTRL_REGS_BASE >> 16 => {
@@ -578,6 +594,8 @@ impl SystemBus {
         e = earliest(e, self.ppb[1].cycles_to_event());
         e = earliest(e, until(self.uart[0].next_event()));
         e = earliest(e, until(self.uart[1].next_event()));
+        e = earliest(e, until(self.spi[0].next_event()));
+        e = earliest(e, until(self.spi[1].next_event()));
         earliest(e, until(self.usb.next_event()))
     }
 
@@ -618,6 +636,32 @@ impl SystemBus {
         })
     }
 
+    /// clk_peri's frequency, from its mux and the PLL it may run from. The
+    /// sources the emulator doesn't model (the ring oscillator, GPIN pins),
+    /// and PLLs not set up yet, count as clk_sys.
+    fn clk_peri_hz(&mut self) -> u64 {
+        const CLK_SYS_HZ: u64 = CYCLES_PER_US * 1_000_000;
+        const XOSC_HZ: u64 = 12_000_000;
+        let mut pll = |block: u32| {
+            let regs = &mut self.stubs[block as usize];
+            let refdiv = (regs.read(PLL_CS) & 0x3F) as u64;
+            let fbdiv = (regs.read(PLL_FBDIV_INT) & 0xFFF) as u64;
+            let prim = regs.read(PLL_PRIM);
+            let post = (prim >> 16 & 7) as u64 * (prim >> 12 & 7) as u64;
+            match refdiv * post {
+                0 => 0,
+                d => XOSC_HZ * fbdiv / d,
+            }
+        };
+        let hz = match self.clocks.read(CLK_PERI_CTRL) >> 5 & 7 {
+            1 => pll(APB_PLL_SYS),
+            2 => pll(APB_PLL_USB),
+            4 => XOSC_HZ,
+            _ => CLK_SYS_HZ,
+        };
+        if hz == 0 { CLK_SYS_HZ } else { hz }
+    }
+
     fn apb_read(&mut self, addr: u32) -> u32 {
         // Reads ignore the atomic alias bits.
         self.with_apb(addr, |p, off| p.read(off)).unwrap_or(0)
@@ -637,6 +681,15 @@ impl SystemBus {
         let rel = addr.wrapping_sub(APB_BASE);
         if rel >> 14 == APB_RESETS {
             self.usb.set_held(self.resets.in_reset(RESET_USBCTRL));
+        }
+        if matches!(rel >> 14, APB_CLOCKS | APB_PLL_SYS | APB_PLL_USB) {
+            let hz = self.clk_peri_hz();
+            for u in &mut self.uart {
+                u.set_clk_peri(hz);
+            }
+            for s in &mut self.spi {
+                s.set_clk_peri(hz);
+            }
         }
         if rel >> 14 == APB_IO_QSPI && rel & 0xFFF == QSPI_SS_CTRL {
             let outover = self.stubs[APB_IO_QSPI as usize].read(QSPI_SS_CTRL) >> 8 & 3;
@@ -1136,7 +1189,7 @@ impl System {
                 self.check_wiring(2 + n);
                 self.bus.lines_dirty = true;
                 let mut wire = self.board.spi_bus(n, &mut self.bus.gpio, self.bus.time);
-                self.bus.spi[n].pump(&mut wire);
+                self.bus.spi[n].pump(&mut wire, self.bus.time);
             }
         }
     }
@@ -2062,6 +2115,41 @@ mod tests {
         assert_eq!(sys.bus.uart[0].tx, b"bye\n");
         assert!(sys.cycles() > t, "the line takes time");
         assert_eq!(sys.bus.uart[0].tx_event(), None);
+    }
+
+    #[test]
+    fn uart_timing_follows_clk_peri() {
+        const CLOCKS: u32 = APB_BASE + 0x8000;
+        const PLL_USB: u32 = APB_BASE + 0x2C000;
+        const UART0: u32 = APB_BASE + 0x34000;
+        let frame_after_setup = |sys: &mut System| {
+            sys.bus.write32(UART0 + 0x24, 26); // 115200 baud at 48 MHz: 26 + 3/64
+            sys.bus.write32(UART0 + 0x28, 3);
+            sys.bus.write32(UART0 + 0x2C, 3 << 5); // 8N1
+            sys.bus.write32(UART0 + 0x30, 0x301);
+            sys.bus.write32(UART0, b'a' as u32);
+            sys.bus.uart[0].tx_event()
+        };
+        let mut sys = System::new();
+        sys.bus.resets.reset = 0;
+        // clk_peri is clk_sys until it is switched: at 125 MHz the 48 MHz
+        // divisors run 2.6x too fast (10 x 416.75 cycles).
+        assert_eq!(frame_after_setup(&mut sys), Some(4168));
+
+        // MicroPython's clocks: the USB PLL at 12 MHz x 100 / (5 x 5).
+        let mut sys = System::new();
+        sys.bus.resets.reset = 0;
+        sys.bus.write32(PLL_USB + PLL_FBDIV_INT, 100);
+        sys.bus.write32(PLL_USB + PLL_PRIM, 5 << 16 | 5 << 12);
+        sys.bus.write32(CLOCKS + CLK_PERI_CTRL, 1 << 11 | 2 << 5);
+        // 10 bits of 16 x 26.047 / 48 MHz: 86.8 us.
+        assert_eq!(frame_after_setup(&mut sys), Some(10853));
+
+        // Back to clk_sys (AUXSRC = 0), through the atomic clear alias.
+        sys.bus.write32(CLOCKS + 0x3000 + CLK_PERI_CTRL, 7 << 5);
+        sys.bus.uart[0].update(20_000);
+        sys.bus.write32(UART0, b'b' as u32);
+        assert_eq!(sys.bus.uart[0].tx_event(), Some(20_000 + 4168));
     }
 
     // ---- stepping, sleep and interrupt delivery ---------------------------

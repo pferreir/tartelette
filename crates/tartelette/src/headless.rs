@@ -9,7 +9,7 @@ use pcb_devices::{cyw43439::Cyw43439, sdcard::SdCard, st7789::St7789};
 use rp2040_core::system::{CYCLES_PER_US, StopReason};
 
 use crate::{
-    cli::RunArgs,
+    cli::{Output, RunArgs},
     session::{Session, Source},
 };
 
@@ -27,7 +27,21 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             .expect("clap requires a firmware with --headless"),
     )?;
     let board = args.board()?;
-    let mut s = Session::new(&fw, board.as_ref(), &args.shields()?, &args.network())?;
+    let flash = match &h.flash {
+        Some(f) if f.exists() => {
+            Some(std::fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?)
+        }
+        _ => None,
+    };
+    let mut s = Session::with_flash(
+        &fw,
+        board.as_ref(),
+        &args.shields()?,
+        &args.network(),
+        flash.as_deref(),
+    )?;
+    // What the flash holds before the firmware runs, to tell whether it wrote.
+    let flash_at_start = h.flash.as_ref().map(|_| s.sys.bus.flash.data.clone());
     s.sys.stop_on_fault = h.stop_on_fault;
     let board = &mut s.sys.board;
 
@@ -72,6 +86,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let stdin = read_stdin();
     let mut stdin_open = true;
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+    let mut uarts = [uart_output(&h.uart0)?, uart_output(&h.uart1)?];
     let end = h.max_cycles.unwrap_or(u64::MAX); // the core starts at cycle 0
     let mut pending = inputs.into_iter().peekable();
     let started = std::time::Instant::now();
@@ -104,8 +119,10 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             sys.drain_uarts();
         }
 
-        let _ = out.write_all(&std::mem::take(&mut sys.bus.uart[0].tx));
-        let _ = err.write_all(&std::mem::take(&mut sys.bus.uart[1].tx));
+        for (uart, to) in sys.bus.uart.iter_mut().zip(&mut uarts) {
+            let _ = to.write_all(&std::mem::take(&mut uart.tx));
+            let _ = to.flush();
+        }
         for e in std::mem::take(&mut sys.board.events) {
             let (name, t) = (&sys.board.parts[e.part].name, us(e.cycles));
             // Switch-like events say it all in the label; others carry a value.
@@ -187,6 +204,13 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             }
         }
     }
+    if let (Some(file), Some(start)) = (&h.flash, &flash_at_start)
+        && (s.sys.bus.flash.data != *start || flash.is_none())
+    {
+        std::fs::write(file, &s.sys.bus.flash.data)
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+    }
+    let board = &mut s.sys.board;
     for (name, file) in &args.sd {
         if let Some(card) = board.device::<SdCard>(name)
             && card.dirty()
@@ -228,6 +252,18 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         eprint!("{}", s.sys.core_report(core));
     }
     Ok(())
+}
+
+/// Where a UART's output goes.
+fn uart_output(to: &Output) -> Result<Box<dyn Write>, String> {
+    Ok(match to {
+        Output::Stdout => Box::new(std::io::stdout()),
+        Output::Stderr => Box::new(std::io::stderr()),
+        Output::None => Box::new(std::io::sink()),
+        Output::File(f) => {
+            Box::new(std::fs::File::create(f).map_err(|e| format!("{}: {e}", f.display()))?)
+        }
+    })
 }
 
 /// Stdin, a chunk at a time, for the USB serial port. The reading thread

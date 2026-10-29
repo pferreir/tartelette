@@ -1,12 +1,15 @@
 //! ARM PrimeCell PL022 SSP (RP2040 SPI0/SPI1), master mode, Motorola SPI
 //! frames of 4 to 16 bits.
 //!
-//! Like the I2C controller, transfers are instantaneous: [`Spi::pump`] (run
-//! by the system after the access that queued a frame) pushes every TX FIFO
-//! entry through an [`SpiTarget`] and collects the reply into the RX FIFO,
-//! so BSY is never seen set. Clock polarity/phase and the baud divisors are
-//! stored but have no effect, the receive-timeout interrupt never fires, and
-//! slave mode, TI and Microwire frames are not modelled.
+//! [`Spi::pump`] (run by the system after the access that queued a frame)
+//! hands every TX FIFO entry to an [`SpiTarget`] at once, but the frames take
+//! the wire's time: they go out back to back, each `bits × CPSDVSR × (1 +
+//! SCR)` cycles of clk_peri ([`Spi::set_clk_peri`]). Until a frame starts it
+//! still counts as in the TX FIFO, its reply reaches the RX FIFO when it
+//! ends, and BSY is set until the last one is out. With no prescaler
+//! programmed (CPSR = 0) transfers are instantaneous. Clock polarity and
+//! phase are stored but have no effect, the receive-timeout interrupt never
+//! fires, and slave mode, TI and Microwire frames are not modelled.
 use alloc::collections::VecDeque;
 
 use pcb::SpiTarget;
@@ -14,6 +17,8 @@ use pcb::SpiTarget;
 use super::Peripheral;
 
 const FIFO_DEPTH: usize = 8;
+/// The emulator's clock, which the wire's times are counted in.
+const CLK_SYS_HZ: u64 = crate::system::CYCLES_PER_US * 1_000_000;
 
 // SSPCR1
 const CR1_LBM: u32 = 1 << 0;
@@ -28,6 +33,13 @@ const INT_TX: u32 = 1 << 3;
 const INT_LEVEL: u32 = INT_RX | INT_TX;
 
 pub struct Spi {
+    /// clk_peri, which the prescaler divides.
+    clk_peri_hz: u64,
+    /// The cycle up to which the wire has been run.
+    cycles: u64,
+    /// Frames handed to the target but not finished on the wire: when each
+    /// starts and ends, and the reply that lands when it does.
+    wire: VecDeque<(u64, u64, u16)>,
     cr0: u32,
     cr1: u32,
     cpsr: u32,
@@ -42,6 +54,9 @@ pub struct Spi {
 impl Spi {
     pub fn new() -> Self {
         Self {
+            clk_peri_hz: CLK_SYS_HZ,
+            cycles: 0,
+            wire: VecDeque::new(),
             cr0: 0,
             cr1: 0,
             cpsr: 0,
@@ -65,13 +80,77 @@ impl Spi {
         self.cr1 & CR1_SSE != 0 && self.cr1 & CR1_MS == 0
     }
 
+    /// Set clk_peri's frequency (from the clock generators). Frames already
+    /// handed out keep their times.
+    pub fn set_clk_peri(&mut self, hz: u64) {
+        self.clk_peri_hz = hz.max(1);
+    }
+
+    /// The cycles a frame takes on the wire, or None while no prescaler is
+    /// programmed (transfers are then instantaneous).
+    fn frame_cycles(&self) -> Option<u64> {
+        let cpsdvsr = (self.cpsr & 0xFE) as u64;
+        let scr = (self.cr0 >> 8 & 0xFF) as u64;
+        let clocks = self.frame_bits() as u64 * cpsdvsr * (1 + scr);
+        let per = self.clk_peri_hz;
+        (cpsdvsr != 0).then(|| (clocks * CLK_SYS_HZ + per / 2) / per)
+    }
+
+    /// Entries in the TX FIFO: those not handed out yet, and those handed
+    /// out that haven't started on the wire.
+    fn tx_level(&self) -> usize {
+        self.tx.len() + self.wire.iter().filter(|f| f.0 > self.cycles).count()
+    }
+
     /// Frames are waiting to go out on the wire.
     pub fn has_work(&self) -> bool {
         !self.tx.is_empty() && self.master_enabled()
     }
 
-    /// Send every queued frame, receiving one back for each.
-    pub fn pump(&mut self, bus: &mut dyn SpiTarget) {
+    /// Run the wire up to `to`: replies of the frames that ended land in the
+    /// RX FIFO. True if one did (and so FIFO levels moved). The system runs
+    /// this whenever its clock moves, so an idle wire returns at once (and
+    /// leaves `cycles` behind: [`Spi::pump`] catches it up).
+    #[inline]
+    pub fn update(&mut self, to: u64) -> bool {
+        if self.wire.is_empty() {
+            return false;
+        }
+        self.run_wire(to)
+    }
+
+    fn run_wire(&mut self, to: u64) -> bool {
+        let mut changed = false;
+        while let Some(&(_, end, reply)) = self.wire.front().filter(|f| f.1 <= to) {
+            self.wire.pop_front();
+            self.cycles = end;
+            self.receive(reply);
+            changed = true;
+        }
+        self.cycles = self.cycles.max(to);
+        changed
+    }
+
+    /// The cycle at which the wire next changes on its own: the next frame
+    /// end (frames go back to back, so it is also when the next one starts).
+    #[inline]
+    pub fn next_event(&self) -> Option<u64> {
+        self.wire.front().map(|f| f.1)
+    }
+
+    fn receive(&mut self, reply: u16) {
+        if self.rx.len() < FIFO_DEPTH {
+            self.rx.push_back(reply);
+        } else {
+            self.latched |= INT_ROR;
+        }
+    }
+
+    /// Hand every queued frame to the target at cycle `now`, receiving one
+    /// back for each; on a timed wire the replies land as the frames end.
+    pub fn pump(&mut self, bus: &mut dyn SpiTarget, now: u64) {
+        self.update(now);
+        self.cycles = self.cycles.max(now);
         let bits = self.frame_bits();
         let mask = if bits >= 16 {
             u16::MAX
@@ -88,10 +167,15 @@ impl Spi {
             } else {
                 bus.transfer(word, bits) & mask
             };
-            if self.rx.len() < FIFO_DEPTH {
-                self.rx.push_back(reply);
-            } else {
-                self.latched |= INT_ROR;
+            match self.frame_cycles() {
+                Some(f) => {
+                    let start = self
+                        .wire
+                        .back()
+                        .map_or(self.cycles, |w| w.1.max(self.cycles));
+                    self.wire.push_back((start, start + f, reply));
+                }
+                None => self.receive(reply),
             }
         }
     }
@@ -101,7 +185,7 @@ impl Spi {
         if self.rx.len() >= FIFO_DEPTH / 2 {
             r |= INT_RX;
         }
-        if self.tx.len() <= FIFO_DEPTH / 2 {
+        if self.tx_level() <= FIFO_DEPTH / 2 {
             r |= INT_TX;
         }
         r
@@ -115,18 +199,20 @@ impl Spi {
     /// DMA request levels (SSPDMACR enables them): TX while the FIFO has
     /// room, RX while it holds data.
     pub fn dreq_tx(&self) -> bool {
-        self.dmacr & 2 != 0 && self.tx.len() < FIFO_DEPTH
+        self.dmacr & 2 != 0 && self.tx_level() < FIFO_DEPTH
     }
     pub fn dreq_rx(&self) -> bool {
         self.dmacr & 1 != 0 && !self.rx.is_empty()
     }
 
     fn status(&self) -> u32 {
-        (self.tx.is_empty() as u32)
-            | ((self.tx.len() < FIFO_DEPTH) as u32) << 1
+        let tx = self.tx_level();
+        let busy = !self.wire.is_empty() || self.has_work();
+        ((tx == 0) as u32)
+            | ((tx < FIFO_DEPTH) as u32) << 1
             | (!self.rx.is_empty() as u32) << 2
             | ((self.rx.len() == FIFO_DEPTH) as u32) << 3
-        // BSY (bit 4) is always 0: transfers complete instantly.
+            | (busy as u32) << 4
     }
 }
 
@@ -167,7 +253,7 @@ impl Peripheral for Spi {
             0x004 => self.cr1 = val & 0xF,
             0x008 => {
                 // A full TX FIFO silently drops the write.
-                if self.tx.len() < FIFO_DEPTH {
+                if self.tx_level() < FIFO_DEPTH {
                     self.tx.push_back(val as u16);
                 }
             }
@@ -219,7 +305,7 @@ mod tests {
         s.write(0x008, 0x01);
         assert_eq!(s.read(0x00C) & 1, 0, "TX not empty until pumped");
         assert!(s.has_work());
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(w.seen, [(0xA5, 8), (0x01, 8)]);
         assert_eq!(s.read(0x00C), 0b0111);
         assert_eq!((s.read(0x008), s.read(0x008)), (0x5A, 0xFE));
@@ -228,19 +314,75 @@ mod tests {
     }
 
     #[test]
+    fn frames_take_the_wire_time() {
+        // CPSDVSR = 2, SCR = 0, 8 bits at clk_peri = clk_sys: 16 cycles each.
+        let mut s = enabled(7);
+        s.write(0x010, 2);
+        let mut w = Wire::default();
+        for b in 1..=3 {
+            s.write(0x008, b);
+        }
+        s.pump(&mut w, 100);
+        assert_eq!(w.seen.len(), 3, "the target sees every frame at once");
+        // Two frames wait behind the one on the wire; nothing has come back.
+        assert_eq!(s.read(0x00C), 0b1_0010, "BSY, TX room, TX not empty");
+        assert_eq!(s.next_event(), Some(116));
+        assert!(!s.update(115));
+        assert!(s.update(116));
+        assert_eq!(s.read(0x00C) & 0b0100, 0b0100, "first reply in");
+        assert_eq!(s.read(0x008), !1 & 0xFF);
+        s.update(148);
+        assert_eq!(s.read(0x00C), 0b0111, "idle: TX empty, both replies in");
+        assert_eq!(s.next_event(), None);
+        // A pump later starts on an idle wire from its own time.
+        s.write(0x008, 4);
+        s.pump(&mut w, 1000);
+        assert_eq!(s.next_event(), Some(1016));
+    }
+
+    #[test]
+    fn the_tx_fifo_counts_frames_not_yet_on_the_wire() {
+        let mut s = enabled(7);
+        s.write(0x010, 254); // slow: 2032 cycles a frame
+        let mut w = Wire::default();
+        for b in 0..12 {
+            s.write(0x008, b);
+            s.pump(&mut w, 0);
+        }
+        // One shifting, eight in the FIFO: the rest were dropped.
+        assert_eq!(w.seen.len(), 9);
+        assert_eq!(s.read(0x00C) & 0b0011, 0, "TX full and not empty");
+        s.write(0x024, 2);
+        assert!(!s.dreq_tx(), "no DMA request while full");
+        s.update(2032);
+        assert!(s.dreq_tx(), "a frame started, so there is room");
+    }
+
+    #[test]
+    fn the_divisors_divide_clk_peri() {
+        let mut s = enabled(7 | 1 << 8); // SCR = 1
+        s.write(0x010, 2);
+        s.set_clk_peri(48_000_000);
+        s.write(0x008, 0);
+        s.pump(&mut Wire::default(), 0);
+        // 8 bits x 2 x 2 = 32 clocks of 48 MHz: 83.3 cycles of 125 MHz.
+        assert_eq!(s.next_event(), Some(83));
+    }
+
+    #[test]
     fn frame_sizes() {
         let mut s = enabled(15); // 16-bit
         let mut w = Wire::default();
         s.write(0x008, 0xBEEF);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!((w.seen[0], s.read(0x008)), ((0xBEEF, 16), 0x4110));
         let mut s = enabled(3); // 4-bit
         s.write(0x008, 0xAB);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!((w.seen[1], s.read(0x008)), ((0xB, 4), 0x4));
         let mut s = enabled(1); // reserved size acts as 8 bits
         s.write(0x008, 0x77);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(w.seen[2], (0x77, 8));
     }
 
@@ -254,7 +396,7 @@ mod tests {
         s.write(0x004, CR1_SSE | CR1_MS);
         assert!(!s.has_work(), "slave mode is not modelled");
         s.write(0x004, CR1_SSE);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(w.seen.len(), 1, "queued frame goes out once enabled");
     }
 
@@ -268,7 +410,7 @@ mod tests {
         assert_eq!(s.read(0x00C) & 0b11, 0b00, "TX full");
         s.write(0x004, CR1_SSE);
         let mut w = Wire::default();
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(
             w.seen.len(),
             FIFO_DEPTH,
@@ -278,7 +420,7 @@ mod tests {
         assert_eq!(s.read(0x018) & INT_ROR, 0);
         // One more frame with a full RX FIFO: overrun, data lost.
         s.write(0x008, 0x55);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(s.read(0x018) & INT_ROR, INT_ROR);
         assert_eq!(s.read(0x008), 0xFF, "oldest data kept: frame 0 -> 0xFF");
         s.write(0x020, INT_ROR);
@@ -292,7 +434,7 @@ mod tests {
         s.write(0x004, CR1_SSE | CR1_LBM);
         s.write(0x008, 0xC3);
         let mut w = Wire::default();
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert!(w.seen.is_empty());
         assert_eq!(s.read(0x008), 0xC3);
     }
@@ -308,7 +450,7 @@ mod tests {
         for n in 0..4 {
             s.write(0x008, n);
         }
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert_eq!(s.read(0x01C), INT_TX | INT_RX, "RX half full");
         s.write(0x014, INT_RX);
         assert_eq!(s.read(0x01C), INT_RX);
@@ -330,7 +472,7 @@ mod tests {
         s.write(0x024, 3);
         assert!(s.dreq_tx() && !s.dreq_rx());
         s.write(0x008, 1);
-        s.pump(&mut w);
+        s.pump(&mut w, 0);
         assert!(s.dreq_rx());
         s.read(0x008);
         assert!(!s.dreq_rx());

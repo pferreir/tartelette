@@ -41,6 +41,9 @@ const SPI_DR: u32 = SPI1 + 0x08;
 const SPI_SR: u32 = SPI1 + 0x0C;
 const SPI_CPSR: u32 = SPI1 + 0x10;
 const SPI_DMACR: u32 = SPI1 + 0x24;
+const SPI_ICR: u32 = SPI1 + 0x20;
+const ICR_RORIC: u32 = 1;
+const SR_BSY: u32 = 1 << 4;
 
 const CS: u32 = 8;
 const TREQ_SPI1_TX: u32 = 18;
@@ -151,10 +154,16 @@ fn dma_read_512(buf: *mut u8) {
     wr(SPI_DMACR, 0);
 }
 /// Send 512 bytes with a TX DMA channel (the received bytes are discarded).
+/// As pico-sdk's `spi_write_blocking` does, wait for the last frames to
+/// leave the wire, then throw away what they brought in and clear the
+/// overrun, so the next `xfer` reads its own reply.
 fn dma_write_512(buf: *const u8) {
     wr(SPI_DMACR, 2);
     dma_start(0, buf as u32, SPI_DR, 512, DMA_EN | DMA_INCR_READ | TREQ_SPI1_TX << 15);
     dma_wait(0);
+    while rd(SPI_SR) & SR_BSY != 0 {}
+    drain_rx();
+    wr(SPI_ICR, ICR_RORIC);
     wr(SPI_DMACR, 0);
     drain_rx();
 }

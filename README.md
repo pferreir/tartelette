@@ -84,7 +84,10 @@ works, about 20% slower.
 
 From the checkout, `cargo run --release -p tartelette --` does the same as
 `tartelette`. See `tartelette --help` for every option. Headless, UART0 goes to stdout and
-UART1, board events and the firmware log to stderr.
+UART1, board events and the firmware log to stderr; `--uart0` and `--uart1`
+send a UART to `stdout`, `stderr`, `none` or a file instead. The USB serial
+port is on stdout too (see USB), so with a REPL there, `--uart0 FILE` keeps
+the two apart.
 
 A fault (an unaligned access, an undefined instruction, ...) is a warning that
 names the instruction and why, and the firmware's HardFault handler runs.
@@ -196,6 +199,10 @@ tartelette micropython.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM  # the
 tartelette synth.elf --usb-bridge midi --usb-log --headless --speed 1
 ```
 
+Headless, `--flash FILE` keeps the flash chip in a file: the run starts from
+it (the firmware goes on top) and saves it back at the end, so MicroPython's
+filesystem lasts from one run to the next. The file is made if it doesn't exist.
+
 `firmware/examples/pico-usb` (embassy-usb) and `pico-usb-hal` (rp2040-hal)
 are the same composite device, a serial port, a keyboard and a MIDI
 interface, used by the end-to-end tests.
@@ -219,3 +226,17 @@ scripts/web-bench.sh [ROUNDS]                  # time the core in the browser wi
 `web-check.sh` runs `firmware/tests/cpu-bench` by default; `WAIT_MS` and
 `CLICK="X,Y"` (e.g. `283,632`, the console's USB serial tab) help with
 others. `web-bench.sh` takes `MICROPYTHON_UF2=...` to add MicroPython.
+
+`scripts/micropython-tests.sh` runs MicroPython's own test suite
+(`tests/run-tests.py`) against a MicroPython firmware in the emulator:
+`MICROPYTHON_UF2` is the firmware, and `MICROPYTHON_DIR` a MicroPython checkout
+at its version, with the `lib/micropython-lib` submodule (the script installs
+its `unittest` on the board). Arguments go to `run-tests.py` (`-d basics`,
+`-i REGEX`, test files). It fails on any failure not in
+`scripts/micropython-known-failures.txt`, and says when a known one passes.
+
+```sh
+git clone --depth 1 --branch v1.29.0 https://github.com/micropython/micropython.git
+git -C micropython submodule update --init --depth 1 lib/micropython-lib
+MICROPYTHON_UF2=RPI_PICO_W-20260824-v1.29.0.uf2 MICROPYTHON_DIR=micropython scripts/micropython-tests.sh
+```
