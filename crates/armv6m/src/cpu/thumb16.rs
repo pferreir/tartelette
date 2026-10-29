@@ -346,7 +346,7 @@ impl Cpu {
         let next = pc.wrapping_add(2);
         let cond = (hw >> 8) & 0xF;
         match cond {
-            0xE => Err(Fault),
+            0xE => Err(Fault::Undefined),
             0xF => {
                 self.pc = next;
                 self.take_exception(bus, EXC_SVCALL);
@@ -382,7 +382,7 @@ impl Cpu {
 
     #[inline(always)]
     fn op_undefined<B: Bus + ?Sized>(&mut self, _: &mut B, _: u32, _: u32) -> R {
-        Err(Fault)
+        Err(Fault::Undefined)
     }
 
     #[inline(always)]
@@ -522,7 +522,7 @@ impl Cpu {
                     self.primask = hw & 0x10 != 0;
                     self.run.resync = true;
                 } else {
-                    return Err(Fault);
+                    return Err(Fault::Undefined);
                 }
             }
             0xBA00 => {
@@ -531,7 +531,7 @@ impl Cpu {
                     0 => v.swap_bytes(),
                     1 => ((v & 0xFF00_FF00) >> 8) | ((v & 0x00FF_00FF) << 8),
                     3 => (v.swap_bytes() >> 16) as u16 as i16 as u32,
-                    _ => return Err(Fault),
+                    _ => return Err(Fault::Undefined),
                 };
             }
             0xBC00 | 0xBD00 => {
@@ -573,9 +573,9 @@ impl Cpu {
                 }
                 // unallocated hints execute as NOP; a non-zero low nibble is IT
                 x if x & 0xF == 0 => {}
-                _ => return Err(Fault),
+                _ => return Err(Fault::Undefined),
             },
-            _ => return Err(Fault),
+            _ => return Err(Fault::Undefined),
         }
         Ok(cycles)
     }

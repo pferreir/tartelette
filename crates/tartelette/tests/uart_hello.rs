@@ -156,12 +156,17 @@ fn cli_logs_board_events_and_honours_press_schedule() {
     assert!(lines[1].contains("status on"), "{stderr}");
     assert!(lines[2].ends_with("150.0 us] user released"), "{stderr}");
     assert!(lines[3].contains("status off"), "{stderr}");
-    assert!(lines[4].contains("Breakpoint(1)"), "{stderr}");
+    assert!(lines[4].contains("bkpt #1 at 0x"), "{stderr}");
+    assert_eq!(
+        lines.len(),
+        5,
+        "no core report after a bkpt in thread mode: {stderr}"
+    );
 
     // Without a press the firmware just polls until the cycle limit.
     let out = run(&[]);
     assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("CycleLimit"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cycle limit"));
 
     // Unknown buttons and bad board files are rejected up front.
     assert!(!run(&["--press", "nope@1"]).status.success());

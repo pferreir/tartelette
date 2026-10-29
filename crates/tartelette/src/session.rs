@@ -134,9 +134,7 @@ impl Session {
             let kind = if uf2 { "UF2" } else { "ELF" };
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
-        if let Some(b) = parse_board(board, shields)? {
-            sys.set_board(b);
-        }
+        sys.set_board(parse_board(board, shields)?);
         connect_network(&mut sys.board, net)?;
         let usb = crate::usb::UsbSide::new(&net.usb)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
@@ -342,12 +340,12 @@ fn connect_bluetooth(board: &mut Board, bt: BtMode) -> Result<(), String> {
     Ok(())
 }
 
-/// Build the board from its file and the shields on top, with the RP2040's
-/// pin rules for buses. None if there is neither.
-pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Option<Board>, String> {
-    if board.is_none() && shields.is_empty() {
-        return Ok(None);
-    }
+/// The board used without one: a plain Raspberry Pi Pico.
+pub const PICO_BOARD: &str = include_str!("../../../boards/pico.toml");
+
+/// Build the board from its file (a plain Pico without one) and the shields on
+/// top, with the RP2040's pin rules for buses.
+pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Board, String> {
     let mut registry = pcb_devices::registry();
     registry.set_pin_check(rp2040_core::pinmux::check_bus_pin);
     let text = |s: &Source| {
@@ -359,13 +357,13 @@ pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Option<
         Some(s) => {
             Board::parse_with(&text(s)?, &registry).map_err(|e| format!("{}:{e}", s.name))?
         }
-        None => Board::new(),
+        None => Board::parse_with(PICO_BOARD, &registry).map_err(|e| format!("pico.toml:{e}"))?,
     };
     for s in shields {
         b.add_shield(&text(s)?, &registry)
             .map_err(|e| format!("{}:{e}", s.name))?;
     }
-    Ok(Some(b))
+    Ok(b)
 }
 
 /// Paces a run against the wall clock.

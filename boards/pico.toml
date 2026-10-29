@@ -1,0 +1,13 @@
+#:schema ./board.schema.json
+# Raspberry Pi Pico: the RP2040 and nothing around it but the green LED on
+# GPIO25. The board you get without --board.
+#
+# Add-on boards go on top with --shield (see shields/).
+name = "Pico"
+
+[parts.led]
+kind = "led"
+gpio = 25
+
+[panel]
+led = { at = [0, 0], label = "LED", color = "green" }

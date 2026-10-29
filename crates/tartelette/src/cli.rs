@@ -50,9 +50,9 @@ pub struct RunArgs {
     /// Firmware ELF or UF2 to run (with a window, it can also be opened later)
     #[arg(required_if_eq("headless", "true"))]
     pub firmware: Option<PathBuf>,
-    /// Board description file (TOML), or the name of a built-in board: btl-01
-    /// or pico-w (as in the repository's `boards/`); `tartelette parts` lists
-    /// what a board can have on it
+    /// Board description file (TOML), or the name of a built-in board: pico
+    /// (the default), pico-w or btl-01 (as in the repository's `boards/`);
+    /// `tartelette parts` lists what a board can have on it
     #[arg(long, value_name = "FILE|NAME")]
     pub board: Option<PathBuf>,
     /// Put a shield (an add-on board) on the board: a file in the board format,
@@ -100,6 +100,7 @@ pub struct RunArgs {
 /// The boards in the repository's `boards/`, built in so that an installed
 /// `tartelette` has them too.
 const BOARDS: &[(&str, &str)] = &[
+    ("pico", crate::session::PICO_BOARD),
     ("btl-01", include_str!("../../../boards/btl-01.toml")),
     ("pico-w", include_str!("../../../boards/pico-w.toml")),
 ];
@@ -175,6 +176,11 @@ pub struct Headless {
     /// Stop after N cycles (125 per microsecond)
     #[arg(long, value_name = "N", requires = "headless")]
     pub max_cycles: Option<u64>,
+    /// Stop when an instruction faults, before the firmware's HardFault
+    /// handler runs (which may hide the fault: a reset, a loop). Without it,
+    /// each fault is a warning and the handler runs
+    #[arg(long, requires = "headless")]
+    pub stop_on_fault: bool,
     /// Press button NAME at US microseconds, and release it HOLD microseconds later
     #[arg(long, value_name = "NAME@US[+HOLD]", value_parser = press, requires = "headless")]
     pub press: Vec<Press>,
@@ -450,7 +456,12 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(file.path.is_some());
-        assert!(board("pico").err().unwrap().contains("btl-01, pico-w"));
+        assert!(
+            board("pico2")
+                .err()
+                .unwrap()
+                .contains("pico, btl-01, pico-w")
+        );
         assert!(
             Cli::try_parse_from(["x", "fw"])
                 .unwrap()
@@ -460,7 +471,7 @@ mod tests {
                 .is_none()
         );
 
-        // Every shield fits on every board, and on none.
+        // Every shield fits on every board, the default one included.
         let run = Cli::try_parse_from(["x", "fw", "--shield", "pico-display-2"])
             .unwrap()
             .run;
@@ -468,15 +479,12 @@ mod tests {
         assert_eq!(shields[0].name, "pico-display-2.toml");
         for (name, _) in BOARDS.iter().filter(|(n, _)| *n != "btl-01") {
             let b = crate::session::parse_board(Some(&board(name).unwrap().unwrap()), &shields)
-                .unwrap()
                 .unwrap();
             assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
         }
-        assert!(
-            crate::session::parse_board(None, &shields)
-                .unwrap()
-                .is_some()
-        );
+        let b = crate::session::parse_board(None, &shields).unwrap();
+        assert_eq!(b.name, "Pico");
+        assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
         assert!(
             Cli::try_parse_from(["x", "fw", "--shield", "hat"])
                 .unwrap()

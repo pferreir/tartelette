@@ -1,9 +1,11 @@
 //! Real Pico W Bluetooth firmware (trouble's example apps over Embassy
 //! `cyw43`, `firmware/examples/pico-w-ble`) against the emulated CYW43439 and the
-//! virtual controller's mock devices. Opt-in like the Wi-Fi tests:
-//! `CYW43_FIRMWARE_DIR` must hold `43439A0.bin`, `43439A0_clm.bin`,
-//! `43439A0_btfw.bin` and `nvram_rp2040.bin` (Embassy's `cyw43-firmware/`).
-//! The first run builds the firmware, which needs network access.
+//! virtual controller's mock devices. The firmware blobs are found as for the
+//! Wi-Fi tests, and these need `43439A0_btfw.bin` and `nvram_rp2040.bin` too
+//! (Embassy's `cyw43-firmware/`). The first run builds the firmware, which
+//! needs network access.
+mod common;
+
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 
 use pcb::Board;
@@ -17,16 +19,13 @@ fn build(bin: &str) -> Option<Vec<u8>> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     let target_dir = BUILT
         .get_or_init(|| {
-            let Ok(fw_dir) = std::env::var("CYW43_FIRMWARE_DIR") else {
-                eprintln!("CYW43_FIRMWARE_DIR not set: skipped");
-                return None;
-            };
-            if !PathBuf::from(&fw_dir).join("nvram_rp2040.bin").exists() {
-                eprintln!(
-                    "{fw_dir} has no nvram_rp2040.bin (newer Embassy cyw43-firmware/ has): skipped"
-                );
-                return None;
-            }
+            // nvram_rp2040.bin is in newer Embassy's cyw43-firmware/ only.
+            let fw_dir = common::cyw43_firmware_dir(&[
+                "43439A0.bin",
+                "43439A0_clm.bin",
+                "43439A0_btfw.bin",
+                "nvram_rp2040.bin",
+            ])?;
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
             let target_dir = root.join("target/firmware/pico-w-ble");
             let status = Command::new(env!("CARGO"))

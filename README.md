@@ -45,6 +45,8 @@ cargo install --locked --git ssh://git@git.turbofish.cc:22122/pedro/tartelette-r
 
 The boards in `boards/` and shields in `boards/shields/` are built in, so
 `--board pico-w --shield pico-display-2` works anywhere; paths to files work too.
+Without `--board` the board is `pico`, a plain Raspberry Pi Pico (its LED on
+GPIO25 and nothing else).
 
 ### Release builds with PGO
 
@@ -83,6 +85,13 @@ works, about 20% slower.
 From the checkout, `cargo run --release -p tartelette --` does the same as
 `tartelette`. See `tartelette --help` for every option. Headless, UART0 goes to stdout and
 UART1, board events and the firmware log to stderr.
+
+A fault (an unaligned access, an undefined instruction, ...) is a warning that
+names the instruction and why, and the firmware's HardFault handler runs.
+`--stop-on-fault` stops the run there instead, before the handler can hide it
+(by resetting, or spinning). Headless, a run that stops on a fault, or on a
+`bkpt` in a handler (pico-sdk's fault handlers are `bkpt`s), ends with the
+core's registers, the exception frame it stacked and the fault's cause.
 
 ## Board files
 

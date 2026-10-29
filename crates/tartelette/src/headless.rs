@@ -28,6 +28,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     )?;
     let board = args.board()?;
     let mut s = Session::new(&fw, board.as_ref(), &args.shields()?, &args.network())?;
+    s.sys.stop_on_fault = h.stop_on_fault;
     let board = &mut s.sys.board;
 
     // Reject anything aimed at parts that don't exist before running anything.
@@ -211,11 +212,21 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             );
         }
     }
-    eprintln!(
-        "[stopped: {reason:?} after {} cycles, pc={:#010x}]",
-        s.sys.cycles(),
-        s.sys.cores[0].pc
-    );
+    let (at, core) = match (&reason, s.sys.bkpt_at) {
+        (StopReason::Breakpoint(_), Some((core, pc))) => {
+            (format!(" at {pc:#010x} on core {core}"), Some(core))
+        }
+        (StopReason::Fault { core, .. }, _) => (String::new(), Some(*core)),
+        _ => (String::new(), None),
+    };
+    eprintln!("[stopped: {reason}{at} after {} cycles]", s.sys.cycles());
+    // A fault, or a bkpt in a handler (a fault handler's, as in pico-sdk):
+    // what the core was doing. A bkpt in thread mode is the firmware's own.
+    if let Some(core) = core
+        && (s.sys.cores[core].ipsr != 0 || matches!(reason, StopReason::Fault { .. }))
+    {
+        eprint!("{}", s.sys.core_report(core));
+    }
     Ok(())
 }
 

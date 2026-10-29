@@ -1,8 +1,12 @@
 //! Real Pico W firmware (Embassy `cyw43` + `cyw43-pio`, `firmware/examples/pico-w-wifi`)
-//! against the emulated CYW43439. Opt-in: the radio firmware blobs are not in
-//! this repository, so set `CYW43_FIRMWARE_DIR` to a directory holding
-//! `43439A0.bin` and `43439A0_clm.bin` (Embassy's `cyw43-firmware/`). The first
-//! run builds the firmware, which needs network access for the crates.
+//! against the emulated CYW43439. The radio firmware blobs are not in this
+//! repository: `CYW43_FIRMWARE_DIR` names a directory holding `43439A0.bin`
+//! and `43439A0_clm.bin` (Embassy's `cyw43-firmware/`), or else they are
+//! looked for in Cargo's git checkouts of Embassy; without them the tests are
+//! skipped. The first run builds the firmware, which needs network access for
+//! the crates.
+mod common;
+
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 
 use pcb::Board;
@@ -16,10 +20,7 @@ fn build(bin: &str) -> Option<Vec<u8>> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
     let target_dir = BUILT
         .get_or_init(|| {
-            let Ok(fw_dir) = std::env::var("CYW43_FIRMWARE_DIR") else {
-                eprintln!("CYW43_FIRMWARE_DIR not set: skipped");
-                return None;
-            };
+            let fw_dir = common::cyw43_firmware_dir(&["43439A0.bin", "43439A0_clm.bin"])?;
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
             let target_dir = root.join("target/firmware/pico-w-wifi");
             let status = Command::new(env!("CARGO"))

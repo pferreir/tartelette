@@ -106,5 +106,6 @@ The tests in `crates/tartelette` build them as needed
 
 Each one's `src/main.rs` starts with what it does and the exact output
 expected. `examples/pico-w-wifi` and `examples/pico-w-ble` also serve as tests
-(`tests/wifi_firmware.rs`, `tests/ble_firmware.rs`), when
-`CYW43_FIRMWARE_DIR` is set.
+(`tests/wifi_firmware.rs`, `tests/ble_firmware.rs`), with the blobs from
+`CYW43_FIRMWARE_DIR` or, without it, from the newest Embassy checkout in
+Cargo's git cache (`~/.cargo/git/checkouts/embassy-*/*/cyw43-firmware`).

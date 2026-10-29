@@ -26,7 +26,7 @@ impl Cpu {
         let result = if hw1 & 0xFFF0 == 0xF380 && hw2 & 0xFF00 == 0x8800 {
             // Rn = pc is UNPREDICTABLE; fault rather than guess
             match hw1 & 0xF {
-                15 => Err(Fault),
+                15 => Err(Fault::Undefined),
                 n => {
                     self.msr(hw2 & 0xFF, self.reg(n as usize));
                     Ok(())
@@ -34,7 +34,7 @@ impl Cpu {
             }
         } else if hw1 == 0xF3EF && hw2 & 0xF000 == 0x8000 {
             match (hw2 >> 8) & 0xF {
-                15 => Err(Fault),
+                15 => Err(Fault::Undefined),
                 n => {
                     let v = self.mrs(hw2 & 0xFF);
                     self.write_reg(n as usize, v);
@@ -44,7 +44,7 @@ impl Cpu {
         } else if hw1 == 0xF3BF && matches!(hw2 & 0xFFF0, 0x8F40 | 0x8F50 | 0x8F60) {
             Ok(()) // DSB / DMB / ISB
         } else {
-            Err(Fault)
+            Err(Fault::Undefined)
         };
         result?;
         Ok(if hw1 == 0xF3BF { 3 } else { 4 })

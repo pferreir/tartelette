@@ -236,7 +236,7 @@ impl App {
                 ui.monospace(format!("{:.6} s", s.seconds()));
                 if let Some(r) = &s.halted {
                     ui.label(
-                        RichText::new(format!("halted: {r:?}")).color(ui.visuals().warn_fg_color),
+                        RichText::new(format!("halted: {r}")).color(ui.visuals().warn_fg_color),
                     );
                 } else if clock.running {
                     ui.monospace(format!("{:5.2}× real time", clock.measured()));

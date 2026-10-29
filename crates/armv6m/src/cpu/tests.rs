@@ -526,6 +526,7 @@ fn bx_to_arm_state_faults() {
     cpu.step(&mut bus);
     assert_eq!(cpu.ipsr, EXC_HARDFAULT);
     assert_eq!(cpu.pc, 0x300);
+    assert_eq!(cpu.fault, Some((CODE + 2, Fault::ArmState(0x40))));
 }
 
 #[test]
@@ -548,6 +549,30 @@ fn unaligned_access_faults() {
         cpu.step(&mut bus);
     }
     assert_eq!(cpu.ipsr, EXC_HARDFAULT);
+    let fault = Fault::Unaligned {
+        addr: 0x812,
+        size: 4,
+        write: false,
+    };
+    assert_eq!(cpu.fault, Some((CODE + 6, fault)));
+    assert_eq!(
+        alloc::format!("{fault}"),
+        "unaligned 32-bit read at 0x00000812"
+    );
+}
+
+#[test]
+fn undefined_instruction_faults() {
+    let mut bus = new_bus();
+    bus.write32(12, 0x301);
+    load(&mut bus, CODE, &[movs(0, 1), 0xDE00]); // UDF #0
+    let mut cpu = Cpu::new();
+    cpu.reset_to(STACK, CODE | 1);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.fault, None);
+    cpu.step(&mut bus);
+    assert_eq!(cpu.ipsr, EXC_HARDFAULT);
+    assert_eq!(cpu.fault, Some((CODE + 2, Fault::Undefined)));
 }
 
 #[test]

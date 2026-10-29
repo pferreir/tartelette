@@ -20,10 +20,12 @@ const CONTROL: u8 = 0;
 const EVENT: u8 = 1;
 const DATA: u8 = 2;
 const SDPCM_HEADER: usize = 12;
-/// Padding after the SDPCM header of a frame with a payload. With it (and a
+/// Padding after the SDPCM header of an event or data frame. With it (and a
 /// word of BDC options on events) every Ethernet header starts at 2 mod 4,
 /// as on the real chip: pico-sdk's driver moves event data back by two bytes
 /// and then reads it as words, which faults if the data is laid out otherwise.
+/// Control frames have none: their CDC header is read as words too, so it has
+/// to start right after the SDPCM header.
 const SDPCM_PAD: usize = 2;
 const CDC_HEADER: usize = 16;
 
@@ -81,7 +83,7 @@ impl Frame {
     /// SDPCM header and padding. A credit-only frame has no padding: hosts
     /// recognise it by its bare 12-byte size.
     fn header_len(&self) -> usize {
-        if self.payload.is_empty() {
+        if self.payload.is_empty() || self.channel == CONTROL {
             SDPCM_HEADER
         } else {
             SDPCM_HEADER + SDPCM_PAD

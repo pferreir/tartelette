@@ -22,10 +22,34 @@ mod thumb32;
 
 use alu::*;
 
-/// Raised for anything that ends up as a HardFault (unaligned access,
-/// undefined instruction, bad EXC_RETURN, ...).
+/// Why an instruction raised a HardFault.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Fault;
+pub enum Fault {
+    /// A halfword or word access (`size` bytes) at an address not aligned
+    /// to its size.
+    Unaligned { addr: u32, size: u8, write: bool },
+    /// An undefined instruction, or one whose result is unpredictable.
+    Undefined,
+    /// An exception return to an invalid EXC_RETURN value.
+    ExcReturn(u32),
+    /// A branch to an address with bit 0 clear: ARM state, which the M0+
+    /// doesn't have.
+    ArmState(u32),
+}
+
+impl core::fmt::Display for Fault {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Fault::Unaligned { addr, size, write } => {
+                let op = if write { "write" } else { "read" };
+                write!(f, "unaligned {}-bit {op} at {addr:#010x}", 8 * size)
+            }
+            Fault::Undefined => f.write_str("undefined instruction"),
+            Fault::ExcReturn(v) => write!(f, "invalid EXC_RETURN {v:#010x}"),
+            Fault::ArmState(a) => write!(f, "branch to {a:#010x}, an ARM-state address"),
+        }
+    }
+}
 
 pub const EXC_HARDFAULT: u8 = 3;
 pub const EXC_SVCALL: u8 = 11;
@@ -65,6 +89,9 @@ pub struct Cpu {
     pub sev_sent: bool,
     /// Set by BKPT with its immediate; the runner should check and clear it.
     pub bkpt: Option<u8>,
+    /// Set when an instruction faults: its address and why. The HardFault
+    /// is taken all the same; the runner may check and clear this.
+    pub fault: Option<(u32, Fault)>,
     /// Cycles consumed since reset.
     pub cycles: u64,
     /// Bookkeeping of [`Cpu::run_threaded`].
@@ -203,28 +230,28 @@ impl Cpu {
 
     fn ld32<B: Bus + ?Sized>(&self, bus: &mut B, a: u32) -> Result<u32, Fault> {
         if a & 3 != 0 {
-            Err(Fault)
+            Err(unaligned(a, 4, false))
         } else {
             Ok(bus.read32(a))
         }
     }
     fn ld16<B: Bus + ?Sized>(&self, bus: &mut B, a: u32) -> Result<u16, Fault> {
         if a & 1 != 0 {
-            Err(Fault)
+            Err(unaligned(a, 2, false))
         } else {
             Ok(bus.read16(a))
         }
     }
     fn st32<B: Bus + ?Sized>(&self, bus: &mut B, a: u32, v: u32) -> Result<(), Fault> {
         if a & 3 != 0 {
-            return Err(Fault);
+            return Err(unaligned(a, 4, true));
         }
         bus.write32(a, v);
         Ok(())
     }
     fn st16<B: Bus + ?Sized>(&self, bus: &mut B, a: u32, v: u16) -> Result<(), Fault> {
         if a & 1 != 0 {
-            return Err(Fault);
+            return Err(unaligned(a, 2, true));
         }
         bus.write16(a, v);
         Ok(())
@@ -248,7 +275,8 @@ impl Cpu {
     fn retire<B: Bus + ?Sized>(&mut self, bus: &mut B, r: Result<u32, Fault>) -> u32 {
         let cycles = match r {
             Ok(c) => c,
-            Err(Fault) => {
+            Err(f) => {
+                self.fault = Some((self.pc, f));
                 self.take_exception(bus, EXC_HARDFAULT);
                 15
             }
@@ -288,6 +316,11 @@ impl Cpu {
             || self.bkpt.is_some()
             || bus.interrupted()
     }
+}
+
+#[cold]
+fn unaligned(addr: u32, size: u8, write: bool) -> Fault {
+    Fault::Unaligned { addr, size, write }
 }
 
 #[cfg(test)]

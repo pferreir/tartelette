@@ -392,6 +392,8 @@ impl Host {
             // A frame with no payload only carries credit.
             0 if p.is_empty() => {}
             0 => {
+                // pico-sdk's driver reads the CDC header as words.
+                assert_eq!(f[7] % 4, 0, "ioctl response alignment");
                 let len = u32::from_le_bytes(p[4..8].try_into().unwrap()) as usize;
                 let id = u16::from_le_bytes([p[10], p[11]]);
                 assert_eq!(

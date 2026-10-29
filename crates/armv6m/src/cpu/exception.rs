@@ -43,7 +43,7 @@ impl Cpu {
             0x1 => (false, true),
             0x9 => (false, false),
             0xD => (true, false),
-            _ => return Err(Fault),
+            _ => return Err(Fault::ExcReturn(exc_return)),
         };
         let frame = if use_psp { self.psp } else { self.msp };
         let mut w = [0u32; 8];
@@ -80,7 +80,7 @@ impl Cpu {
         if addr >= 0xFFFF_FFF0 && self.ipsr != 0 {
             self.exception_return(bus, addr)
         } else if addr & 1 == 0 {
-            Err(Fault) // ARM state not supported
+            Err(Fault::ArmState(addr)) // ARM state not supported
         } else {
             Ok(addr & !1)
         }

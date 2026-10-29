@@ -13,7 +13,7 @@ use pcb::{Board, InputResult};
 
 use crate::{
     bus::{Bus, Ram},
-    cpu::Cpu,
+    cpu::{Cpu, EXC_HARDFAULT, Fault},
     elf::{self, ElfError},
     periph::{
         Peripheral, RegStub,
@@ -765,7 +765,44 @@ pub enum StopReason {
     Breakpoint(u8),
     /// Core is in WFI/WFE and nothing can wake it yet.
     Sleeping,
+    /// An instruction at `pc` faulted, with [`System::stop_on_fault`] set.
+    /// The core has taken the HardFault: its handler is about to run.
+    Fault {
+        core: usize,
+        pc: u32,
+        cause: Fault,
+    },
 }
+
+impl core::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            StopReason::CycleLimit => f.write_str("cycle limit"),
+            StopReason::Breakpoint(n) => write!(f, "bkpt #{n}"),
+            StopReason::Sleeping => f.write_str("asleep, nothing can wake it"),
+            StopReason::Fault { core, pc, cause } => {
+                write!(f, "HardFault on core {core} at pc {pc:#010x}: {cause}")
+            }
+        }
+    }
+}
+
+/// Exception names, for reports.
+fn exception_name(n: u8) -> String {
+    match n {
+        0 => "thread mode".into(),
+        2 => "NMI".into(),
+        3 => "HardFault".into(),
+        11 => "SVCall".into(),
+        14 => "PendSV".into(),
+        15 => "SysTick".into(),
+        16.. => alloc::format!("IRQ {}", n - 16),
+        _ => alloc::format!("exception {n}"),
+    }
+}
+
+/// How many faults are reported as warnings before the rest go unreported.
+const FAULT_WARNINGS: u32 = 10;
 
 /// The earlier of two optional times (`None`: never). These are worked out
 /// for every segment and batch, so no iterator chains.
@@ -824,6 +861,18 @@ pub struct System {
     pub warnings: Vec<String>,
     /// Buses whose wiring was checked: I2C0, I2C1, SPI0, SPI1.
     wiring_checked: [bool; 4],
+    /// Stop `run` when an instruction faults, before its HardFault handler
+    /// runs. Off by default: the handler runs, and the fault is a warning.
+    pub stop_on_fault: bool,
+    /// The last fault of each core: the faulting instruction and why.
+    pub last_fault: [Option<(u32, Fault)>; 2],
+    /// Faults reported as warnings so far.
+    faults_reported: u32,
+    /// Where the `bkpt` that last stopped `run` was: the core, and the
+    /// instruction's address (the core's pc is past it).
+    pub bkpt_at: Option<(usize, u32)>,
+    /// A fault `run` should stop on.
+    fault_stop: Option<(u32, Fault)>,
     /// The PC on the other end of the USB cable.
     usb_host: usbhost::Host,
     /// When the host wants to be polled next.
@@ -841,6 +890,11 @@ impl System {
             batching: true,
             warnings: Vec::new(),
             wiring_checked: [false; 4],
+            stop_on_fault: false,
+            last_fault: [None; 2],
+            faults_reported: 0,
+            fault_stop: None,
+            bkpt_at: None,
             usb_host: usbhost::Host::new(CYCLES_PER_US),
             usb_wake: None,
         };
@@ -1330,6 +1384,7 @@ impl System {
             // SEV signals every processor in the system.
             self.cores[1 - core].event = true;
         }
+        self.note_fault(core);
         self.bus.core = 0;
         self.apply_psm();
         // Devices follow the earliest core that is still running (or, if the
@@ -1408,6 +1463,7 @@ impl System {
             // changes only come from those) or from the core itself.
             let rare = cpu.sleeping
                 | cpu.bkpt.is_some()
+                | cpu.fault.is_some()
                 | cpu.sev_sent
                 | self.bus.touched
                 | self.bus.lines_dirty;
@@ -1420,7 +1476,9 @@ impl System {
                 continue;
             }
             cpu.vtor = self.bus.vtor[core];
-            let mut stop = cpu.sleeping || cpu.bkpt.is_some();
+            let mut stop = cpu.sleeping || cpu.bkpt.is_some() || cpu.fault.is_some();
+            self.note_fault(core);
+            let cpu = &mut self.cores[core];
             if core::mem::take(&mut cpu.sev_sent) {
                 self.cores[other].event = true;
                 stop = true;
@@ -1473,6 +1531,7 @@ impl System {
         self.bus.lines_dirty = true;
         self.bus.touched = true;
         let end = self.bus.time.saturating_add(max_cycles);
+        self.fault_stop = None;
         while self.bus.time < end {
             let Some(core) = self.next_core() else {
                 // Nothing to execute: skip ahead to the next device event,
@@ -1502,10 +1561,124 @@ impl System {
                 self.step_core(core);
             }
             if let Some(n) = self.cores[core].bkpt.take() {
+                self.bkpt_at = Some((core, self.cores[core].pc.wrapping_sub(2)));
                 return StopReason::Breakpoint(n);
+            }
+            if let Some((pc, cause)) = self.fault_stop.take() {
+                return StopReason::Fault { core, pc, cause };
             }
         }
         StopReason::CycleLimit
+    }
+
+    /// Record a fault the core just took (as a warning, up to a point), and
+    /// leave it for `run` to stop on if it should.
+    fn note_fault(&mut self, core: usize) {
+        let Some((pc, cause)) = self.cores[core].fault.take() else {
+            return;
+        };
+        self.last_fault[core] = Some((pc, cause));
+        if self.stop_on_fault {
+            self.fault_stop = Some((pc, cause));
+        }
+        self.faults_reported += 1;
+        match self.faults_reported {
+            ..FAULT_WARNINGS => self.warnings.push(alloc::format!(
+                "core {core}: HardFault at pc {pc:#010x}: {cause}"
+            )),
+            FAULT_WARNINGS => self.warnings.push(alloc::format!(
+                "core {core}: HardFault at pc {pc:#010x}: {cause} (further faults are not reported)"
+            )),
+            _ => {}
+        }
+    }
+
+    /// A report of `core`'s state for when a run stops: its registers, and
+    /// in a fault handler the exception frame it stacked and the last fault.
+    /// Reads only RAM, so it changes nothing.
+    pub fn core_report(&self, core: usize) -> String {
+        use core::fmt::Write;
+        let cpu = &self.cores[core];
+        let mut out = String::new();
+        let mode = exception_name(cpu.ipsr);
+        let _ = writeln!(out, "core {core}: pc {:#010x}, in {mode}", cpu.pc);
+        let line = |out: &mut String, regs: &[(&str, u32)]| {
+            let mut l = String::from(" ");
+            for (n, v) in regs {
+                let _ = write!(l, " {n:>4} {v:08x}");
+            }
+            let _ = writeln!(out, "{l}");
+        };
+        let r = |i: usize| {
+            (
+                [
+                    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                ][i],
+                cpu.r[i],
+            )
+        };
+        line(&mut out, &[r(0), r(1), r(2), r(3), r(4), r(5), r(6)]);
+        line(&mut out, &[r(7), r(8), r(9), r(10), r(11), r(12)]);
+        let xpsr = (cpu.n as u32) << 31
+            | (cpu.z as u32) << 30
+            | (cpu.c as u32) << 29
+            | (cpu.v as u32) << 28
+            | 1 << 24
+            | cpu.ipsr as u32;
+        line(
+            &mut out,
+            &[("sp", cpu.sp()), ("lr", cpu.lr), ("xpsr", xpsr)],
+        );
+        if cpu.ipsr != 0 {
+            // EXC_RETURN in lr says which stack holds the frame.
+            let sp = match cpu.lr {
+                0xFFFF_FFFD => cpu.psp,
+                _ => cpu.sp(),
+            };
+            let frame: Option<Vec<u32>> = (0..8)
+                .map(|i| {
+                    let a = sp.wrapping_add(4 * i);
+                    (a >= SRAM_BASE && a + 4 <= SRAM_BASE + SRAM_SIZE)
+                        .then(|| self.bus.sram.read32(a - SRAM_BASE))
+                })
+                .collect();
+            match frame {
+                Some(f) => {
+                    let _ = writeln!(
+                        out,
+                        "  {mode} entered from pc {:#010x} (lr {:#010x}, xpsr {:#010x}), stacked at {sp:#010x}:",
+                        f[6], f[5], f[7]
+                    );
+                    line(
+                        &mut out,
+                        &[
+                            ("r0", f[0]),
+                            ("r1", f[1]),
+                            ("r2", f[2]),
+                            ("r3", f[3]),
+                            ("r12", f[4]),
+                        ],
+                    );
+                }
+                None => {
+                    let _ = writeln!(out, "  no exception frame: sp {sp:#010x} is outside SRAM");
+                }
+            }
+            if cpu.ipsr == EXC_HARDFAULT {
+                match self.last_fault[core] {
+                    Some((pc, cause)) => {
+                        let _ = writeln!(out, "  cause: {cause}, by the instruction at {pc:#010x}");
+                    }
+                    None => {
+                        let _ = writeln!(
+                            out,
+                            "  cause: not an instruction fault (an escalated exception?)"
+                        );
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
@@ -2127,6 +2300,83 @@ mod tests {
     fn bkpt_stops_run() {
         let mut sys = boot(&[0xBE07, SPIN]);
         assert_eq!(sys.run(1000), StopReason::Breakpoint(7));
+        assert_eq!(sys.bkpt_at, Some((0, SRAM_BASE + 0x100)));
+    }
+
+    /// `boot`, with a HardFault handler at `handler_at` too.
+    fn boot_faulting(main: &[u16]) -> System {
+        let mut sys = boot(main);
+        sys.bus
+            .load(SRAM_BASE + 12, &(SRAM_BASE + 0x201).to_le_bytes());
+        sys
+    }
+
+    // movs r0, #0x20; lsls r0, r0, #24; adds r0, #2; ldr r1, [r0]: a word
+    // read at 0x20000002.
+    const UNALIGNED_LOAD: [u16; 4] = [0x2020, 0x0600, 0x3002, 0x6801];
+
+    #[test]
+    fn a_fault_is_a_warning_and_its_handler_runs() {
+        let mut sys = boot_faulting(&UNALIGNED_LOAD);
+        assert_eq!(sys.run(1000), StopReason::CycleLimit);
+        let pc = SRAM_BASE + 0x106;
+        assert_eq!(
+            sys.warnings,
+            [alloc::format!(
+                "core 0: HardFault at pc {pc:#010x}: unaligned 32-bit read at 0x20000002"
+            )]
+        );
+        assert_eq!(sys.cores[0].r[5], 1, "the handler ran");
+        let report = sys.core_report(0);
+        assert!(report.contains("in HardFault"), "{report}");
+        assert!(
+            report.contains(&alloc::format!("entered from pc {pc:#010x}")),
+            "{report}"
+        );
+        assert!(
+            report.contains(&alloc::format!(
+                "cause: unaligned 32-bit read at 0x20000002, by the instruction at {pc:#010x}"
+            )),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn stop_on_fault_stops_before_the_handler_runs() {
+        for batching in [true, false] {
+            let mut sys = boot_faulting(&UNALIGNED_LOAD);
+            sys.batching = batching;
+            sys.stop_on_fault = true;
+            let cause = Fault::Unaligned {
+                addr: SRAM_BASE + 2,
+                size: 4,
+                write: false,
+            };
+            let stop = StopReason::Fault {
+                core: 0,
+                pc: SRAM_BASE + 0x106,
+                cause,
+            };
+            assert_eq!(sys.run(1000), stop);
+            assert_eq!(sys.cores[0].pc, SRAM_BASE + 0x200);
+            assert_eq!(sys.cores[0].r[5], 0, "the handler has not run");
+        }
+    }
+
+    #[test]
+    fn only_the_first_faults_are_warnings() {
+        // The handler returns to the faulting instruction (lr is
+        // EXC_RETURN), so it faults over and over: bx lr.
+        let mut sys = boot_faulting(&UNALIGNED_LOAD);
+        sys.bus.load(SRAM_BASE + 0x200, &0x4770u16.to_le_bytes());
+        sys.run(100_000);
+        assert_eq!(sys.warnings.len(), FAULT_WARNINGS as usize);
+        assert!(
+            sys.warnings
+                .last()
+                .unwrap()
+                .ends_with("(further faults are not reported)")
+        );
     }
 
     #[test]
