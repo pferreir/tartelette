@@ -321,7 +321,7 @@ pub fn hz(volts: f32) -> f32 {
 /// `C4 +3¢` for a CV.
 pub fn note_name(volts: f32) -> String {
     const NAMES: [&str; 12] = [
-        "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B",
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
     let semis = volts * 12.0 + 60.0;
     let n = semis.round();
@@ -793,7 +793,7 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
     fn notes_are_named() {
         assert_eq!(note_name(0.0), "C4");
         assert_eq!(note_name(0.75), "A4");
-        assert_eq!(note_name(-1.0 + 1.0 / 12.0), "C♯3");
+        assert_eq!(note_name(-1.0 + 1.0 / 12.0), "C#3");
         assert_eq!(note_name(0.03 / 12.0), "C4 +3¢");
         assert!((hz(0.75) - 440.0).abs() < 0.01);
     }

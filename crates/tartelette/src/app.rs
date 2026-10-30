@@ -61,6 +61,16 @@ pub struct App {
     sd_files: Vec<(String, std::path::PathBuf)>,
 }
 
+/// The default proportional font lacks arrows and shapes (→, ●, ↻) that the
+/// monospace one has; without the emoji fonts they'd render as tofu.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    if let Some(p) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        p.insert(1, "Hack".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
 impl App {
     pub fn new(
         firmware: Option<Source>,

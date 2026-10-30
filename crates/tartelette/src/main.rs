@@ -75,8 +75,15 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
             .with_icon(brand::window_icon()),
         ..Default::default()
     };
-    eframe::run_native("tartelette", options, Box::new(|_| Ok(Box::new(app))))
-        .map_err(|e| e.to_string())
+    eframe::run_native(
+        "tartelette",
+        options,
+        Box::new(|cc| {
+            app::install_fonts(&cc.egui_ctx);
+            Ok(Box::new(app))
+        }),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -92,7 +99,8 @@ fn main() {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_| {
+                Box::new(|cc| {
+                    app::install_fonts(&cc.egui_ctx);
                     Ok(Box::new(app::App::new(
                         None,
                         None,
