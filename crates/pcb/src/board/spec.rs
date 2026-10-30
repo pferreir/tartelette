@@ -536,6 +536,48 @@ pub fn json_schema(registry: &Registry) -> String {
             ]),
         ),
     ]);
+    let values = |bits: u32| {
+        J::Obj(vec![
+            ("type", s("array")),
+            ("minItems", J::Int(1)),
+            (
+                "items",
+                J::Obj(vec![
+                    ("type", s("integer")),
+                    ("minimum", J::Int(0)),
+                    ("maximum", J::Int((1i64 << bits) - 1)),
+                ]),
+            ),
+            (
+                "description",
+                J::Str(format!("the values, {bits}-bit little endian (one of u8, u16, u32)")),
+            ),
+        ])
+    };
+    let flash = J::Obj(vec![
+        ("type", s("object")),
+        (
+            "properties",
+            J::Obj(vec![
+                (
+                    "addr",
+                    J::Obj(vec![
+                        ("type", s("integer")),
+                        ("minimum", J::Int(0x1000_0000)),
+                        ("maximum", J::Int(0x10ff_ffff)),
+                        ("description", s("where the values go, in the XIP window")),
+                    ]),
+                ),
+                ("u8", values(8)),
+                ("u16", values(16)),
+                ("u32", values(32)),
+            ]),
+        ),
+        ("required", J::Arr(vec![s("addr")])),
+        ("minProperties", J::Int(2)),
+        ("maxProperties", J::Int(2)),
+        ("additionalProperties", J::Bool(false)),
+    ]);
     let schema = J::Obj(vec![
         ("$schema", s("http://json-schema.org/draft-07/schema#")),
         ("title", s("Tartelette board")),
@@ -607,6 +649,19 @@ pub fn json_schema(registry: &Registry) -> String {
                                 ]),
                             )]),
                         ),
+                    ]),
+                ),
+                (
+                    "flash",
+                    J::Obj(vec![
+                        ("type", s("array")),
+                        (
+                            "description",
+                            s(
+                                "what the flash holds before the firmware goes on (factory settings, calibration), as [[flash]] entries",
+                            ),
+                        ),
+                        ("items", flash),
                     ]),
                 ),
             ]),

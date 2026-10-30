@@ -136,6 +136,24 @@ expander = [
 - `keys`: a keyboard key per pin;
 - `labels`: text per cell instead of the pin number.
 
+## `[[flash]]`
+
+What the flash chip holds before the firmware goes on: factory settings that
+the firmware expects to find, such as calibration. An emulated chip starts
+erased (all `0xFF`), which firmware rarely copes with. Each entry puts values
+at an address in the XIP window (`0x10000000..0x11000000`), little endian, in
+one of `u8`, `u16` or `u32`:
+
+```toml
+[[flash]]
+addr = 0x101ff000
+u16 = [63985, 57689, 51389]
+```
+
+The firmware goes on top, so it wins where they overlap. Headless, a
+`--flash` image replaces these entries (it already has what the firmware
+made of them).
+
 ## Shields
 
 A shield is an add-on board, in the same format. With `--shield`, its buses,

@@ -145,7 +145,9 @@ impl Session {
 
     /// Like `new`, with the flash chip holding `flash` (a whole-chip image)
     /// before the firmware goes on top: what the firmware keeps in the rest
-    /// of the flash, like MicroPython's filesystem, is kept.
+    /// of the flash, like MicroPython's filesystem, is kept. Without an
+    /// image, the chip starts from the board's `[[flash]]` entries; an image
+    /// replaces them, since it already has what the firmware made of them.
     pub fn with_flash(
         firmware: &Source,
         board: Option<&Source>,
@@ -154,18 +156,23 @@ impl Session {
         flash: Option<&[u8]>,
     ) -> Result<Self, String> {
         let mut sys = System::new();
+        let board = parse_board(board, shields)?;
         if let Some(image) = flash {
             sys.bus
                 .load(rp2040_core::system::XIP_BASE, image)
                 .then_some(())
                 .ok_or("--flash: the image is larger than 16 MiB")?;
+        } else {
+            for (addr, data) in &board.flash {
+                sys.bus.load(*addr, data); // the board parser only takes flash addresses
+            }
         }
         let uf2 = rp2040_core::uf2::is_uf2(&firmware.bytes);
         sys.load_firmware(&firmware.bytes).map_err(|e| {
             let kind = if uf2 { "UF2" } else { "ELF" };
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
-        sys.set_board(parse_board(board, shields)?);
+        sys.set_board(board);
         connect_network(&mut sys.board, net)?;
         let usb = crate::usb::UsbSide::new(&net.usb)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
@@ -727,6 +734,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_boards_flash_entries_go_in_unless_there_is_an_image() {
+        let fw = firmware("button-led");
+        let board = Source::new(
+            "b.toml",
+            b"[[flash]]\naddr = 0x101ff000\nu16 = [63985, 990]\n".to_vec(),
+        );
+        let net = Network::default();
+        let s = Session::new(&fw, Some(&board), &[], &net).unwrap();
+        let settings = &s.sys.bus.flash.data[0x1f_f000..];
+        assert_eq!(settings[..4], [0xF1, 0xF9, 0xDE, 0x03]);
+        assert!(settings[4..].iter().all(|&b| b == 0xFF), "the rest stays erased");
+        // An image already has what the firmware made of them.
+        let image = vec![0xA5; 2 << 20];
+        let s = Session::with_flash(&fw, Some(&board), &[], &net, Some(&image)).unwrap();
+        assert_eq!(s.sys.bus.flash.data[0x1f_f000..0x1f_f004], [0xA5; 4]);
     }
 
     #[test]

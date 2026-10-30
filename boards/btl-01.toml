@@ -85,3 +85,16 @@ expander = [
 ]
 dac = { at = [6, 0], span = [2, 2], label = "CV out" }
 sd = { at = [6, 2], span = [2, 1], label = "SD card" }
+
+# The OS reads its CV calibration from the settings flash (the last 4 KiB:
+# 4 DACs x 11 u16, the code for -5 V, -4 V ... +5 V), and a blank flash makes
+# every output full scale. These are the OS's own defaults
+# (os-sdk gate_cv.rs, `CalibrationInfo::DEFAULT`).
+[[flash]]
+addr = 0x101ff000
+u16 = [
+  63985, 57689, 51389, 45084, 38785, 32486, 26178, 19882, 13582, 7287, 990,
+  64070, 57753, 51443, 45120, 38811, 32492, 26178, 19867, 13553, 7238, 925,
+  64058, 57746, 51435, 45117, 38806, 32486, 26167, 19858, 13543, 7233, 925,
+  63993, 57677, 51364, 45049, 38740, 32426, 26112, 19804, 13492, 7182, 869,
+]

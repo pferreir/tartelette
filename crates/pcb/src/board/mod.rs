@@ -26,6 +26,10 @@
 //!
 //! [panel]                   # optional: UI layout, see [`panel`]
 //! screen = { at = [0, 0], span = [2, 2] }
+//!
+//! [[flash]]                 # optional: what the flash holds before the firmware
+//! addr = 0x101ff000
+//! u16 = [63985, 57689, 51389]
 //! ```
 //!
 //! `kind` selects a [`Kind`] from the [`Registry`] (the `pcb-devices` crate
@@ -38,6 +42,12 @@
 //! a bus) on the same GPIO is an error, unless both declare the pin
 //! shareable ([`Ty::SharedPin`]: an LED watching a line, an open-drain
 //! interrupt).
+//!
+//! A `[[flash]]` entry puts values into the flash at `addr` (in the XIP
+//! window, `0x10000000..0x11000000`), as whoever made the board would have
+//! programmed them: factory settings such as calibration. The values are one
+//! of `u8`, `u16` or `u32`, little endian. The host loads them under the
+//! firmware ([`Board::flash`]).
 //!
 //! A shield ([`Board::add_shield`]) is a file in the same format whose parts,
 //! buses and panel items go on top of the board's. Its panel items replace
@@ -114,6 +124,9 @@ pub struct Board {
     pub pins: Vec<PinUse>,
     /// Where a host UI should put each part's controls (`[panel]`).
     pub panel: Vec<PanelItem>,
+    /// Bytes the flash holds before the firmware goes on, as (address, data),
+    /// from `[[flash]]`.
+    pub flash: Vec<(u32, Vec<u8>)>,
     /// Events since the host last took them.
     pub events: Vec<BoardEvent>,
     /// 7-bit address -> part index, per I2C controller.
@@ -168,7 +181,13 @@ pub const BUS_KINDS: &[(&str, &[&str])] = &[
     ("spi1", &["sck", "mosi", "miso"]),
 ];
 
-const TOP_KEYS: &[&str] = &["name", "buses", "parts", "panel"];
+const TOP_KEYS: &[&str] = &["name", "buses", "parts", "panel", "flash"];
+
+/// The flash's XIP window, where `[[flash]]` entries may write.
+const FLASH_WINDOW: core::ops::Range<i64> = 0x1000_0000..0x1100_0000;
+
+/// The keys of a `[[flash]]` entry.
+const FLASH_KEYS: &[&str] = &["addr", "u8", "u16", "u32"];
 
 fn bus_index(bus: &str, prefix: &str) -> Option<usize> {
     match bus.strip_prefix(prefix)? {
@@ -245,7 +264,7 @@ impl Board {
         shield: bool,
     ) -> Result<(), doc::Error> {
         let root = doc::parse(text)?;
-        let (mut buses, mut parts, mut panel) = (None, None, None);
+        let (mut buses, mut parts, mut panel, mut flash) = (None, None, None, None);
         let mut name = None;
         for (key, node) in entries("the file", root)? {
             match key.name.as_str() {
@@ -253,6 +272,7 @@ impl Board {
                 "buses" => buses = Some(node),
                 "parts" => parts = Some(node),
                 "panel" => panel = Some(node),
+                "flash" => flash = Some(node),
                 k => {
                     return Err(doc::err(
                         &key.span,
@@ -283,6 +303,103 @@ impl Board {
         if let Some(node) = panel {
             self.lay_out(entries("panel", node)?, shield)?;
         }
+        if let Some(node) = flash {
+            match node.v {
+                V::Array(items) => {
+                    for item in items {
+                        self.add_flash(item)?;
+                    }
+                }
+                v => {
+                    return Err(doc::err(
+                        &node.span,
+                        format!("flash must be an array of tables ([[flash]]), not {}", v.what()),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A `[[flash]]` entry: `addr`, and the values in one of `u8`, `u16`, `u32`.
+    fn add_flash(&mut self, node: Node) -> Result<(), doc::Error> {
+        let span = node.span.clone();
+        let mut addr = None;
+        let mut data: Option<Vec<u8>> = None;
+        for (key, node) in entries("a flash entry", node)? {
+            let width = match key.name.as_str() {
+                "addr" => {
+                    match node.v {
+                        V::Int(n) => addr = Some((n, node.span)),
+                        v => {
+                            return Err(doc::err(
+                                &node.span,
+                                format!("addr must be a number, not {}", v.what()),
+                            ));
+                        }
+                    }
+                    continue;
+                }
+                "u8" => 1,
+                "u16" => 2,
+                "u32" => 4,
+                k => {
+                    return Err(doc::err(
+                        &key.span,
+                        format!(
+                            "unknown key {k} in a flash entry (expected {}){}",
+                            FLASH_KEYS.join(", "),
+                            hint(k, FLASH_KEYS.iter().copied())
+                        ),
+                    ));
+                }
+            };
+            let w = key.name.as_str();
+            if data.is_some() {
+                return Err(doc::err(
+                    &key.span,
+                    "a flash entry takes one of u8, u16 and u32",
+                ));
+            }
+            let items = match node.v {
+                V::Array(items) => items,
+                v => {
+                    return Err(doc::err(
+                        &node.span,
+                        format!("{w} must be an array, not {}", v.what()),
+                    ));
+                }
+            };
+            if items.is_empty() {
+                return Err(doc::err(&node.span, format!("{w} has no values")));
+            }
+            let mut bytes = Vec::new();
+            for item in items {
+                let n = match item.v {
+                    V::Int(n) => n,
+                    v => {
+                        return Err(doc::err(
+                            &item.span,
+                            format!("{w} values must be numbers, not {}", v.what()),
+                        ));
+                    }
+                };
+                if !(0..1i64 << (8 * width)).contains(&n) {
+                    return Err(doc::err(&item.span, format!("{n} does not fit in {w}")));
+                }
+                bytes.extend_from_slice(&n.to_le_bytes()[..width]);
+            }
+            data = Some(bytes);
+        }
+        let (addr, addr_span) = addr.ok_or_else(|| doc::err(&span, "flash entry has no addr"))?;
+        let data = data.ok_or_else(|| doc::err(&span, "flash entry has no values (u8, u16 or u32)"))?;
+        if !FLASH_WINDOW.contains(&addr) || addr + data.len() as i64 > FLASH_WINDOW.end {
+            return Err(doc::err(
+                &addr_span,
+                format!("{addr:#x}: the values do not fit in the flash (0x10000000..0x11000000)"),
+            ));
+        }
+        self.flash.push((addr as u32, data));
         Ok(())
     }
 
@@ -1018,7 +1135,7 @@ bus = "i2c0"
         assert_eq!(err("parts = 3"), "parts must be a table, not a number");
         assert_eq!(
             err("part.a = 1"),
-            "unknown section part (expected name, buses, parts, panel) (did you mean parts?)"
+            "unknown section part (expected name, buses, parts, panel, flash) (did you mean parts?)"
         );
         let syntax = parse("parts.a = { kind = ").unwrap_err();
         assert_eq!(
@@ -1145,6 +1262,60 @@ bus = "i2c0"
             (e.line, e.col, e.msg.as_str()),
             (2, 26, "spi0 mosi can't be on GPIO 3")
         );
+    }
+
+    #[test]
+    fn flash_entries_become_little_endian_bytes_at_their_address() {
+        let b = parse(
+            "[[flash]]\naddr = 0x101ff000\nu16 = [1, 0x0203]\n\
+             [[flash]]\naddr = 0x10000010\nu32 = [0xA1B2C3D4]\n\
+             [[flash]]\naddr = 0x10000020\nu8 = [7, 8, 0xff]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            b.flash,
+            [
+                (0x101f_f000, alloc::vec![1, 0, 3, 2]),
+                (0x1000_0010, alloc::vec![0xD4, 0xC3, 0xB2, 0xA1]),
+                (0x1000_0020, alloc::vec![7, 8, 0xFF]),
+            ]
+        );
+    }
+
+    #[test]
+    fn bad_flash_entries_are_refused() {
+        let flash = |body: &str| err(&format!("[[flash]]\n{body}"));
+        assert_eq!(
+            err("flash = 1"),
+            "flash must be an array of tables ([[flash]]), not a number"
+        );
+        assert_eq!(flash("u8 = [1]"), "flash entry has no addr");
+        assert_eq!(
+            flash("addr = 0x10000000"),
+            "flash entry has no values (u8, u16 or u32)"
+        );
+        assert_eq!(flash("addr = 0x10000000\nu8 = []"), "u8 has no values");
+        assert_eq!(flash("addr = 0x10000000\nu8 = [256]"), "256 does not fit in u8");
+        assert_eq!(flash("addr = 0x10000000\nu16 = [-1]"), "-1 does not fit in u16");
+        assert_eq!(
+            flash("addr = 0x10000000\nu16 = [\"x\"]"),
+            "u16 values must be numbers, not a string"
+        );
+        assert_eq!(
+            flash("addr = 0x10000000\nu8 = [1]\nu16 = [1]"),
+            "a flash entry takes one of u8, u16 and u32"
+        );
+        assert_eq!(
+            flash("addr = 0x10000000\nu17 = [1]"),
+            "unknown key u17 in a flash entry (expected addr, u8, u16, u32) (did you mean u16?)"
+        );
+        assert!(flash("addr = 0x20000000\nu8 = [1]").contains("do not fit in the flash"));
+        assert!(
+            flash("addr = 0x10ffffff\nu8 = [1, 2]").contains("do not fit in the flash"),
+            "runs off the end"
+        );
+        let e = parse("name = \"x\"\n[[flash]]\naddr = 0x10000000\nu8 = [300]").unwrap_err();
+        assert_eq!(e.line, 4);
     }
 
     #[test]

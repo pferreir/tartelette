@@ -215,9 +215,10 @@ pub struct Headless {
     #[arg(long, value_name = "stdout|stderr|none|FILE", default_value = "stderr", value_parser = output, requires = "headless")]
     pub uart1: Output,
     /// Keep the flash chip in FILE: it starts from FILE's contents (if it
-    /// exists) with the firmware on top, and is saved back at the end if the
-    /// firmware wrote to it. What the firmware keeps in flash (MicroPython's
-    /// filesystem, say) then lasts from one run to the next
+    /// exists, instead of the board's `[[flash]]` entries) with the firmware
+    /// on top, and is saved back at the end if the firmware wrote to it. What
+    /// the firmware keeps in flash (MicroPython's filesystem, say) then lasts
+    /// from one run to the next
     #[arg(long, value_name = "FILE", requires = "headless")]
     pub flash: Option<PathBuf>,
     /// Stop when an instruction faults, before the firmware's HardFault
