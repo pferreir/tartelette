@@ -43,6 +43,18 @@ unittest=$MICROPYTHON_DIR/lib/micropython-lib/python-stdlib/unittest/unittest/__
     echo "no $unittest: run git -C $MICROPYTHON_DIR submodule update --init --depth 1 lib/micropython-lib" >&2
     exit 2
 }
+# Tests from another version expect fixes (or behaviour) the firmware doesn't
+# have. Compare the version in the UF2's name (BOARD-DATE-vX.Y.Z.uf2, previews
+# vX.Y.Z-preview.N.gHASH.uf2) with the checkout's, dots and dashes alike.
+uf2_version=$(basename "$MICROPYTHON_UF2" .uf2 | grep -o 'v[0-9].*' || true)
+dir_version=$(git -C "$MICROPYTHON_DIR" describe --tags 2>/dev/null || true)
+if [[ -n $uf2_version && -n $dir_version && ${uf2_version//-/.} != "${dir_version//-/.}" ]]; then
+    echo "micropython-tests: warning: the firmware is $uf2_version but MICROPYTHON_DIR is at" \
+        "$dir_version; tests changed since may fail (git -C $MICROPYTHON_DIR checkout $uf2_version)" >&2
+fi
+for arg in "$@"; do
+    [[ $arg == -h || $arg == --help ]] && exec "$MICROPYTHON_DIR/tests/run-tests.py" --help
+done
 if [[ -z ${TARTELETTE:-} ]]; then
     cargo build --release --quiet -p tartelette --manifest-path "$root/Cargo.toml"
     TARTELETTE=$root/target/release/tartelette

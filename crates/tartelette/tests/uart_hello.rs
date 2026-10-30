@@ -490,6 +490,19 @@ fn cli_loads_an_sd_image_and_saves_what_the_firmware_wrote() {
             .enumerate()
             .all(|(i, &b)| b == (i as u8).wrapping_mul(3) ^ 0x5A)
     );
+    // Written through as it runs: nothing is saved at the end with --sd-live,
+    // so the block can only have come from there.
+    std::fs::write(&img, &image).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tartelette"))
+        .arg(&elf)
+        .arg("--headless")
+        .arg("--board")
+        .arg(&board)
+        .args(["--sd", &format!("sd={}", img.display()), "--sd-live"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(std::fs::read(&img).unwrap(), saved);
     // Unknown card and unreadable image are errors up front.
     assert!(!run("nope=/dev/null").status.success());
     assert!(

@@ -11,6 +11,7 @@ use rp2040_core::system::{CYCLES_PER_US, StopReason};
 use crate::{
     cli::{Output, RunArgs},
     session::{Session, Source},
+    synth::{self, Synth},
 };
 
 const CHUNK: u64 = 100_000;
@@ -43,18 +44,22 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     // What the flash holds before the firmware runs, to tell whether it wrote.
     let flash_at_start = h.flash.as_ref().map(|_| s.sys.bus.flash.data.clone());
     s.sys.stop_on_fault = h.stop_on_fault;
+    for (name, file) in &args.sd {
+        let image = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        if !s.load_sd_card(name, image) {
+            return Err(format!("--sd: no SD card named {name:?} on the board"));
+        }
+        if args.sd_live {
+            s.write_sd_card_to(name, file)
+                .map_err(|e| format!("--sd-live: {e}"))?;
+        }
+    }
     let board = &mut s.sys.board;
 
     // Reject anything aimed at parts that don't exist before running anything.
     let inputs = h.inputs();
     if let Some(i) = inputs.iter().find(|i| board.part_index(&i.part).is_none()) {
         return Err(format!("no part named {:?} on the board", i.part));
-    }
-    for (name, file) in &args.sd {
-        let card = board
-            .device_mut::<SdCard>(name)
-            .ok_or_else(|| format!("--sd: no SD card named {name:?} on the board"))?;
-        card.load_image(std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?);
     }
     if let Some((name, _)) = h
         .dump_screen
@@ -79,6 +84,16 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     {
         eprintln!("--log: {note}");
     }
+
+    let mut wav = match &h.wav {
+        Some(file) => {
+            let patches = args.patches(&s.sys.board);
+            let synth = Synth::new(&s.sys.board, &patches, synth::WAV_RATE)
+                .map_err(|e| format!("--osc: {e}"))?;
+            Some((synth, Vec::new(), file))
+        }
+        None => None,
+    };
 
     if !s.usb.serial_bridged() {
         s.usb.keep_fresh();
@@ -123,7 +138,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             let _ = to.write_all(&std::mem::take(&mut uart.tx));
             let _ = to.flush();
         }
-        for e in std::mem::take(&mut sys.board.events) {
+        let events = std::mem::take(&mut sys.board.events);
+        if let Some((synth, samples, _)) = &mut wav {
+            synth.feed(&events, samples);
+        }
+        for e in events {
             let (name, t) = (&sys.board.parts[e.part].name, us(e.cycles));
             // Switch-like events say it all in the label; others carry a value.
             let _ = match e.label {
@@ -147,6 +166,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             }
         }
         s.exchange_usb();
+        s.write_sd_files();
         let _ = out.write_all(&s.usb.take_fresh());
         for e in s.usb.log.drain(..) {
             if h.usb_log {
@@ -186,6 +206,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         }
     };
 
+    if let Some((mut synth, mut samples, file)) = wav {
+        synth.advance_to(s.sys.cycles(), &mut samples);
+        std::fs::write(file, synth::wav(&samples, synth::WAV_RATE))
+            .map_err(|e| format!("{}: {e}", file.display()))?;
+    }
     let board = &mut s.sys.board;
     for (name, file) in &h.dump_screen {
         if let Some(lcd) = board.device::<St7789>(name) {
@@ -214,6 +239,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     for (name, file) in &args.sd {
         if let Some(card) = board.device::<SdCard>(name)
             && card.dirty()
+            && !args.sd_live
         {
             std::fs::write(file, card.image()).map_err(|e| format!("{}: {e}", file.display()))?;
         }

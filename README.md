@@ -1,242 +1,223 @@
+<p align="center">
+  <img src="assets/tartelette.png" alt="tartelette" width="240">
+</p>
+
 # tartelette
 
-An RP2040 emulator that runs a firmware ELF and emulates the PCB around the
-chip (display, port expander, SD card, ...). One app (egui) with a front panel
-that runs natively and in the browser, and natively also headless: the library crates are
-`no_std` + `alloc`, deterministic and free of I/O.
-The target board is the BTL-01 (`boards/btl-01.toml`).
+tartelette is an emulator for the Raspberry Pi RP2040 and the board around
+it. You give it a firmware (ELF or UF2) and a description of the PCB (a small
+TOML file), and it runs the firmware against emulated parts: the screen, the
+buttons and knobs, a port expander, a DAC, an SD card, LED strips, the Pico W's
+Wi-Fi/Bluetooth chip and the USB port. You get a front panel to poke at, or a
+headless runner for scripts and tests.
 
-## Crates
+It started as a way to develop firmware for the
+[BTL-01](boards/btl-01.toml), a MIDI sequencer / MIDI-to-CV module, without
+having to flash it every time, and grew from there. Unmodified firmware built
+with Embassy, rp2040-hal, pico-sdk and MicroPython runs on it.
 
-```
-crates/
-  armv6m/        Cpu, Bus trait, Ram, exceptions, Ppb (NVIC/SysTick/SCB)   deps: none
-  pcb/           device framework + Board (no chip knowledge)              deps: toml
-  pcb-devices/   stock device models + `registry()`                        deps: pcb
-  usbhost/       USB host for the emulated device: enumeration, CDC-ACM,   deps: none
-                 HID, USB-MIDI, traffic log
-  rp2040-core/   peripherals, ELF loading, SystemBus, System               deps: armv6m, pcb, usbhost
-  netstack/      user-mode network (slirp-style NAT) for the Wi-Fi chip    deps: pcb-devices, smoltcp (std)
-  usbbridge/     the USB device's serial port as a pty, HID as UHID        deps: usbhost, libc (Linux)
-  tartelette/    front panel (native + web, eframe), headless runner and   deps: rp2040-core, pcb, pcb-devices, netstack (native)
-                 `mkdisk` (native, clap); end-to-end tests
-  cpu-difftest/  differential tests of the CPU against Unicorn             dev-deps: armv6m
-scripts/         pgo-build.sh (an opt-in PGO release build), web-check.sh and
-                 web-bench.sh (the browser build in a headless browser)
-bench/web/       the emulator core as a bare wasm module for web-bench.sh, and
-                 cdp.mjs, the DevTools driver both browser scripts use
-firmware/
-  examples/      Pico W firmware that runs on real boards and in the emulator
-  tests/         bare-metal firmware for the emulator's tests (emulator only)
-boards/          board files (TOML; also built into the CLI), shields/ and the schema
-```
+<p align="center">
+  <img src="assets/screenshots/btl-01.png" alt="The BTL-01 OS running in tartelette's front panel" width="49%">
+  <img src="assets/screenshots/netscope.png" alt="The netscope example on a Pico W with a Pico Display Pack, online through the emulated Wi-Fi chip" width="49%">
+</p>
+<p align="center"><sub>
+  Left: the BTL-01 OS. Right: <code>firmware/examples/netscope</code> on a Pico W
+  with a Pico Display Pack, pinging real hosts through the emulated Wi-Fi chip.
+</sub></p>
 
-`pcb` talks to the chip only through the `Pins` trait, which `rp2040-core`
-implements for its GPIO block. Peripherals stay inside `rp2040-core`: they are
-coupled to reset gating, IRQ lines and (later) DMA/PIO.
+## What it does
+
+- Runs both Cortex-M0+ cores, with the RP2040's peripherals: GPIO, PIO, DMA,
+  UART, SPI, I2C, USB (device), timer, RTC, flash, the inter-core FIFOs and
+  spinlocks. See [docs/rp2040.md](docs/rp2040.md) for what is and isn't
+  modelled.
+- Emulates the parts on the board from a [board file](docs/boards.md). The
+  ones available today are listed below.
+- Is deterministic: the same firmware and inputs give the same run, to the
+  cycle. That's what makes the headless mode useful for tests.
+- Runs natively (Linux, macOS, Windows) or in the browser (WebAssembly).
+- Reads the firmware's defmt log over RTT, as a debug probe would.
+- Bridges the emulated USB device to your computer: its serial port as a
+  real pty, its MIDI interface as MIDI ports, its keyboard as a keyboard.
+- Puts the Pico W on your network, through a user-mode NAT, and its
+  Bluetooth on mock devices or a real adapter.
+- Lets you listen to CV/gate outputs through test oscillators and drums.
+
+### Supported devices
+
+| Kind | Part | Docs |
+|------|------|------|
+| `led` | an LED on a GPIO | [led](docs/devices/led.md) |
+| `button` | a push button | [button](docs/devices/button.md) |
+| `encoder` | a rotary encoder | [encoder](docs/devices/encoder.md) |
+| `mcp23008` | Microchip MCP23008 I2C port expander | [mcp23008](docs/devices/mcp23008.md) |
+| `st7789` | Sitronix ST7789 TFT display controller | [st7789](docs/devices/st7789.md) |
+| `ws2812` | WS2812 / SK6812 addressable LEDs | [ws2812](docs/devices/ws2812.md) |
+| `dac8165` | TI DAC8165 quad 14-bit DAC | [dac8165](docs/devices/dac8165.md) |
+| `sdcard` | an SDHC card in SPI mode | [sdcard](docs/devices/sdcard.md) |
+| `cyw43439` | Infineon CYW43439 (Pico W Wi-Fi + Bluetooth) | [cyw43439](docs/devices/cyw43439.md) |
+
+Built-in boards: `pico` (the default), `pico-w` and `btl-01`, plus the
+`pico-display-2` shield (Pimoroni Pico Display Pack 2.0).
 
 ## Installing
 
+tartelette is written in Rust and builds with a nightly toolchain (the CPU
+interpreter uses explicit tail calls). The repository's `rust-toolchain.toml`
+selects nightly for you if you have [rustup](https://rustup.rs).
+
+On Linux you also need the ALSA headers for sound and MIDI
+(`libasound2-dev` on Debian/Ubuntu, `alsa-lib` on Arch, `alsa-lib-devel` on
+Fedora).
+
+From a checkout:
+
 ```sh
+git clone ssh://git@git.turbofish.cc:22122/pedro/tartelette-rp2040.git
+cd tartelette-rp2040
 cargo install --locked --path crates/tartelette
-# or, without a checkout:
+```
+
+Or straight from git:
+
+```sh
 cargo install --locked --git ssh://git@git.turbofish.cc:22122/pedro/tartelette-rp2040.git tartelette
 ```
 
-The boards in `boards/` and shields in `boards/shields/` are built in, so
-`--board pico-w --shield pico-display-2` works anywhere; paths to files work too.
-Without `--board` the board is `pico`, a plain Raspberry Pi Pico (its LED on
-GPIO25 and nothing else).
+The board files are compiled into the binary, so `tartelette` works from any
+directory. While hacking on it, `cargo run --release -p tartelette -- ARGS`
+does the same as `tartelette ARGS`.
 
-### Release builds with PGO
-
-`scripts/pgo-build.sh` builds a profile-guided (PGO) binary at
-`target/pgo/tartelette`, 1.1–1.4× faster than a plain release build. It's
-opt-in, meant for release builds in CI: it builds an instrumented
-tartelette, runs it on a training corpus of the repository's firmware, and
-rebuilds with the profile (a few minutes). It needs `llvm-profdata` from
-rustc's LLVM (`rustup component add llvm-tools`, or `LLVM_PROFDATA=...`).
-`CYW43_FIRMWARE_DIR` adds the Pico W Wi-Fi example to the corpus and
-`PGO_FIRMWARE="a.uf2 b.elf"` any other firmware.
+### In the browser
 
 ```sh
-rustup component add llvm-tools
-scripts/pgo-build.sh
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+cd crates/tartelette
+trunk serve --release
 ```
+
+Open the page, then open or drop a firmware (and a board file) on it. The web
+build needs WebAssembly tail calls: Chrome/Edge 112+, Firefox 121+ or Safari
+18.2+. There is no network in the browser, so the Pico W's Wi-Fi scans come
+back empty.
 
 ## Running
 
-```sh
-tartelette firmware.elf --board btl-01 [--sd sd=card.img]
-tartelette firmware.elf --board btl-01 --headless [--max-cycles N] [--press NAME@US[+HOLD]] [--log] ...
-tartelette mkdisk card.img --dir data   # a blank FAT16 SD card image
-cd crates/tartelette && trunk serve --release   # web: open the page, then open/drop the files
-```
-
-The firmware can be an ELF or a UF2 (as dragged onto a Pico in BOOTSEL mode).
-An ELF is better when you have one: a UF2 has no symbols, so there is no defmt
-log.
-
-The web build uses WebAssembly tail calls (`.cargo/config.toml`), which the
-CPU interpreter's threaded dispatch needs to be fast in the browser: Chrome
-and Edge 112+, Firefox 121+, Safari 18.2+. Without that flag the build still
-works, about 20% slower.
-
-From the checkout, `cargo run --release -p tartelette --` does the same as
-`tartelette`. See `tartelette --help` for every option. Headless, UART0 goes to stdout and
-UART1, board events and the firmware log to stderr; `--uart0` and `--uart1`
-send a UART to `stdout`, `stderr`, `none` or a file instead. The USB serial
-port is on stdout too (see USB), so with a REPL there, `--uart0 FILE` keeps
-the two apart.
-
-A fault (an unaligned access, an undefined instruction, ...) is a warning that
-names the instruction and why, and the firmware's HardFault handler runs.
-`--stop-on-fault` stops the run there instead, before the handler can hide it
-(by resetting, or spinning). Headless, a run that stops on a fault, or on a
-`bkpt` in a handler (pico-sdk's fault handlers are `bkpt`s), ends with the
-core's registers, the exception frame it stacked and the fault's cause.
-
-## Board files
-
-A board is a TOML file (see `pcb::board` for the format):
-
-```toml
-#:schema ./board.schema.json
-name = "my-board"
-
-[buses]                          # bus controllers in use, and their pins
-spi0 = { sck = 18, mosi = 19 }
-
-[parts.screen]                   # one device: its kind and that kind's keys
-kind = "st7789"
-bus = "spi0"
-cs = 9
-dc = 13
-
-[parts.status]
-kind = "led"
-gpio = 25
-
-[panel]                          # optional: the front panel grid
-screen = { at = [0, 0], span = [4, 3], rotate = 90 }
-status = { at = [4, 0], color = "green" }
-```
-
-`tartelette parts` lists the device kinds and `tartelette parts KIND` their
-keys, types and defaults; mistakes are reported with their line and column,
-and a near-miss key gets a "did you mean". Every GPIO a board names belongs
-to one user (two parts on one pin is an error, unless both may share it, like
-an LED watching a line); bus pins must be ones the RP2040 can route that
-signal to; and when the firmware first uses a bus whose declared pins it
-didn't route to it, a warning says where it put them instead.
-
-`boards/board.schema.json` (from `tartelette schema`) gives editors that read
-the `#:schema` line (VS Code's Even Better TOML, taplo) completion, hover docs
-and checking as you type. A test fails when it is out of date.
-
-A shield (`--shield`, repeatable) is an add-on board in the same format: its
-parts, buses and panel items go on top of the board's, and board panel items
-it covers move out of its way.
-
-Panel widget options such as `rotate = 90` or `key = "Space"` are listed in
-`crates/tartelette/src/panel.rs`. Without a `[panel]` every part is laid out
-automatically. Natively, the firmware, board and shields reload when their
-files change.
-
-## Pico W Wi-Fi
-
-`boards/pico-w.toml` has the CYW43439 (`pcb-devices/src/cyw43439`), modelled
-at the pins, so unmodified Embassy `cyw43` + `cyw43-pio` firmware runs: it
-downloads the radio firmware over the emulated gSPI link, scans, joins one of
-the board file's mock access points (`aps = [{ ssid = "...", security = "wpa2", passphrase = "..." }]`),
-gets a DHCP lease and talks to the network. The Wi-Fi LED toggles as a `led`
-board event.
-
-What is behind the radio is a `NetBackend`: natively `netstack`'s user-mode NAT
-(guest `10.0.2.15`, gateway `10.0.2.2` = the host's `127.0.0.1`, DNS `10.0.2.3`),
-the deterministic `LoopbackBackend` in tests; the browser has none, so scans find
-nothing and the panel says "Wi-Fi unavailable in the browser".
+Open a window with a firmware on a board:
 
 ```sh
-tartelette fw.elf --board boards/pico-w.toml [--net user|loopback|none] [--forward 8080:80] [--headless --log --wifi-trace wifi]
+tartelette firmware.elf                                   # a plain Pico
+tartelette firmware.elf --board btl-01
+tartelette firmware.elf --board pico-w --shield pico-display-2
+tartelette firmware.elf --board path/to/my-board.toml
 ```
 
-`firmware/examples` has Pico W firmware (Wi-Fi, Bluetooth, and two apps for
-the Pico Display Pack) whose `cargo run` runs it in the emulator or flashes a
-real board; see `firmware/README.md`. The radio firmware blobs are Infineon's
-and not in the repository (`CYW43_FIRMWARE_DIR`).
+An ELF is better than a UF2 when you have one: a UF2 has no symbols, so there
+is no defmt log. With a window, the firmware and board files reload when they
+change on disk, so you can leave tartelette open next to `cargo watch`.
 
-## USB
+The front panel shows each part of the board as a widget: click buttons, drag
+or scroll knobs, load and browse SD cards. Many have keyboard shortcuts set in
+the board file. The console at the bottom has the two UARTs, the USB serial
+port, the USB traffic log and the firmware's defmt log.
 
-The USB controller (`rp2040-core/src/periph/usb.rs`) is modelled in device
-mode after the datasheet: registers, DPRAM buffer control words (AVAILABLE,
-FULL, PID, STALL, double buffering), BUFF_STATUS and the SIE_STATUS
-interrupts. On the other end of the cable is `usbhost`, a small deterministic
-host that enumerates the device the way a PC does, one transaction at a time
-at full-speed timing, and drives the functions it knows: CDC-ACM serial
-ports, HID interfaces and USB-MIDI. It works with TinyUSB (MicroPython,
-pico-sdk), embassy-usb and usb-device (rp2040-hal), unmodified.
-
-Without anything else, the serial port is the console's **USB serial** tab
-(headless: stdin and stdout), and the **USB** tab (headless: `--usb-log`)
-shows the traffic: enumeration, every control transfer decoded, every packet.
-That works everywhere, browser included.
-
-`--usb-bridge` hands functions to this computer instead:
-
-| Bridge   | Becomes                                   | Where |
-|----------|-------------------------------------------|-------|
-| `serial` | a pseudo-terminal (`--usb-tty-link PATH` adds a symlink); DTR follows whether a program has it open | Linux |
-| `hid`    | a kernel input device through `/dev/uhid` (an emulated keyboard types for real) | Linux; needs access to `/dev/uhid` |
-| `midi`   | virtual MIDI ports `tartelette: USB MIDI out` / `USB MIDI in` | Linux (ALSA), macOS (CoreMIDI) |
-
-Elsewhere (Windows, the browser via WebMIDI) the USB tab connects the MIDI
-interface to existing ports instead.
+### Headless
 
 ```sh
-tartelette micropython.uf2 --headless                                     # REPL on stdin/stdout
-tartelette micropython.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM  # then: mpremote connect /tmp/ttyACM
-tartelette synth.elf --usb-bridge midi --usb-log --headless --speed 1
+tartelette firmware.elf --board btl-01 --headless --max-cycles 250000000 \
+    --press enc_sw@1000000+50000
 ```
 
-Headless, `--flash FILE` keeps the flash chip in a file: the run starts from
-it (the firmware goes on top) and saves it back at the end, so MicroPython's
-filesystem lasts from one run to the next. The file is made if it doesn't exist.
+```text
+[   13201.5 us] expander pins=16
+[   13621.5 us] rgb latch=8
+[   14600.0 us] dac dac=147455
+...
+```
 
-`firmware/examples/pico-usb` (embassy-usb) and `pico-usb-hal` (rp2040-hal)
-are the same composite device, a serial port, a keyboard and a MIDI
-interface, used by the end-to-end tests.
+Headless, UART0 goes to stdout and UART1, the board's events and the firmware
+log to stderr. `--press` and `--input` script the inputs at given times,
+`--dump-screen` saves what is on a display at the end, and `--max-cycles`
+stops the run (the core clock is 125 MHz). `tartelette --help` lists every
+option, and [docs/running.md](docs/running.md) goes through them: SD card
+images, the flash file, faults, the test synth, and so on.
+
+### Some things to try
+
+```sh
+# A blank FAT16 SD card image, and the BTL-01 OS with it
+tartelette mkdisk card.img --dir data
+tartelette os.elf --board btl-01 --sd sd=card.img
+
+# MicroPython, with its REPL on the terminal
+tartelette RPI_PICO_W-v1.29.0.uf2 --headless
+
+# ... or as a serial port that mpremote can talk to (Linux)
+tartelette RPI_PICO_W-v1.29.0.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM
+mpremote connect /tmp/ttyACM
+
+# Hear the BTL-01's CV and gate outputs
+tartelette os.elf --board btl-01 --drums
+```
+
+`firmware/examples` has Pico W firmware that runs both here and on real
+hardware (Wi-Fi, Bluetooth, USB and two apps for the Pico Display Pack). Their
+`cargo run` starts them in tartelette; see
+[firmware/README.md](firmware/README.md).
+
+## Documentation
+
+- [Running tartelette](docs/running.md): the command line, headless runs,
+  SD cards, flash, faults and the test synth
+- [Board files](docs/boards.md): describing a PCB, the front panel and shields
+- [The RP2040 model](docs/rp2040.md): the CPU and each on-chip peripheral
+- [USB](docs/usb.md): the emulated host, the console and the bridges
+- [Devices](docs/devices/): one page per part kind
+- [Development](docs/development.md): the crates, tests, the web build and
+  PGO builds
+- [Firmware](firmware/README.md): the example and test firmware
+
+## Project layout
+
+```
+crates/
+  armv6m/        the Cortex-M0+ core: CPU, NVIC, SysTick, SCB
+  rp2040-core/   the chip: memory map, peripherals, ELF/UF2 loading
+  pcb/           the device framework and board-file parser (chip-agnostic)
+  pcb-devices/   the device models
+  usbhost/       the USB host on the other end of the cable
+  netstack/      user-mode network for the Wi-Fi chip
+  hcibridge/     a real Bluetooth adapter behind the emulated chip (Linux)
+  usbbridge/     USB serial as a pty, HID through uhid (Linux)
+  rtt/           defmt-over-RTT log reader
+  tartelette/    the app: front panel (native and web) and headless runner
+  cpu-difftest/  the CPU tested against Unicorn
+boards/          board and shield files, and their JSON schema
+firmware/        example firmware and the emulator's test firmware
+scripts/         PGO build, browser checks, MicroPython's test suite
+```
+
+The emulator crates are `no_std` + `alloc` and do no I/O, so the same core
+runs natively and in WebAssembly. More in
+[docs/development.md](docs/development.md).
+
+## Status
+
+tartelette runs everything I have thrown at it so far, but it is a young
+project and parts of the chip are missing. Most notably ADC, PWM, the
+watchdog and the interpolators are not modelled, and nothing is
+cycle-accurate with respect to bus contention. If your firmware does
+something the emulator gets wrong, a minimal firmware that shows it is the
+most useful bug report.
 
 ## Testing
 
 ```sh
-cargo test --workspace   # cpu-difftest is slow (~1 min)
-cargo build -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
+cargo test --workspace
 ```
 
-The browser build is checked in a headless Chromium-family browser
-(`thorium-browser`, `chromium` or `google-chrome`, or `CHROME=...`), driven
-over the DevTools protocol by `bench/web/cdp.mjs` (Node 22+, no packages):
-
-```sh
-scripts/web-check.sh [FIRMWARE] [SCREENSHOT]   # trunk build, drop a firmware on it, fail on page exceptions, screenshot
-scripts/web-bench.sh [ROUNDS]                  # time the core in the browser with and without wasm tail calls
-```
-
-`web-check.sh` runs `firmware/tests/cpu-bench` by default; `WAIT_MS` and
-`CLICK="X,Y"` (e.g. `283,632`, the console's USB serial tab) help with
-others. `web-bench.sh` takes `MICROPYTHON_UF2=...` to add MicroPython.
-
-`scripts/micropython-tests.sh` runs MicroPython's own test suite
-(`tests/run-tests.py`) against a MicroPython firmware in the emulator:
-`MICROPYTHON_UF2` is the firmware, and `MICROPYTHON_DIR` a MicroPython checkout
-at its version, with the `lib/micropython-lib` submodule (the script installs
-its `unittest` on the board). Arguments go to `run-tests.py` (`-d basics`,
-`-i REGEX`, test files). It fails on any failure not in
-`scripts/micropython-known-failures.txt`, and says when a known one passes.
-
-```sh
-git clone --depth 1 --branch v1.29.0 https://github.com/micropython/micropython.git
-git -C micropython submodule update --init --depth 1 lib/micropython-lib
-MICROPYTHON_UF2=RPI_PICO_W-20260824-v1.29.0.uf2 MICROPYTHON_DIR=micropython scripts/micropython-tests.sh
-```
+The end-to-end tests build the firmware in `firmware/tests` and run it
+headless. `cpu-difftest` takes about a minute. See
+[docs/development.md](docs/development.md) for the browser checks and
+MicroPython's test suite.

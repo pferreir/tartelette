@@ -17,7 +17,10 @@ mod midi_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod mkdisk;
 mod panel;
+mod sdbrowse;
 mod session;
+mod sound;
+mod synth;
 mod usb;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch;
@@ -55,9 +58,14 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
         .transpose()?;
     let board = args.board()?;
     let mut app = app::App::new(firmware, board, args.shields()?, args.network());
+    app.set_voices(args);
     for (name, file) in &args.sd {
         if !app.load_sd_card(name, Source::from_file(file)?.bytes) {
             return Err(format!("--sd: no SD card named {name:?} on the board"));
+        }
+        if args.sd_live {
+            app.write_sd_card_to(name, file)
+                .map_err(|e| format!("--sd-live: {e}"))?;
         }
     }
     let options = eframe::NativeOptions {

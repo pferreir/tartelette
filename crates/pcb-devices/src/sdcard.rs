@@ -18,7 +18,8 @@
 //! and the card's native-mode behaviour.
 //!
 //! The host loads or inspects the disk with [`SdCard::load_image`] and
-//! [`SdCard::image`]; [`SdCard::dirty`] says whether the firmware wrote to it.
+//! [`SdCard::image`]; [`SdCard::dirty`] says whether the firmware wrote to it,
+//! and [`SdCard::take_written`] which blocks, to keep a copy up to date.
 use alloc::{boxed::Box, collections::VecDeque, vec, vec::Vec};
 
 use pcb::{BusType, Device, Io, Kind, Param, SpiDevice};
@@ -110,6 +111,9 @@ pub struct SdCard {
     pub blocks_read: u32,
     pub blocks_written: u32,
     dirty: bool,
+    /// One bit per block written since the last `take_written`.
+    written: Vec<u64>,
+    any_written: bool,
 }
 
 pub const KIND: Kind = Kind {
@@ -150,6 +154,8 @@ impl SdCard {
             blocks_read: 0,
             blocks_written: 0,
             dirty: false,
+            written: Vec::new(),
+            any_written: false,
         };
         card.load_image(vec![0; blocks * BLOCK]);
         card.dirty = false;
@@ -163,6 +169,8 @@ impl SdCard {
         bytes.resize(len, 0);
         self.image = bytes;
         self.dirty = false;
+        self.written = vec![0; (len / BLOCK).div_ceil(64)];
+        self.any_written = false;
     }
 
     /// The whole disk image.
@@ -178,6 +186,23 @@ impl SdCard {
     /// The firmware has written to the card since the image was loaded.
     pub fn dirty(&self) -> bool {
         self.dirty
+    }
+
+    /// The blocks written since the last call (or since the image was
+    /// loaded), in ascending order.
+    pub fn take_written(&mut self) -> Vec<u32> {
+        if !core::mem::take(&mut self.any_written) {
+            return Vec::new();
+        }
+        let mut blocks = Vec::new();
+        for (i, word) in self.written.iter_mut().enumerate() {
+            let mut w = core::mem::take(word);
+            while w != 0 {
+                blocks.push(i as u32 * 64 + w.trailing_zeros());
+                w &= w - 1;
+            }
+        }
+        blocks
     }
 
     fn r1(&self, bits: u8) -> u8 {
@@ -397,6 +422,9 @@ impl SdCard {
                 Some(slot) => {
                     slot.copy_from_slice(block);
                     self.dirty = true;
+                    let n = self.next_block as usize;
+                    self.written[n / 64] |= 1 << (n % 64);
+                    self.any_written = true;
                     self.blocks_written += 1;
                     self.next_block += 1;
                     RESP_ACCEPTED
@@ -712,6 +740,8 @@ mod tests {
         assert_eq!(h.byte(0xFF), 0x00, "R2 status byte");
         assert_eq!(&h.card().image()[5 * BLOCK..6 * BLOCK], data.as_slice());
         assert!(h.card().dirty() && h.card().blocks_written == 1);
+        assert_eq!(h.card_mut().take_written(), [5]);
+        assert!(h.card_mut().take_written().is_empty(), "taken");
         // A corrupted CRC is refused with a CRC-error data response and nothing is written.
         assert_eq!(h.command(24, 6), 0);
         h.byte(TOKEN_SINGLE);
@@ -758,6 +788,7 @@ mod tests {
         while h.byte(0xFF) != 0xFF {
             busy += 1;
         }
+        assert_eq!(h.card_mut().take_written(), [10, 11, 12]);
         assert!(
             busy > 0 && busy <= WRITE_BUSY_BYTES,
             "busy persisted across CS: {busy}"
@@ -770,6 +801,13 @@ mod tests {
             );
         }
         assert_eq!(h.card().blocks_written, 3);
+        // Blocks across bitmap words come out in order; loading an image forgets them.
+        h.write_block(64, &[1; BLOCK]);
+        h.write_block(63, &[2; BLOCK]);
+        assert_eq!(h.card_mut().take_written(), [63, 64]);
+        h.write_block(1, &[3; BLOCK]);
+        h.card_mut().load_image(vec![0; 2048 * BLOCK]);
+        assert!(h.card_mut().take_written().is_empty());
     }
 
     #[test]

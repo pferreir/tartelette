@@ -2,8 +2,10 @@
 //! an empty file system in it, which is what `embedded-sdmmc` (and so the
 //! BTL-01 OS) mounts as volume 0, optionally with some empty top-level
 //! directories. A formatted disk is almost all zeros, so [`format_fat16`]
-//! returns only the few regions that are not.
+//! returns only the few regions that are not. [`read`] reads what is on one.
 use alloc::{format, string::String, vec, vec::Vec};
+
+pub mod read;
 
 const BLOCK: usize = 512;
 /// The partition starts 1 MiB in, as partitioners do for SD cards.

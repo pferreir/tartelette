@@ -11,10 +11,24 @@
 //! | `ws2812`   | a row/grid of RGB lamps         |                                 |
 //! | `button`   | push button (held while down)   | `key=Space` (egui key name)     |
 //! | `encoder`  | knob: drag, scroll or keys      | `keys=Left,Right`               |
-//! | `mcp23008` | eight pin switches with levels  | `mode=hold\|toggle` `active=low\|high` |
-//! | `dac8165`  | four voltage meters             |                                 |
-//! | `sdcard`   | card status, load / save image  |                                 |
+//! | `mcp23008` | pin switches with levels        | see below                       |
+//! | `dac8165`  | four voltage meters (at the jacks) |                              |
+//! | `sdcard`   | card status, load / save / browse image |                         |
 //! | `cyw43439` | Wi-Fi: LED, link, address, errors |                               |
+//!
+//! An `mcp23008` item shows a cell per pin, lit while the pin is high, and
+//! takes:
+//!
+//! - `pins = [4, 5, 6, 7]`: which pins, in that order (default all eight);
+//! - `mode = "hold"|"toggle"|"view"`: a cell drives its pin while held, flips
+//!   it on each click, or only shows it (for outputs);
+//! - `active = "low"|"high"`: the level a driven pin is pulled to (default
+//!   low: a switch to ground); a released pin floats;
+//! - `keys = ["1", "2", ...]`: a keyboard key per pin, working like a click;
+//! - `labels = ["A", "B", ...]`: text per cell instead of the pin number.
+//!
+//! A part can have several items, so inputs and outputs of one expander can
+//! sit apart with their own settings.
 use std::collections::HashMap;
 
 use egui::{
@@ -58,7 +72,7 @@ pub struct Item {
     pub widget: Widget,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Widget {
     Screen {
         rotate: u16,
@@ -73,15 +87,42 @@ pub enum Widget {
     Encoder {
         keys: Option<(Key, Key)>,
     },
-    Expander {
-        toggle: bool,
-        active_high: bool,
-    },
+    Expander(Expander),
     Dac,
     SdCard,
     Wifi,
     /// A kind this app has no widget for.
     Other,
+}
+
+/// An `mcp23008` item's pins and how they respond.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Expander {
+    pub pins: Vec<u8>,
+    pub mode: PinMode,
+    pub active_high: bool,
+    /// Empty, or one per entry of `pins`.
+    pub keys: Vec<Key>,
+    pub labels: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PinMode {
+    Hold,
+    Toggle,
+    View,
+}
+
+impl Default for Expander {
+    fn default() -> Self {
+        Expander {
+            pins: (0..8).collect(),
+            mode: PinMode::Hold,
+            active_high: false,
+            keys: Vec::new(),
+            labels: Vec::new(),
+        }
+    }
 }
 
 /// What the panel wants done after drawing (the session is borrowed while
@@ -90,6 +131,7 @@ pub enum Request {
     Input(String, String, i64),
     LoadSd(String),
     SaveSd(String),
+    BrowseSd(String),
 }
 
 impl Layout {
@@ -194,10 +236,7 @@ fn widget_for<'a>(
         "ws2812" => Widget::Leds,
         "button" => Widget::Button { key: None },
         "encoder" => Widget::Encoder { keys: None },
-        "mcp23008" => Widget::Expander {
-            toggle: false,
-            active_high: false,
-        },
+        "mcp23008" => Widget::Expander(Expander::default()),
         "dac8165" => Widget::Dac,
         "sdcard" => Widget::SdCard,
         "cyw43439" => Widget::Wifi,
@@ -220,14 +259,29 @@ fn widget_for<'a>(
                 let (a, b) = v.split_once(',').ok_or("keys must be CCW,CW")?;
                 *keys = Some((key(a)?, key(b)?));
             }
-            (Widget::Expander { toggle, .. }, "mode") => {
-                *toggle = match v {
-                    "hold" => false,
-                    "toggle" => true,
-                    _ => return Err("mode must be hold or toggle".into()),
+            (Widget::Expander(x), "pins") => {
+                let mut pins = Vec::new();
+                for n in v.split(',') {
+                    match n.parse::<u8>() {
+                        Ok(n) if n < 8 && !pins.contains(&n) => pins.push(n),
+                        _ => return Err("pins must be different pins, 0..7".into()),
+                    }
+                }
+                x.pins = pins;
+            }
+            (Widget::Expander(x), "mode") => {
+                x.mode = match v {
+                    "hold" => PinMode::Hold,
+                    "toggle" => PinMode::Toggle,
+                    "view" => PinMode::View,
+                    _ => return Err("mode must be hold, toggle or view".into()),
                 }
             }
-            (Widget::Expander { active_high, .. }, "active") => {
+            (Widget::Expander(x), "keys") => {
+                x.keys = v.split(',').map(key).collect::<Result<_, _>>()?
+            }
+            (Widget::Expander(x), "labels") => x.labels = v.split(',').map(String::from).collect(),
+            (Widget::Expander(Expander { active_high, .. }), "active") => {
                 *active_high = match v {
                     "low" => false,
                     "high" => true,
@@ -235,6 +289,15 @@ fn widget_for<'a>(
                 }
             }
             _ => return Err(format!("{kind} has no panel option {k:?}")),
+        }
+    }
+    if let Widget::Expander(x) = &w {
+        let n = x.pins.len();
+        if !x.keys.is_empty() && x.keys.len() != n {
+            return Err(format!("keys must give one key per pin ({n})"));
+        }
+        if !x.labels.is_empty() && x.labels.len() != n {
+            return Err(format!("labels must give one label per pin ({n})"));
         }
     }
     Ok(w)
@@ -349,16 +412,13 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
                 s,
                 keys_free,
             };
-            match it.widget {
-                Widget::Screen { rotate } => screen(ctx, st, rotate),
-                Widget::Led { color } => led(ctx, color),
+            match &it.widget {
+                &Widget::Screen { rotate } => screen(ctx, st, rotate),
+                &Widget::Led { color } => led(ctx, color),
                 Widget::Leds => leds(ctx),
-                Widget::Button { key } => button(ctx, key, &mut out),
-                Widget::Encoder { keys } => encoder(ctx, st, keys, &mut out),
-                Widget::Expander {
-                    toggle,
-                    active_high,
-                } => expander(ctx, st, toggle, active_high, &mut out),
+                &Widget::Button { key } => button(ctx, key, &mut out),
+                &Widget::Encoder { keys } => encoder(ctx, st, keys, &mut out),
+                Widget::Expander(x) => expander(ctx, st, x, &mut out),
                 Widget::Dac => dac(ctx),
                 Widget::SdCard => sdcard(ctx, &mut out),
                 Widget::Wifi => wifi(ctx, st),
@@ -681,36 +741,54 @@ fn turn_arrow(p: &egui::Painter, center: Pos2, radius: f32, dir: f32, color: Col
     ));
 }
 
-fn expander(c: Ctx, st: &mut PanelState, toggle: bool, active_high: bool, out: &mut Vec<Request>) {
-    let Some(x) = c.device::<Mcp23008>() else {
+fn expander(c: Ctx, st: &mut PanelState, x: &Expander, out: &mut Vec<Request>) {
+    let Some(dev) = c.device::<Mcp23008>() else {
         return;
     };
-    let levels = x.pin_levels();
+    let levels = dev.pin_levels();
     let driven = st.driven.entry(c.it.part).or_default();
-    let (cols, _, d) = circle_grid(8, c.body.size());
-    let rows = 8usize.div_ceil(cols);
+    let n = x.pins.len();
+    let (cols, _, d) = circle_grid(n, c.body.size());
+    let rows = n.div_ceil(cols);
     let start = c.body.center() - vec2(cols as f32, rows as f32) * d / 2.0;
-    for pin in 0..8 {
+    for (i, &pin) in x.pins.iter().enumerate() {
         let cell = Rect::from_min_size(
-            start + vec2((pin % cols) as f32, (pin / cols) as f32) * d,
+            start + vec2((i % cols) as f32, (i / cols) as f32) * d,
             Vec2::splat(d),
         )
         .shrink(d * 0.08);
-        let resp =
-            c.ui.interact(cell, c.id(("pin", pin)), Sense::click_and_drag())
-                .on_hover_text(format!("GP{pin}"));
-        let bit = 1u8 << pin;
-        let want = if toggle {
-            (*driven & bit != 0) ^ resp.clicked()
+        let key = x.keys.get(i).copied().filter(|_| c.keys_free);
+        let sense = if x.mode == PinMode::View {
+            Sense::hover()
         } else {
-            resp.is_pointer_button_down_on()
+            Sense::click_and_drag()
         };
-        if want != (*driven & bit != 0) {
+        let hover = match x.keys.get(i) {
+            Some(k) if x.mode != PinMode::View => format!("GP{pin} ({})", k.name()),
+            _ => format!("GP{pin}"),
+        };
+        let resp =
+            c.ui.interact(cell, c.id(("pin", c.it.cell, pin)), sense)
+                .on_hover_text(hover);
+        let bit = 1u8 << pin;
+        let is_driven = *driven & bit != 0;
+        let want = match x.mode {
+            PinMode::View => is_driven,
+            PinMode::Toggle => {
+                let flip = resp.clicked() || key.is_some_and(|k| c.ui.input(|i| i.key_pressed(k)));
+                is_driven ^ flip
+            }
+            PinMode::Hold => {
+                resp.is_pointer_button_down_on()
+                    || key.is_some_and(|k| c.ui.input(|i| i.key_down(k)))
+            }
+        };
+        if want != is_driven {
             *driven ^= bit;
             c.input(
                 out,
                 &format!("gp{pin}"),
-                if want { active_high as i64 } else { -1 },
+                if want { x.active_high as i64 } else { -1 },
             );
         }
         let v = c.ui.visuals();
@@ -738,11 +816,15 @@ fn expander(c: Ctx, st: &mut PanelState, toggle: bool, active_high: bool, out: &
         } else {
             Color32::from_gray(170)
         };
+        let text = x.labels.get(i).cloned().unwrap_or_else(|| pin.to_string());
+        // Shrink long labels to fit the cell (monospace glyphs are ~0.6 em wide).
+        let chars = text.chars().count().max(1) as f32;
+        let size = (d * 0.35).min(14.0).min(cell.width() * 0.9 / (chars * 0.6));
         p.text(
             cell.center(),
             Align2::CENTER_CENTER,
-            pin,
-            FontId::monospace((d * 0.35).min(14.0)),
+            text,
+            FontId::monospace(size),
             ink,
         );
     }
@@ -762,11 +844,13 @@ fn dac(c: Ctx) {
             vec2(c.body.width(), row),
         )
         .shrink2(vec2(0.0, row * 0.12));
-        let text = format!(
-            "{} {:>5.3} V",
-            (b'A' + ch as u8) as char,
+        // At the jack when the board says how it gets there.
+        let volts = if dac.has_output_stage() {
+            dac.cv_volts(ch)
+        } else {
             dac.millivolts(ch) as f32 / 1000.0
-        );
+        };
+        let text = format!("{} {volts:>+6.3} V", (b'A' + ch as u8) as char);
         p.text(
             r.left_center(),
             Align2::LEFT_CENTER,
@@ -799,7 +883,10 @@ fn sdcard(c: Ctx, out: &mut Vec<Request>) {
                 out.push(Request::LoadSd(name.clone()));
             }
             if ui.button("Save…").clicked() {
-                out.push(Request::SaveSd(name));
+                out.push(Request::SaveSd(name.clone()));
+            }
+            if ui.button("Browse…").clicked() {
+                out.push(Request::BrowseSd(name));
             }
         });
     });
@@ -959,7 +1046,12 @@ mod tests {
         let b = board(include_str!("../../../boards/btl-01.toml"));
         let (l, warnings) = Layout::new(&b);
         assert!(warnings.is_empty());
-        assert_eq!(l.items.len(), b.parts.len());
+        for part in 0..b.parts.len() {
+            assert!(
+                l.items.iter().any(|i| i.part == part),
+                "part {part} missing"
+            );
+        }
         for (i, a) in l.items.iter().enumerate() {
             assert!(a.cell.0 + a.span.0 <= l.cols);
             for o in &l.items[i + 1..] {
@@ -1043,13 +1135,44 @@ mod tests {
                 keys: Some((Key::A, Key::D))
             })
         ));
-        assert!(matches!(
-            w("mcp23008", &[("mode", "toggle"), ("active", "high")]),
-            Ok(Widget::Expander {
-                toggle: true,
-                active_high: true
-            })
-        ));
+        let Ok(Widget::Expander(x)) = w(
+            "mcp23008",
+            &[
+                ("mode", "toggle"),
+                ("active", "high"),
+                ("keys", "Q,W"),
+                ("pins", "7,2"),
+                ("labels", "A,B"),
+            ],
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            x,
+            Expander {
+                pins: vec![7, 2],
+                mode: PinMode::Toggle,
+                active_high: true,
+                keys: vec![Key::Q, Key::W],
+                labels: vec!["A".into(), "B".into()],
+            }
+        );
+        assert!(matches!(w("mcp23008", &[]), Ok(Widget::Expander(x)) if x == Expander::default()));
+        let err = |o| w("mcp23008", o).err().unwrap();
+        assert_eq!(err(&[("pins", "1,8")]), "pins must be different pins, 0..7");
+        assert_eq!(err(&[("pins", "1,1")]), "pins must be different pins, 0..7");
+        assert_eq!(
+            err(&[("mode", "push")]),
+            "mode must be hold, toggle or view"
+        );
+        assert_eq!(
+            err(&[("keys", "A,B")]),
+            "keys must give one key per pin (8)"
+        );
+        assert_eq!(
+            err(&[("pins", "0"), ("labels", "a,b")]),
+            "labels must give one label per pin (1)"
+        );
         assert_eq!(
             w("led", &[("rotate", "90")]).err().unwrap(),
             "led has no panel option \"rotate\""

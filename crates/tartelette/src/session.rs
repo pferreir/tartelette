@@ -117,6 +117,18 @@ pub struct Session {
     /// The USB host's side: serial console, traffic log, bridges.
     pub usb: crate::usb::UsbSide,
     rtt: Option<rtt::Rtt>,
+    /// The test synthesizer playing live, which hears every board event.
+    pub synth: Option<Arc<Mutex<crate::synth::Live>>>,
+    /// SD cards whose writes go straight to a file: part name, file.
+    #[cfg(not(target_arch = "wasm32"))]
+    sd_files: Vec<SdFile>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SdFile {
+    part: String,
+    path: std::path::PathBuf,
+    file: std::fs::File,
 }
 
 impl Session {
@@ -178,6 +190,9 @@ impl Session {
             warnings: Vec::new(),
             usb,
             rtt,
+            synth: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            sd_files: Vec::new(),
         })
         .map(|mut s: Self| {
             // A bridged port is closed until a program opens it.
@@ -244,9 +259,17 @@ impl Session {
                 }
             }
         }
+        if let Some(synth) = &self.synth {
+            synth
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(&self.sys.board.events);
+        }
         self.events.append(&mut self.sys.board.events);
         self.warnings.append(&mut self.sys.warnings);
         self.exchange_usb();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.write_sd_files();
         let lines = self.poll_log();
         let at = self.seconds();
         self.log
@@ -283,7 +306,26 @@ impl Session {
             .collect()
     }
 
+    /// Load a disk image into the card `name`. It stops writing to any file
+    /// it was writing to: that file holds a different disk.
+    /// A copy of the card `name`'s image, with how many blocks the firmware
+    /// has written to it so far (to tell later whether the copy is stale).
+    pub fn sd_card_copy(&self, name: &str) -> Option<(Vec<u8>, u32)> {
+        let card = self.sys.board.device::<SdCard>(name)?;
+        Some((card.image().to_vec(), card.blocks_written))
+    }
+
+    /// Blocks the firmware has written to the card `name` so far.
+    pub fn sd_card_writes(&self, name: &str) -> Option<u32> {
+        self.sys
+            .board
+            .device::<SdCard>(name)
+            .map(|c| c.blocks_written)
+    }
+
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.sd_files.retain(|f| f.part != name);
         match self.sys.board.device_mut::<SdCard>(name) {
             Some(card) => {
                 card.load_image(image);
@@ -291,6 +333,64 @@ impl Session {
             }
             None => false,
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Session {
+    /// From now on, write each block the firmware writes to the card `name`
+    /// to the file at `path` too, which should hold the card's image (it was
+    /// loaded from there). Host tools can then read the card while it runs.
+    pub fn write_sd_card_to(&mut self, name: &str, path: &std::path::Path) -> Result<(), String> {
+        let card = self
+            .sys
+            .board
+            .device_mut::<SdCard>(name)
+            .ok_or_else(|| format!("no SD card named {name:?} on the board"))?;
+        // Earlier writes went nowhere.
+        card.take_written();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        self.sd_files.retain(|f| f.part != name);
+        self.sd_files.push(SdFile {
+            part: name.into(),
+            path: path.into(),
+            file,
+        });
+        Ok(())
+    }
+
+    /// Write the blocks written since last time to the cards' files. A file
+    /// that fails is dropped, with a warning.
+    pub fn write_sd_files(&mut self) {
+        use std::io::{Seek, SeekFrom, Write};
+        let board = &mut self.sys.board;
+        let warnings = &mut self.warnings;
+        self.sd_files.retain_mut(|f| {
+            let Some(card) = board.device_mut::<SdCard>(&f.part) else {
+                return false;
+            };
+            let mut write = || -> std::io::Result<()> {
+                for b in card.take_written() {
+                    let at = b as usize * pcb_devices::sdcard::BLOCK;
+                    f.file.seek(SeekFrom::Start(at as u64))?;
+                    f.file
+                        .write_all(&card.image()[at..at + pcb_devices::sdcard::BLOCK])?;
+                }
+                Ok(())
+            };
+            write()
+                .map_err(|e| {
+                    warnings.push(format!(
+                        "{}: {e}; no longer writing SD card {} to it",
+                        f.path.display(),
+                        f.part
+                    ))
+                })
+                .is_ok()
+        });
     }
 }
 

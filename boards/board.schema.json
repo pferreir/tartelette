@@ -359,6 +359,18 @@
                   "minimum": 1,
                   "maximum": 10000,
                   "description": "reference voltage in millivolts: the full-scale output (default 2500)"
+                },
+                "cv_zero_uv": {
+                  "type": "integer",
+                  "minimum": -10000000,
+                  "maximum": 10000000,
+                  "description": "output stage: the DAC output (microvolts) that gives 0 V at the jack (default 0)"
+                },
+                "cv_uv_per_volt": {
+                  "type": "integer",
+                  "minimum": -10000000,
+                  "maximum": 10000000,
+                  "description": "output stage: DAC microvolts per volt at the jack, negative if it inverts (default 1000000)"
                 }
               },
               "required": ["sdi", "cs", "clk"],

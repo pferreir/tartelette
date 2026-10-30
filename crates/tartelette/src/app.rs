@@ -6,7 +6,9 @@ use crate::{
     files::{self, Inbox, Slot},
     midi::Midi,
     panel::{self, Layout, PanelState, Request},
+    sdbrowse::{SdBrowser, Want},
     session::{self, Network, Run, Session, Shared, Source, lock},
+    sound::Sound,
 };
 
 const SPEEDS: &[(f64, &str)] = &[
@@ -50,6 +52,13 @@ pub struct App {
     line_ending: usize,
     #[cfg(not(target_arch = "wasm32"))]
     watch: crate::watch::Watch,
+    /// The open SD card browser windows.
+    sd_browsers: Vec<SdBrowser>,
+    /// Test oscillators on the board's outputs.
+    sound: Sound,
+    /// SD cards written through to a file (`--sd-live`): part name, file.
+    #[cfg(not(target_arch = "wasm32"))]
+    sd_files: Vec<(String, std::path::PathBuf)>,
 }
 
 impl App {
@@ -77,6 +86,10 @@ impl App {
             line_ending: 0,
             #[cfg(not(target_arch = "wasm32"))]
             watch: Default::default(),
+            sd_browsers: Vec::new(),
+            sound: Sound::new(Vec::new()),
+            #[cfg(not(target_arch = "wasm32"))]
+            sd_files: Vec::new(),
         };
         app.restart();
         app
@@ -109,6 +122,16 @@ impl App {
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);
                 }
+                #[cfg(not(target_arch = "wasm32"))]
+                self.sd_files
+                    .retain(|(name, path)| match s.write_sd_card_to(name, path) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            self.errors.push(format!("--sd-live: {e}"));
+                            false
+                        }
+                    });
+                self.sound.attach(&mut s);
                 let (layout, warnings) = Layout::new(&s.sys.board);
                 self.errors = warnings;
                 self.layout = Some(layout);
@@ -118,12 +141,39 @@ impl App {
         }
     }
 
+    /// Start with the voices `--osc` and `--drums` ask for, the Synth window
+    /// open (without either, the board's default voice, window closed).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_voices(&mut self, args: &crate::cli::RunArgs) {
+        if args.osc.is_empty() && !args.drums {
+            return;
+        }
+        let Some(r) = &self.run else {
+            self.sound = Sound::new(args.osc.clone());
+            return;
+        };
+        let mut g = lock(r);
+        self.sound = Sound::new(args.patches(&g.session.sys.board));
+        self.sound.attach(&mut g.session);
+    }
+
     /// Load a disk image into the SD card part `name` of the running board.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {
         self.run
             .as_ref()
             .is_some_and(|r| lock(r).session.load_sd_card(name, image))
+    }
+
+    /// Write what the firmware writes to the SD card part `name` to `path`
+    /// as well, from now on and across restarts.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn write_sd_card_to(&mut self, name: &str, path: &std::path::Path) -> Result<(), String> {
+        if let Some(r) = &self.run {
+            lock(r).session.write_sd_card_to(name, path)?;
+        }
+        self.sd_files.push((name.into(), path.into()));
+        Ok(())
     }
 
     fn take_files(&mut self) {
@@ -167,6 +217,9 @@ impl App {
                     } else {
                         name
                     };
+                    // The card now holds another disk than its file.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.sd_files.retain(|(n, _)| *n != name);
                     s.load_sd_card(&name, src.bytes);
                 }
                 Slot::Guess => unreachable!(),
@@ -221,6 +274,7 @@ impl App {
                     });
             }
             ui.separator();
+            ui.toggle_value(&mut self.sound.shown, "Synth");
             self.midi.ui(ui);
             ui.separator();
             let names: Vec<&str> = self
@@ -374,6 +428,16 @@ impl App {
                         files::save(&format!("{name}.img"), image);
                     }
                 }
+                Request::BrowseSd(name) => {
+                    if self.sd_browsers.iter().any(|b| b.part == name) {
+                        continue;
+                    }
+                    if let Some((image, written)) = s.sd_card_copy(&name) {
+                        let at = s.seconds();
+                        self.sd_browsers
+                            .push(SdBrowser::new(name, image, at, written));
+                    }
+                }
             }
         }
     }
@@ -453,6 +517,25 @@ impl eframe::App for App {
             })
             .inner;
         self.apply(requests, &ctx, guard.as_deref_mut().map(|r| &mut r.session));
+        let mut session = guard.as_deref_mut().map(|r| &mut r.session);
+        self.sd_browsers.retain_mut(|b| {
+            let now = session.as_ref().and_then(|s| s.sd_card_writes(&b.part));
+            match b.show(&ctx, now) {
+                Want::Nothing => true,
+                Want::Close => false,
+                Want::Refresh => {
+                    if let Some(s) = session.as_deref_mut()
+                        && let Some((image, written)) = s.sd_card_copy(&b.part)
+                    {
+                        b.refresh(image, s.seconds(), written);
+                    }
+                    true
+                }
+            }
+        });
+
+        self.sound
+            .window(&ctx, guard.as_deref_mut().map(|r| &mut r.session));
 
         let busy = guard
             .as_deref()

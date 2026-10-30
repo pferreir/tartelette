@@ -1,0 +1,233 @@
+# Running tartelette
+
+```
+tartelette [OPTIONS] [FIRMWARE]
+tartelette mkdisk | parts | schema
+```
+
+`tartelette --help` is the complete reference; this page explains how the
+options fit together.
+
+## Firmware
+
+The firmware is an ELF or a UF2 (the file you'd drag onto a Pico in BOOTSEL
+mode). Prefer the ELF when you have it: tartelette needs its symbols to find
+the defmt RTT buffer, so a UF2 runs without a log.
+
+Core 0 does not run boot2: the image is loaded straight into flash and SRAM,
+and core 0 starts at the program's vector table as if boot2 had already set up
+XIP. Core 1 does run the real B2 bootrom and waits there for the launch
+handshake, as on the chip. Both pico-sdk style images (boot2 in the first 256
+bytes) and Embassy/rp2040-hal images work.
+
+## Boards and shields
+
+```sh
+tartelette fw.elf --board btl-01
+tartelette fw.elf --board pico-w --shield pico-display-2
+tartelette fw.elf --board ./my-board.toml --shield ./my-shield.toml
+```
+
+`--board` takes a built-in name (`pico`, `pico-w`, `btl-01`) or a path. Without
+it you get a plain Pico, which is just the LED on GPIO25. `--shield` stacks an
+add-on board on top, and can be repeated. See [boards.md](boards.md) for
+writing your own.
+
+## The window
+
+The top bar opens a firmware or board, pauses, resets and sets the speed. The
+panel under it is laid out by the board file's `[panel]` section. At the
+bottom, the console has tabs for:
+
+- **UART0** and **UART1**, with a line to send text back (and a choice of line
+  ending);
+- **USB serial**, the emulated device's CDC-ACM port, if it has one;
+- **USB**, the traffic log: enumeration, decoded control transfers, packets;
+- **Log**, the firmware's defmt output.
+
+Firmware, board and shield files are watched; save one and tartelette reloads
+it and starts over.
+
+## Headless
+
+`--headless` runs without a window, as fast as it can unless `--speed` paces
+it (`--speed 1` is real time; useful when the firmware talks to a real network
+or Bluetooth device).
+
+Output:
+
+| Stream | Goes to | Change with |
+|--------|---------|-------------|
+| UART0 | stdout | `--uart0 stdout\|stderr\|none\|FILE` |
+| UART1 | stderr | `--uart1 ...` |
+| USB serial | stdout (and stdin to it) | `--usb-bridge serial` |
+| board events | stderr | |
+| defmt log | stderr | `--log` |
+| USB traffic | stderr | `--usb-log` |
+
+When MicroPython's REPL is on the USB serial port and something else prints on
+UART0, `--uart0 FILE` keeps the two apart.
+
+Board events are printed with the emulated time they happened at, the part's
+name and the event, with its value when it carries one:
+
+```text
+[   14600.0 us] dac dac=147455
+[ 1001200.0 us] knob detent=1
+[ 1200000.0 us] enc_sw pressed
+```
+
+Each device's page in [devices/](devices/) lists the events it emits.
+
+### Stopping
+
+`--max-cycles N` stops after N cycles. The clock is fixed at 125 MHz, so one
+second is 125000000 cycles. Without it, a headless run goes on until you
+interrupt it or the firmware executes a `bkpt`.
+
+### Scripting inputs
+
+```sh
+--press NAME@US[+HOLD]          # press button NAME at US µs, release HOLD µs later
+--input NAME:ACTION[=VALUE]@US  # any device action
+```
+
+For example `--press enc_sw@1000000+50000` holds the BTL-01's encoder switch
+for 50 ms after one second, `--input knob:turn=3@2000000` turns the knob three
+detents clockwise and `--input expander:gp3=0@500` pulls pin 3 of the port
+expander low. The actions each device takes are on its page.
+
+### Capturing output
+
+- `--dump-screen NAME=FILE` saves display NAME at the end of the run, as PNG
+  or PPM depending on the extension.
+- `--dump-paper NAME=FILE` saves what the mock cat printer printed (with `--bt
+  mock`), PNG or PBM.
+- `--wav FILE` records the test synth (see below).
+- `--wifi-trace NAME` prints the last 1024 bus transactions with the Wi-Fi
+  chip at the end, for debugging drivers.
+
+## Flash
+
+The flash chip is 2 MiB and starts erased with the firmware on top. With
+`--flash FILE` (headless) it is kept in a file instead: the run starts from
+the file's contents with the firmware written over them, and the file is
+saved at the end if the firmware wrote to flash. That is how MicroPython's
+filesystem survives from one run to the next. The file is created if it
+doesn't exist.
+
+## SD cards
+
+```sh
+tartelette mkdisk card.img --size-mb 64 --dir data
+tartelette os.elf --board btl-01 --sd sd=card.img
+```
+
+`mkdisk` makes a sparse image with an MBR and one empty FAT16 partition
+starting at 1 MiB, the way `embedded-sdmmc` likes it. `--dir` adds empty
+top-level directories; `--label` sets the volume label.
+
+`--sd NAME=FILE` loads an image into the `sdcard` part called NAME. The image
+lives in memory while the firmware runs. Headless, it is written back at the
+end if the firmware changed it; with a window, use the card's **Save…**
+button.
+
+To look inside a card while the firmware runs:
+
+- **Browse…** on the card's widget (native and web) opens a copy of the card
+  and shows its files, with a text or hex preview and **Save file…**. It reads
+  FAT12, FAT16 and FAT32, whole-disk or in an MBR partition. **Refresh** takes
+  a new copy.
+- `--sd-live` (native) writes every block to the `--sd` file as the firmware
+  writes it, so host tools can read the card while it runs:
+
+  ```sh
+  mdir -/ -i card.img@@1M ::
+  mtype -i card.img@@1M ::/LOG.TXT
+  fsck.fat -n card.img
+  ```
+
+  (`@@1M` is the partition offset `mkdisk` uses.)
+
+Either way you see what is on the card, not what the firmware still has in
+its buffers. A copy taken in the middle of a write can be inconsistent; the
+browser reports that as an error.
+
+## Faults
+
+An unaligned access, an undefined instruction, a branch to an ARM-state
+address or a bad exception return is reported as a warning naming the
+instruction and the reason, and then the firmware's
+HardFault handler runs, as on the chip. `--stop-on-fault` stops right there
+instead, before the handler gets a chance to reset or spin.
+
+Headless, a run that stops on a fault, or on a `bkpt` inside a handler (which
+is what pico-sdk's fault handlers do), ends by printing the core's registers,
+the exception frame and the cause.
+
+## Network and Bluetooth
+
+These only matter for boards with a `cyw43439` (the Pico W). See
+[devices/cyw43439.md](devices/cyw43439.md).
+
+```sh
+--net user|loopback|none   # default user: the host's network through a NAT
+--forward 8080:80          # host 127.0.0.1:8080 -> guest port 80
+--bt none|mock|hci0        # default none
+```
+
+## USB
+
+See [usb.md](usb.md).
+
+```sh
+--usb-bridge serial,hid,midi
+--usb-tty-link /tmp/ttyACM
+--usb-log
+```
+
+## Test synth
+
+If the board has CV and gate outputs (a `dac8165`, and `mcp23008` pins or
+LEDs used as gates), tartelette can play them through test voices so you hear
+what a sequencer is doing:
+
+- oscillators (`sine`, `triangle`, `saw`, `square`) follow a DAC channel at
+  1 V/octave, with 0 V at C4, and sound while their gate is high;
+- drums (`kick`, `snare`, `hat`, `openhat`, `clap`, all synthesized) play a hit
+  on each rising edge of their gate, however short the trigger.
+
+In the window, the **Synth** button opens the patch bay. Tick **Sound** to
+play through the sound card (native and web) and **Drum kit** to put kick,
+snare and hats on the first four gates. Each voice shows its gate, note and
+pitch.
+
+On the command line:
+
+```sh
+--osc WAVE[:CV[:GATE]]   # e.g. saw:dac.A:expander.0
+--osc DRUM[:GATE]        # e.g. kick:expander.0
+--drums                  # kick, snare, closed and open hat on the first four gates
+--wav out.wav            # headless: record the voices, 48 kHz mono
+```
+
+CV is a DAC channel (`dac.A` .. `dac.D`). GATE is an expander pin
+(`expander.0`), an LED part (`clk_out`), or `open` for always on. Left out,
+they are the board's first DAC channel and first gate. Headless, the WAV is
+rendered in emulated time and is sample-exact, however fast or slow the run
+was:
+
+```sh
+tartelette os.elf --board btl-01 --headless --max-cycles 1250000000 \
+    --osc saw:dac.A:expander.0 --osc square:dac.B:expander.1 --wav out.wav
+```
+
+The voltage at each jack comes from the DAC part's output-stage settings; see
+[devices/dac8165.md](devices/dac8165.md).
+
+## Other subcommands
+
+- `tartelette parts` lists the device kinds; `tartelette parts KIND` lists the
+  keys a part of that kind takes, with types and defaults.
+- `tartelette schema` prints the JSON schema for board files.
+- `tartelette mkdisk` is described above.

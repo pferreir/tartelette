@@ -37,6 +37,9 @@ gpio = 15
 # CV outputs: DAC8165 driven by PIO1 SM0 (bit-banged SPI: data 4, CS 5, CLK 6, reset 7).
 # It runs on its internal 2.5 V reference (VREFH/VREFOUT -> C4 470n, and the
 # R3/R4 150k/100k divider making VREF_1V), so the codes span 0..2.5 V.
+# An inverting op-amp stage puts them on the jacks as about +5.2..-5.3 V;
+# the cv_* values come from the OS's default calibration (os-sdk gate_cv.rs:
+# 0 V at code 32486, 6299.5 codes per volt, in 16-bit units).
 [parts.dac]
 kind = "dac8165"
 sdi = 4
@@ -44,6 +47,8 @@ cs = 5
 clk = 6
 rst = 7
 vref_mv = 2500
+cv_zero_uv = 1239240
+cv_uv_per_volt = -240310
 
 # Eight SK6812 mini LEDs on PIO1 SM1.
 [parts.rgb]
@@ -74,6 +79,9 @@ rgb = { at = [0, 4], span = [4, 1], label = "LEDs" }
 knob = { at = [4, 0], span = [2, 2], keys = ["Left", "Right"] }
 enc_sw = { at = [4, 2], label = "Push", key = "Space" }
 clk_out = { at = [5, 2], label = "Clock", color = "yellow" }
-expander = { at = [0, 3], span = [4, 1], label = "Soft keys (GP4-7) and gates (GP0-3)" }
+expander = [
+  { at = [0, 3], span = [2, 1], label = "Soft keys", pins = [4, 5, 6, 7], keys = ["1", "2", "3", "4"] },
+  { at = [2, 3], span = [2, 1], label = "Gates", pins = [0, 1, 2, 3], mode = "view", labels = ["A", "B", "C", "D"] },
+]
 dac = { at = [6, 0], span = [2, 2], label = "CV out" }
 sd = { at = [6, 2], span = [2, 1], label = "SD card" }

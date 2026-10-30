@@ -19,6 +19,21 @@ def main():
     import pyboard
 
     pyb = pyboard.Pyboard(f"exec:{command} --flash {image}")
+    proc = pyb.serial.subp
+
+    # pyboard's exec transport reads past the end of the emulator's output
+    # forever: fail instead when the emulator exits (a firmware it cannot
+    # load, say).
+    def read(size=1):
+        data = b""
+        while len(data) < size:
+            chunk = proc.stdout.read(size - len(data))
+            if not chunk:
+                sys.exit(f"the emulator exited with status {proc.wait()}")
+            data += chunk
+        return data
+
+    pyb.serial.read = read
     pyb.enter_raw_repl()
     for copy in copies:
         local, remote = copy.split(":", 1)
@@ -30,7 +45,6 @@ def main():
         print(f"{local} -> :{remote}")
     pyb.exit_raw_repl()
     # Not pyb.close(): that kills the emulator, which then saves nothing.
-    proc = pyb.serial.subp
     proc.stdin.close()
     if proc.wait(timeout=60) != 0:
         sys.exit(f"the emulator exited with status {proc.returncode}")

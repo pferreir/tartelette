@@ -15,6 +15,13 @@
 //!
 //! Events: `dac` with value `channel << 16 | code` whenever an output
 //! changes. [`Dac8165::millivolts`] gives `vref * code / 16384`.
+//!
+//! What the board makes of the outputs (an op-amp stage scaling and
+//! shifting them onto the jacks) is described by `cv_zero_uv`, the DAC
+//! output for 0 V at the jack, and `cv_uv_per_volt`, the DAC output change
+//! per volt at the jack (negative for an inverting stage); both in
+//! microvolts. [`Dac8165::cv_volts`] applies them. By default the jacks
+//! carry the DAC outputs as they are.
 use alloc::boxed::Box;
 
 use pcb::{Device, Io, Kind, Param};
@@ -25,6 +32,9 @@ pub struct Dac8165 {
     clk: usize,
     rst: Option<usize>,
     vref_mv: u32,
+    /// The board's output stage: DAC microvolts at 0 V out, and per volt out.
+    cv_zero_uv: i64,
+    cv_uv_per_volt: i64,
     /// Shift register and how many bits it holds.
     shift: u32,
     count: u32,
@@ -37,6 +47,21 @@ pub struct Dac8165 {
     /// Frames received, and frames that were malformed or unsupported.
     pub frames: u32,
     pub unsupported: u32,
+}
+
+/// How a code becomes a voltage at the jack (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CvScale {
+    vref_mv: u32,
+    zero_uv: i64,
+    uv_per_volt: i64,
+}
+
+impl CvScale {
+    pub fn volts(&self, code: u16) -> f32 {
+        let uv = code as f64 * self.vref_mv as f64 * 1000.0 / 16384.0;
+        ((uv - self.zero_uv as f64) / self.uv_per_volt as f64) as f32
+    }
 }
 
 pub const KIND: Kind = Kind {
@@ -55,17 +80,37 @@ pub const KIND: Kind = Kind {
             "reference voltage in millivolts: the full-scale output",
         )
         .default_int(2500),
+        Param::int(
+            "cv_zero_uv",
+            -10_000_000,
+            10_000_000,
+            "output stage: the DAC output (microvolts) that gives 0 V at the jack",
+        )
+        .default_int(0),
+        Param::int(
+            "cv_uv_per_volt",
+            -10_000_000,
+            10_000_000,
+            "output stage: DAC microvolts per volt at the jack, negative if it inverts",
+        )
+        .default_int(1_000_000),
     ],
     build: build_dac,
 };
 
 fn build_dac(p: &mut pcb::Params) -> Result<Box<dyn Device>, alloc::string::String> {
+    let cv_uv_per_volt = p.int("cv_uv_per_volt");
+    if cv_uv_per_volt == 0 {
+        return Err("cv_uv_per_volt must not be 0".into());
+    }
     Ok(Box::new(Dac8165 {
         sdi: p.pin("sdi"),
         cs: p.pin("cs"),
         clk: p.pin("clk"),
         rst: p.opt_pin("rst"),
         vref_mv: p.int("vref_mv") as u32,
+        cv_zero_uv: p.int("cv_zero_uv"),
+        cv_uv_per_volt,
         shift: 0,
         count: 0,
         cs_high: true,
@@ -86,6 +131,31 @@ impl Dac8165 {
     /// Output voltage of channel `ch` for the configured reference.
     pub fn millivolts(&self, ch: usize) -> u32 {
         self.output[ch] as u32 * self.vref_mv / 16384
+    }
+
+    /// Voltage at the jack for a 14-bit `code`, through the output stage.
+    pub fn cv_volts_for(&self, code: u16) -> f32 {
+        self.cv_scale().volts(code)
+    }
+
+    /// The code-to-jack-voltage conversion, to apply to `dac` events.
+    pub fn cv_scale(&self) -> CvScale {
+        CvScale {
+            vref_mv: self.vref_mv,
+            zero_uv: self.cv_zero_uv,
+            uv_per_volt: self.cv_uv_per_volt,
+        }
+    }
+
+    /// Voltage at the jack of channel `ch`, through the output stage.
+    pub fn cv_volts(&self, ch: usize) -> f32 {
+        self.cv_volts_for(self.output[ch])
+    }
+
+    /// Whether the board describes an output stage (the jacks don't just
+    /// carry the DAC outputs).
+    pub fn has_output_stage(&self) -> bool {
+        (self.cv_zero_uv, self.cv_uv_per_volt) != (0, 1_000_000)
     }
 
     fn frame(&mut self, io: &mut Io) {
@@ -284,6 +354,30 @@ mod tests {
         r.send(word(0, 0xFFFC), 24);
         assert_eq!(r.dac().millivolts(0), 1249);
         assert_eq!(r.dac().millivolts(1), 0);
+    }
+
+    #[test]
+    fn output_stage_maps_codes_to_jack_volts() {
+        // BTL-01: inverting, 0 V at about half scale.
+        let mut r = Rig::new("cv_zero_uv = 1239240, cv_uv_per_volt = -240310");
+        assert!(
+            (r.dac().cv_volts(0) - 5.157).abs() < 0.001,
+            "code 0 is the top"
+        );
+        r.send(word(0, 32486), 24);
+        assert!(r.dac().cv_volts(0).abs() < 0.002);
+        r.send(word(0, 990), 24);
+        assert!((r.dac().cv_volts(0) - 5.0).abs() < 0.002);
+        let plain = Rig::new("");
+        assert!(!plain.dac().has_output_stage());
+        assert_eq!(plain.dac().cv_volts_for(8192), 1.25);
+        assert!(
+            Board::parse_with(
+                "parts.d = { kind = \"dac8165\", sdi = 1, cs = 2, clk = 3, cv_uv_per_volt = 0 }",
+                &crate::registry()
+            )
+            .is_err()
+        );
     }
 
     #[test]

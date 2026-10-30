@@ -65,6 +65,11 @@ pub struct RunArgs {
     /// 512 KiB, so a smaller image file grows)
     #[arg(long, value_name = "NAME=FILE", value_parser = name_and_path)]
     pub sd: Vec<(String, PathBuf)>,
+    /// Write each block the firmware writes to an --sd card to its file
+    /// straight away, so host tools (mtools, fsck.fat) see the card as it
+    /// runs; with a window, the file otherwise changes only on Save…
+    #[arg(long, requires = "sd")]
+    pub sd_live: bool,
     /// What the board's Wi-Fi chips are connected to
     #[arg(long, value_enum, default_value = "user")]
     pub net: NetMode,
@@ -90,6 +95,20 @@ pub struct RunArgs {
     /// `--usb-bridge serial`), e.g. /tmp/ttyACM
     #[arg(long, value_name = "PATH", requires = "usb_bridge")]
     pub usb_tty_link: Option<PathBuf>,
+    /// Patch a test voice into the board's outputs, played in the window's
+    /// Synth panel or into `--wav`. An oscillator (WAVE is sine, triangle,
+    /// saw or square) follows CV, a DAC channel (`dac.A`), at 1 V/octave
+    /// from C4 at 0 V while GATE is high: an expander pin (`expander.0`), an
+    /// LED part, or `open`. A drum (kick, snare, hat, openhat, clap) plays a
+    /// hit on each rising edge of GATE. Left out, CV and GATE are the board's
+    /// first. Repeat for more voices
+    #[arg(long, value_name = "WAVE[:CV[:GATE]]|DRUM[:GATE]", value_parser = clap::value_parser!(crate::synth::Patch))]
+    pub osc: Vec<crate::synth::Patch>,
+    /// Patch a drum kit into the board's first four gates (kick, snare,
+    /// closed and open hat; on the BTL-01 gates A..D), with any `--osc`
+    /// voices, to hear the firmware as a drum machine
+    #[arg(long)]
+    pub drums: bool,
     /// Run without a window
     #[arg(long)]
     pub headless: bool,
@@ -134,6 +153,18 @@ fn file_or_builtin(
 }
 
 impl RunArgs {
+    /// The voices `--osc` and `--drums` ask for, or else the board's default.
+    pub fn patches(&self, board: &pcb::Board) -> Vec<crate::synth::Patch> {
+        let mut v = self.osc.clone();
+        if self.drums {
+            v.extend(crate::synth::drum_kit(board));
+        }
+        if v.is_empty() {
+            v = crate::synth::default_patches(board);
+        }
+        v
+    }
+
     /// The `--board` file, or else the built-in board of that name.
     pub fn board(&self) -> Result<Option<Source>, String> {
         self.board
@@ -219,6 +250,11 @@ pub struct Headless {
     /// and every packet on the other endpoints
     #[arg(long, requires = "headless")]
     pub usb_log: bool,
+    /// Record the `--osc` and `--drums` voices (by default a saw on the
+    /// board's first CV output and gate) to FILE, a 48 kHz mono WAV, in
+    /// emulated time
+    #[arg(long, value_name = "FILE", requires = "headless")]
+    pub wav: Option<PathBuf>,
 }
 
 impl Headless {
