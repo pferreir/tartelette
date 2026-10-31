@@ -114,6 +114,22 @@ pub struct Transfer {
     pub bswap: bool,
 }
 
+/// What the system needs to know of a channel to let it stream on its own
+/// (see `System`'s DMA streams).
+#[derive(Clone, Copy, Debug)]
+pub struct ChannelView {
+    pub running: bool,
+    pub treq: u32,
+    pub read: u32,
+    pub write: u32,
+    pub count: u32,
+    pub bytes: u32,
+    pub incr_read: bool,
+    pub incr_write: bool,
+    /// Address bits a ring keeps the read address within (0: no ring).
+    pub read_ring_bits: u32,
+}
+
 pub struct Dma {
     ch: [Channel; NUM_CHANNELS],
     /// Raw channel interrupts.
@@ -176,6 +192,26 @@ impl Dma {
 
     fn running(&self, c: &Channel) -> bool {
         c.busy && c.enabled() && c.count > 0
+    }
+
+    pub fn view(&self, n: usize) -> ChannelView {
+        let c = &self.ch[n];
+        let ring_bits = c.ctrl >> 6 & 0xF;
+        ChannelView {
+            running: self.running >> n & 1 != 0,
+            treq: c.treq(),
+            read: c.read,
+            write: c.write,
+            count: c.count,
+            bytes: c.item_bytes(),
+            incr_read: c.ctrl & CTRL_INCR_READ != 0,
+            incr_write: c.ctrl & CTRL_INCR_WRITE != 0,
+            read_ring_bits: if c.ctrl & CTRL_RING_SEL == 0 {
+                ring_bits
+            } else {
+                0
+            },
+        }
     }
 
     /// Some channel is mid-sequence (it may still be waiting for a request).

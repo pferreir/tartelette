@@ -1523,3 +1523,108 @@ fn rp2040js_instruction_encodings() {
     assert_eq!(irq(false, false, 4), 0xC004);
     assert_eq!(set(X, 12), 0xE02C);
 }
+
+// ---- idle machines: loops, stalls that still hold, free-running dividers ----
+
+/// A machine polling a pin that holds still: `mov x, pins; jmp x!=y 3;
+/// jmp 0`, then `push` once the pin reads differently (y = 0).
+fn polling_rig() -> Rig {
+    let mut r = Rig::new();
+    r.load(
+        0,
+        &[
+            mov(X, 0, PINS),
+            jmp(JMP_X_NE_Y, 3),
+            jmp(JMP_ALWAYS, 0),
+            push(false, true),
+        ],
+    );
+    r.wrap(0, 0, 3);
+    r.pinctrl(0, 0); // IN_BASE = 0
+    r.pio.sm_write(0, 0, 2 << 16 | 160 << 8); // divide by 2.625: the phase matters
+    r.enable(1);
+    r
+}
+
+#[test]
+fn a_loop_that_changes_nothing_parks_and_skipping_it_is_exact() {
+    // Left alone, the loop is found and the block counts as parked.
+    let mut skipped = polling_rig();
+    skipped.run(1000);
+    assert!(skipped.pio.parked(0), "the polling loop parks");
+    assert!(!skipped.pio.active());
+    skipped.run(123_457); // skipped, laps and all
+
+    // Looked at every cycle (a register read unsettles it), the same
+    // machine is stepped cycle by cycle all along.
+    let mut stepped = polling_rig();
+    for _ in 0..124_457 {
+        stepped.pio.read(0x004);
+        stepped.run(1);
+    }
+    assert!(stepped.sm(0).snapshot() == skipped.sm(0).snapshot());
+
+    // The pin moves: both see it on the same cycle.
+    let push_at = |r: &mut Rig| {
+        r.env.pads = 1;
+        (0..100).find(|_| {
+            r.run(1);
+            !r.sm(0).rx.is_empty()
+        })
+    };
+    let at = push_at(&mut skipped);
+    assert!(at.is_some());
+    assert_eq!(at, push_at(&mut stepped));
+}
+
+#[test]
+fn smx_instr_runs_at_once_even_on_a_slow_clock() {
+    let mut r = Rig::new();
+    r.pio.sm_write(0, 0, 200 << 16); // divide by 200
+    r.pio.sm_write(0, 0x10, set(X, 5) as u32);
+    r.run(1);
+    assert_eq!(r.sm(0).x, 5, "executed on the next cycle");
+    // The next one too, before the divider has ticked.
+    r.pio.sm_write(0, 0x10, set(X, 9) as u32);
+    r.run(1);
+    assert_eq!(r.sm(0).x, 9);
+}
+
+#[test]
+fn a_stopped_machines_divider_keeps_running() {
+    // Machine 1 runs and keeps the block stepping; machine 0 is stopped.
+    let mut r = Rig::new();
+    r.load(0, &[jmp(JMP_ALWAYS, 0)]);
+    r.wrap(1, 0, 0);
+    r.pio.sm_write(0, 0, 3 << 16); // divide by 3
+    r.enable(2);
+    r.run(7);
+    // (A stopped machine's divider is brought up to date lazily, before
+    // anything that could start it.)
+    r.pio.settle_dividers();
+    assert_eq!(r.sm(0).acc, 256, "7 cycles of a /3 divider: one cycle in");
+    // With nothing running the block skips, and the divider moves just the same.
+    r.enable(0);
+    r.run(7);
+    r.pio.settle_dividers();
+    assert_eq!(r.sm(0).acc, 512);
+}
+
+#[test]
+fn a_stall_on_one_pin_holds_when_another_moves() {
+    let mut r = Rig::new();
+    r.load(0, &[wait(1, 0, 0)]); // wait for GPIO0 high
+    r.pio.sm_write(0, 0, 1000 << 16); // a slow clock: a tick every 1000 cycles
+    r.enable(1);
+    r.run(2000);
+    assert!(r.pio.parked(0));
+    // GPIO5 moves: once the synchronizer has it, the machine is still parked,
+    // without waiting for its next tick to find out.
+    r.env.pads = 1 << 5;
+    r.run(3);
+    assert!(r.pio.parked(1 << 5));
+    // GPIO0 moves: that's what it waits for.
+    r.env.pads |= 1;
+    r.run(3);
+    assert!(!r.pio.parked(r.env.pads));
+}

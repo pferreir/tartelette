@@ -127,3 +127,60 @@ fn alarms_rearmed_while_spinning_match_unbatched() {
     compare("batch-timer", 200_000, SPACING);
     compare("batch-timer", 200_000, &[1_000_000]);
 }
+
+/// With a display on the bus, the DMA streams of `spi-dma-test` run the
+/// frames on their own during batches (see `System`'s DMA streams): the
+/// display must get the same pixels, and report them at the same cycles, as
+/// when every device is synced after every instruction.
+#[test]
+fn dma_streams_into_a_display_match_unbatched() {
+    use pcb::Board;
+    use pcb_devices::st7789::St7789;
+    const BOARD: &str = "buses.spi0 = { sck = 18, mosi = 19, miso = 16 }\nparts.screen = { kind = \"st7789\", bus = \"spi0\", cs = 9, dc = 13, rst = 17 }";
+    let elf = build("spi-dma-test");
+    let with_screen = || {
+        let mut s = load(&elf);
+        s.set_board(Board::parse_with(BOARD, &pcb_devices::registry()).unwrap());
+        s
+    };
+    let seen = |s: &System| {
+        let lcd = s.board.device::<St7789>("screen").unwrap();
+        let pixels: Vec<u16> = (0..20)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| lcd.pixel(x, y))
+            .collect();
+        let events: Vec<_> = s
+            .board
+            .events
+            .iter()
+            .map(|e| (e.cycles, e.label, e.value))
+            .collect();
+        format!(
+            "{} pixels={pixels:?} total={} events={events:?}",
+            snapshot(s),
+            lcd.total_pixels
+        )
+    };
+    for &chunk in SPACING {
+        let (mut fast, mut slow) = (with_screen(), with_screen());
+        slow.batching = false;
+        let stop = loop {
+            let (a, b) = (fast.run(chunk), slow.run(chunk));
+            assert_eq!(a, b, "chunk {chunk}: different stop");
+            assert_eq!(
+                seen(&fast),
+                seen(&slow),
+                "chunk {chunk}: diverged at {}",
+                fast.cycles()
+            );
+            if a != StopReason::CycleLimit {
+                break a;
+            }
+        };
+        assert_eq!(
+            stop,
+            StopReason::Breakpoint(1),
+            "the firmware ran to the end"
+        );
+    }
+}

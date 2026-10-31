@@ -17,6 +17,10 @@ use pcb::SpiTarget;
 use super::Peripheral;
 
 const FIFO_DEPTH: usize = 8;
+/// [`Spi::outputs`] bits.
+pub const OUT_IRQ: u8 = 1;
+pub const OUT_DREQ_TX: u8 = 2;
+pub const OUT_DREQ_RX: u8 = 4;
 /// The emulator's clock, which the wire's times are counted in.
 const CLK_SYS_HZ: u64 = crate::system::CYCLES_PER_US * 1_000_000;
 
@@ -108,15 +112,22 @@ impl Spi {
     }
 
     /// Run the wire up to `to`: replies of the frames that ended land in the
-    /// RX FIFO. True if one did (and so FIFO levels moved). The system runs
-    /// this whenever its clock moves, so an idle wire returns at once (and
-    /// leaves `cycles` behind: [`Spi::pump`] catches it up).
+    /// RX FIFO. True if that moved one of the [`Spi::outputs`] in `watched`.
+    /// The system runs this whenever its clock moves (register accesses
+    /// included, so the firmware always reads the wire as it is), so an idle
+    /// wire returns at once (and leaves `cycles` behind: [`Spi::pump`]
+    /// catches it up).
     #[inline]
-    pub fn update(&mut self, to: u64) -> bool {
+    pub fn update(&mut self, to: u64, watched: u8) -> bool {
         if self.wire.is_empty() {
             return false;
         }
-        self.run_wire(to)
+        if watched & self.enabled_outputs() == 0 {
+            self.run_wire(to);
+            return false;
+        }
+        let before = self.outputs() & watched;
+        self.run_wire(to) && self.outputs() & watched != before
     }
 
     fn run_wire(&mut self, to: u64) -> bool {
@@ -133,9 +144,53 @@ impl Spi {
 
     /// The cycle at which the wire next changes on its own: the next frame
     /// end (frames go back to back, so it is also when the next one starts).
+    /// None if none of the outputs in `watched` is enabled: then nothing
+    /// sees a frame end until the firmware reads a register, which runs the
+    /// wire first, and an event per frame would only keep the cores from
+    /// running in batches for as long as the wire is busy.
     #[inline]
-    pub fn next_event(&self) -> Option<u64> {
+    pub fn next_event(&self, watched: u8) -> Option<u64> {
+        self.wire
+            .front()
+            .filter(|_| watched & self.enabled_outputs() != 0)
+            .map(|f| f.1)
+    }
+
+    /// The end of the frame on the wire, whoever watches it.
+    #[inline]
+    pub fn next_frame_end(&self) -> Option<u64> {
         self.wire.front().map(|f| f.1)
+    }
+
+    /// When the `i`th frame end from now (1-based) comes, if the wire stays
+    /// busy that long: the frames on it, then more of the same length back
+    /// to back (as a DMA keeping the FIFO full gives).
+    pub fn frame_end(&self, i: usize) -> Option<u64> {
+        let last = self.wire.back()?.1;
+        match i.checked_sub(1).and_then(|k| self.wire.get(k)) {
+            Some(f) => Some(f.1),
+            None => Some(last + (i - self.wire.len()) as u64 * self.frame_cycles()?),
+        }
+    }
+
+    /// Some interrupt is enabled.
+    pub fn interrupts_enabled(&self) -> bool {
+        self.imsc != 0
+    }
+
+    /// What the rest of the chip sees of the controller without reading a
+    /// register, as bits: the interrupt line ([`OUT_IRQ`]) and the TX
+    /// ([`OUT_DREQ_TX`]) and RX ([`OUT_DREQ_RX`]) DMA requests.
+    pub fn outputs(&self) -> u8 {
+        self.irq() as u8 | (self.dreq_tx() as u8) << 1 | (self.dreq_rx() as u8) << 2
+    }
+
+    /// The outputs that can be set at all.
+    #[inline]
+    fn enabled_outputs(&self) -> u8 {
+        (self.imsc != 0) as u8
+            | ((self.dmacr & 2 != 0) as u8) << 1
+            | ((self.dmacr & 1 != 0) as u8) << 2
     }
 
     fn receive(&mut self, reply: u16) {
@@ -149,7 +204,9 @@ impl Spi {
     /// Hand every queued frame to the target at cycle `now`, receiving one
     /// back for each; on a timed wire the replies land as the frames end.
     pub fn pump(&mut self, bus: &mut dyn SpiTarget, now: u64) {
-        self.update(now);
+        if !self.wire.is_empty() {
+            self.run_wire(now);
+        }
         self.cycles = self.cycles.max(now);
         let bits = self.frame_bits();
         let mask = if bits >= 16 {
@@ -272,6 +329,8 @@ mod tests {
 
     use super::*;
 
+    const OUT_ALL: u8 = OUT_IRQ | OUT_DREQ_TX | OUT_DREQ_RX;
+
     /// Answers each frame with `frame ^ 0xFF`, recording what it saw.
     #[derive(Default)]
     struct Wire {
@@ -318,6 +377,7 @@ mod tests {
         // CPSDVSR = 2, SCR = 0, 8 bits at clk_peri = clk_sys: 16 cycles each.
         let mut s = enabled(7);
         s.write(0x010, 2);
+        s.write(0x024, 1); // RX DMA request: frame ends are seen
         let mut w = Wire::default();
         for b in 1..=3 {
             s.write(0x008, b);
@@ -326,18 +386,46 @@ mod tests {
         assert_eq!(w.seen.len(), 3, "the target sees every frame at once");
         // Two frames wait behind the one on the wire; nothing has come back.
         assert_eq!(s.read(0x00C), 0b1_0010, "BSY, TX room, TX not empty");
-        assert_eq!(s.next_event(), Some(116));
-        assert!(!s.update(115));
-        assert!(s.update(116));
+        assert_eq!(s.next_event(OUT_ALL), Some(116));
+        assert!(!s.update(115, OUT_ALL));
+        assert!(s.update(116, OUT_ALL));
         assert_eq!(s.read(0x00C) & 0b0100, 0b0100, "first reply in");
         assert_eq!(s.read(0x008), !1 & 0xFF);
-        s.update(148);
+        s.update(148, OUT_ALL);
         assert_eq!(s.read(0x00C), 0b0111, "idle: TX empty, both replies in");
-        assert_eq!(s.next_event(), None);
+        assert_eq!(s.next_event(OUT_ALL), None);
         // A pump later starts on an idle wire from its own time.
         s.write(0x008, 4);
         s.pump(&mut w, 1000);
-        assert_eq!(s.next_event(), Some(1016));
+        assert_eq!(s.next_event(OUT_ALL), Some(1016));
+    }
+
+    #[test]
+    fn unwatched_frames_end_unannounced() {
+        // No interrupt or DMA request enabled: nothing sees a frame end but
+        // a register read, so it isn't an event, yet reads find it ended.
+        let mut s = enabled(7);
+        s.write(0x010, 2);
+        let mut w = Wire::default();
+        s.write(0x008, 1);
+        s.write(0x008, 2);
+        s.pump(&mut w, 100);
+        assert_eq!(s.next_event(OUT_ALL), None);
+        assert!(!s.update(116, OUT_ALL), "a frame ended, unseen");
+        assert_eq!(s.read(0x00C), 0b1_0111, "BSY, TX empty, first reply in");
+        assert!(!s.update(132, OUT_ALL));
+        assert_eq!(s.read(0x00C), 0b0111, "idle");
+        // Enabling the RX interrupt makes the next frame end an event.
+        s.write(0x014, INT_RX);
+        s.write(0x008, 3);
+        s.pump(&mut w, 200);
+        assert_eq!(s.next_event(OUT_ALL), Some(216));
+        // An enabled DMA request no channel waits on isn't watched.
+        s.write(0x014, 0);
+        s.write(0x024, 3);
+        assert_eq!(s.next_event(OUT_IRQ), None);
+        assert_eq!(s.next_event(OUT_DREQ_RX), Some(216));
+        assert!(!s.update(216, OUT_IRQ));
     }
 
     #[test]
@@ -354,7 +442,7 @@ mod tests {
         assert_eq!(s.read(0x00C) & 0b0011, 0, "TX full and not empty");
         s.write(0x024, 2);
         assert!(!s.dreq_tx(), "no DMA request while full");
-        s.update(2032);
+        s.update(2032, OUT_ALL);
         assert!(s.dreq_tx(), "a frame started, so there is room");
     }
 
@@ -363,10 +451,11 @@ mod tests {
         let mut s = enabled(7 | 1 << 8); // SCR = 1
         s.write(0x010, 2);
         s.set_clk_peri(48_000_000);
+        s.write(0x024, 2);
         s.write(0x008, 0);
         s.pump(&mut Wire::default(), 0);
         // 8 bits x 2 x 2 = 32 clocks of 48 MHz: 83.3 cycles of 125 MHz.
-        assert_eq!(s.next_event(), Some(83));
+        assert_eq!(s.next_event(OUT_ALL), Some(83));
     }
 
     #[test]

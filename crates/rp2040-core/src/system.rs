@@ -18,7 +18,7 @@ use crate::{
     periph::{
         Peripheral, RegStub,
         clocks::Clocks,
-        dma::Dma,
+        dma::{self, Dma},
         gpio::{Gpio, IoBank0, PadsBank0},
         i2c::I2c,
         pio::{Pio, PioEnv},
@@ -26,7 +26,7 @@ use crate::{
         resets::Resets,
         rtc::Rtc,
         sio::Sio,
-        spi::Spi,
+        spi::{self, Spi},
         ssi::Ssi,
         timer::Timer,
         uart::Uart,
@@ -159,6 +159,25 @@ const SYSINFO_RESET: &[(u32, u32)] = &[(0x00, 0x2000_2927)];
 // The PLLs: REFDIV = 1, POSTDIV1 = POSTDIV2 = 7.
 const PLL_RESET: &[(u32, u32)] = &[(PLL_CS, 1), (PLL_PRIM, 0x7_7000)];
 
+/// A DMA channel that feeds a timed SPI's TX FIFO from memory, item after
+/// item as frames go out, with nothing else watching. Followed one frame at
+/// a time, it would end a batch of core instructions at every frame; instead
+/// the cores run on, and the stream catches up to the cycle of each access
+/// that could see its progress (any peripheral register, or a store into
+/// the part of its source not read yet), moving each item at the frame end
+/// it would have moved at. It lasts one batch, which ends no later than its
+/// last item (so completion, interrupt and chaining go the usual way).
+#[derive(Clone, Copy)]
+struct Stream {
+    spi: usize,
+    channel: usize,
+    /// The source still to be read, as SRAM offsets `unread.0..unread.1`
+    /// (empty for flash or ROM, which the cores cannot store to).
+    unread: (u32, u32),
+    /// The cycle at which the last item moves.
+    last_at: u64,
+}
+
 pub struct SystemBus {
     pub bootrom: Ram,
     pub flash: Ram,
@@ -192,6 +211,9 @@ pub struct SystemBus {
     pub(crate) lines_dirty: bool,
     /// A peripheral register was accessed since the last full device sync.
     pub(crate) touched: bool,
+    /// A DMA channel feeding an SPI on its own during a batch (see
+    /// [`Stream`]).
+    stream: Option<Stream>,
     /// System cycles the PIO dividers have not been told about yet: quiet
     /// steps add to it, and it is applied before anything that could change
     /// which machines run (a PIO or RESETS access) and before a full sync.
@@ -252,6 +274,7 @@ impl SystemBus {
             core: 0,
             lines_dirty: true,
             touched: true,
+            stream: None,
             pio_owed: 0,
             time: 0,
             now: 0,
@@ -301,13 +324,168 @@ impl SystemBus {
         for uart in &mut self.uart {
             changed |= uart.update(to);
         }
-        for spi in &mut self.spi {
-            changed |= spi.update(to);
+        for n in 0..2 {
+            // An idle wire has nothing to run; a streaming SPI's runs with
+            // its stream (`stream_catch_up`).
+            if self.spi[n].next_frame_end().is_none() || self.stream.is_some_and(|s| s.spi == n) {
+                continue;
+            }
+            let watched = self.spi_watched(n);
+            changed |= self.spi[n].update(to, watched);
         }
         if changed {
             self.lines_dirty = true;
             self.touched = true;
         }
+    }
+
+    /// The DMA stream into an SPI the cores can run alongside, if there is
+    /// one: exactly one running channel paced by a timed SPI's TX request,
+    /// reading plain memory and writing that SPI's data register, with its
+    /// FIFO full (the system is quiet), the SPI's interrupts off and nothing
+    /// waiting on its RX request, and at least two items left.
+    #[inline(never)]
+    fn find_stream(&self) -> Option<Stream> {
+        if self.resets.in_reset(RESET_DMA) || !self.dma.active() {
+            return None;
+        }
+        let needed = self.dma.needed_dreqs();
+        (0..2).find_map(|n| {
+            let spi = &self.spi[n];
+            let tx = 16 + 2 * n as u32;
+            if spi.next_frame_end().is_none()
+                || spi.interrupts_enabled()
+                || needed >> tx & 1 == 0
+                || needed >> (tx + 1) & 1 != 0
+            {
+                return None;
+            }
+            let mut on_tx = (0..dma::NUM_CHANNELS)
+                .filter(|&c| self.dma.view(c).running && self.dma.view(c).treq == tx);
+            let channel = on_tx.next()?;
+            if on_tx.next().is_some() {
+                return None;
+            }
+            let v = self.dma.view(channel);
+            let dr = APB_BASE + ((APB_SPI0 + n as u32) << 14) + 8;
+            let plain = matches!(v.read >> 24, 0x00 | 0x10..=0x13 | 0x20 | 0x21);
+            if v.write & !3 != dr || v.incr_write || !plain || v.count < 2 {
+                return None;
+            }
+            let unread = match v.read >> 24 {
+                0x20 | 0x21 => {
+                    let at = v.read & 0xFF_FFFF;
+                    match (v.incr_read, v.read_ring_bits) {
+                        (false, _) => (at, at + v.bytes),
+                        (true, 0) => (at, at.saturating_add(v.count.saturating_mul(v.bytes))),
+                        // A ring: the whole of it.
+                        (true, bits) => {
+                            let base = at & !((1 << bits) - 1);
+                            (base, base + (1 << bits))
+                        }
+                    }
+                }
+                _ => (0, 0),
+            };
+            Some(Stream {
+                spi: n,
+                channel,
+                unread,
+                last_at: spi.frame_end(v.count as usize)?,
+            })
+        })
+    }
+
+    /// Move the stream's items whose frame ends come by cycle `to`, each at
+    /// its own cycle, handing the frames to the board's SPI devices. Ends
+    /// the stream if it no longer is one (another channel wants the bus,
+    /// the channel was changed, a device moved a pin) or its last item went:
+    /// the next sync takes it from there.
+    #[inline]
+    fn stream_catch_up(&mut self, to: u64, board: &mut Board) {
+        if let Some(s) = self.stream {
+            self.run_stream(s, to, board);
+        }
+    }
+
+    #[inline(never)]
+    fn run_stream(&mut self, s: Stream, to: u64, board: &mut Board) {
+        let n = s.spi;
+        while let Some(t) = self.spi[n].next_frame_end().filter(|&t| t <= to) {
+            let v = self.dma.view(s.channel);
+            let others = self.dma.needed_dreqs() & !(1 << (16 + 2 * n));
+            if !v.running
+                || v.treq != 16 + 2 * n as u32
+                || self.spi[n].interrupts_enabled()
+                || (others != 0 && self.dma.can_run(self.dreq_mask(others)))
+            {
+                self.end_stream();
+                return;
+            }
+            // The frame ends; the next one starts, so there's room.
+            self.spi[n].update(t, 0);
+            let Some(item) = self.dma.pick(self.dreq_mask(self.dma.needed_dreqs())) else {
+                self.end_stream();
+                return;
+            };
+            let mut v = match item.bytes {
+                1 => self.read8(item.read) as u32,
+                2 => self.read16(item.read) as u32,
+                _ => self.read32(item.read),
+            };
+            if item.bswap {
+                v = match item.bytes {
+                    2 => (v as u16).swap_bytes() as u32,
+                    4 => v.swap_bytes(),
+                    _ => v,
+                };
+            }
+            // As a sub-word store to a peripheral: the value in every lane.
+            let v = match item.bytes {
+                1 => v * 0x0101_0101,
+                2 => v * 0x0001_0001,
+                _ => v,
+            };
+            self.spi[n].write(0x008, v);
+            self.dma.complete(&item);
+            self.lines_dirty = true;
+            let mut wire = board.spi_bus(n, &mut self.gpio, t);
+            self.spi[n].pump(&mut wire, t);
+            if self.gpio.has_changes() || !self.dma.view(s.channel).running {
+                self.end_stream();
+                return;
+            }
+            // What's read is no longer the stream's business.
+            if let Some(st) = &mut self.stream {
+                let next = self.dma.view(s.channel).read & 0xFF_FFFF;
+                if (st.unread.0..=st.unread.1).contains(&next) {
+                    st.unread.0 = next;
+                }
+            }
+        }
+    }
+
+    /// Back to following the SPI frame by frame; the next sync looks at
+    /// everything.
+    fn end_stream(&mut self) {
+        self.stream = None;
+        self.touched = true;
+        self.lines_dirty = true;
+    }
+
+    /// The [`Spi::outputs`] of SPI `n` that something reacts to without
+    /// reading its registers: the interrupt line, and the DMA requests a
+    /// running channel waits on. (A DMA request enabled once at start-up,
+    /// with no transfer under way, changes nothing as it comes and goes.)
+    #[inline]
+    fn spi_watched(&self, n: usize) -> u8 {
+        let needed = match self.resets.in_reset(RESET_DMA) {
+            true => 0,
+            false => self.dma.needed_dreqs() >> (16 + 2 * n),
+        };
+        spi::OUT_IRQ
+            | ((needed & 1 != 0) as u8 * spi::OUT_DREQ_TX)
+            | ((needed & 2 != 0) as u8 * spi::OUT_DREQ_RX)
     }
 
     /// Let the PIO dividers catch up with the quiet steps taken so far.
@@ -481,6 +659,16 @@ impl SystemBus {
         }
     }
 
+    /// Is `addr` in a UART, SPI or I2C controller?
+    #[inline]
+    fn is_bus_controller(addr: u32) -> bool {
+        addr >> 28 == 0x4
+            && matches!(
+                addr.wrapping_sub(APB_BASE) >> 14,
+                APB_UART0 | APB_UART1 | APB_SPI0 | APB_SPI1 | APB_I2C0 | APB_I2C1
+            )
+    }
+
     /// Can an access to `addr` start work in a device that the quiet path
     /// doesn't advance (DMA, PIO, buses, GPIO, resets)? Spinlocks, the SIO
     /// FIFOs and divider, NVIC/SysTick and the timer can't: they only move
@@ -594,8 +782,15 @@ impl SystemBus {
         e = earliest(e, self.ppb[1].cycles_to_event());
         e = earliest(e, until(self.uart[0].next_event()));
         e = earliest(e, until(self.uart[1].next_event()));
-        e = earliest(e, until(self.spi[0].next_event()));
-        e = earliest(e, until(self.spi[1].next_event()));
+        for n in 0..2 {
+            let next = match self.stream {
+                // Its frames are no events; its last item is.
+                Some(s) if s.spi == n => Some(s.last_at),
+                _ if self.spi[n].next_frame_end().is_none() => None,
+                _ => self.spi[n].next_event(self.spi_watched(n)),
+            };
+            e = earliest(e, until(next));
+        }
         earliest(e, until(self.usb.next_event()))
     }
 
@@ -786,6 +981,80 @@ impl Bus for SystemBus {
     #[inline]
     fn interrupted(&self) -> bool {
         self.touched | self.lines_dirty
+    }
+}
+
+/// The bus a core runs a batch on while a [`Stream`] goes: the system bus,
+/// with the stream caught up before every access that could tell.
+struct StreamBus<'a> {
+    bus: &'a mut SystemBus,
+    board: &'a mut Board,
+}
+
+impl StreamBus<'_> {
+    /// Before an access to `addr` of `len` bytes: anything but plain memory,
+    /// or a store into the stream's unread source.
+    #[inline]
+    fn before(&mut self, addr: u32, len: u32, store: bool) {
+        let Some(s) = &self.bus.stream else { return };
+        let catch_up = match addr >> 24 {
+            0x00 | 0x10..=0x13 => false,
+            0x20 | 0x21 if addr & 0xFF_FFFF < SRAM_SIZE => {
+                let at = addr & 0xFF_FFFF;
+                store && at < s.unread.1 && at + len > s.unread.0
+            }
+            _ => true,
+        };
+        if catch_up {
+            let now = self.bus.now;
+            self.bus.stream_catch_up(now, self.board);
+        }
+    }
+}
+
+impl Bus for StreamBus<'_> {
+    #[inline]
+    fn read8(&mut self, addr: u32) -> u8 {
+        self.before(addr, 1, false);
+        self.bus.read8(addr)
+    }
+    #[inline]
+    fn read16(&mut self, addr: u32) -> u16 {
+        self.before(addr, 2, false);
+        self.bus.read16(addr)
+    }
+    #[inline]
+    fn read32(&mut self, addr: u32) -> u32 {
+        self.before(addr, 4, false);
+        self.bus.read32(addr)
+    }
+    #[inline]
+    fn fetch16(&mut self, addr: u32) -> u16 {
+        self.before(addr, 2, false);
+        self.bus.fetch16(addr)
+    }
+    #[inline]
+    fn write8(&mut self, addr: u32, val: u8) {
+        self.before(addr, 1, true);
+        self.bus.write8(addr, val)
+    }
+    #[inline]
+    fn write16(&mut self, addr: u32, val: u16) {
+        self.before(addr, 2, true);
+        self.bus.write16(addr, val)
+    }
+    #[inline]
+    fn write32(&mut self, addr: u32, val: u32) {
+        self.before(addr, 4, true);
+        self.bus.write32(addr, val)
+    }
+    #[inline]
+    fn instruction_start(&mut self, cycles: u64) {
+        self.bus.instruction_start(cycles)
+    }
+    #[inline]
+    fn interrupted(&self) -> bool {
+        self.bus.interrupted()
     }
 }
 
@@ -1236,6 +1505,7 @@ impl System {
                     _ => v,
                 };
             }
+            let touched = self.bus.touched;
             match t.bytes {
                 1 => self.bus.write8(t.write, v as u8),
                 2 => self.bus.write16(t.write, v as u16),
@@ -1245,6 +1515,12 @@ impl System {
             self.bus.lines_dirty = true;
             // The write may have queued a frame for a board device.
             self.service_buses();
+            // That was all a bus controller's FIFO needed: the rest of this
+            // sync covers it, so it doesn't cost the cores a sync of their
+            // own (a DMA stream into a timed SPI would, once per frame).
+            if SystemBus::is_bus_controller(t.write) {
+                self.bus.touched = touched;
+            }
             moved += 1;
         }
         moved
@@ -1306,12 +1582,25 @@ impl System {
     /// cycle, step the PIO blocks, advance timers and SysTick, refresh the
     /// interrupt lines and let board devices react.
     fn advance_segment(&mut self, to: u64) {
+        self.bus.stream_catch_up(to, &mut self.board);
         let from = self.bus.time;
         if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() {
             if to > from {
                 self.bus.time = to;
                 self.bus.pio_owed += to - from;
                 self.advance_clocks(from, to);
+            }
+            // A device's own event (a frame ending on a timed SPI wire, a
+            // UART character) raised a DMA request: the DMA answers it now,
+            // as it would on its next cycle, so a DMA stream costs one sync
+            // per item, not a sync and then a core step on its own.
+            if self.bus.touched && self.dma_runnable() {
+                self.bus.touched = false;
+                self.run_dma(1);
+                self.refresh_core_views();
+                self.sync_board();
+                self.quiet = self.is_quiet();
+                return;
             }
             self.refresh_core_views();
             return;
@@ -1479,6 +1768,7 @@ impl System {
     /// them, and everything else catches up once at the end.
     fn run_batch(&mut self, core: usize, end: u64) {
         let other = 1 - core;
+        self.bus.stream = self.bus.find_stream();
         let mut limit = self.batch_limit();
         self.bus.core = core;
         loop {
@@ -1487,9 +1777,12 @@ impl System {
             match self.bus.ppb[core].pick(cpu.ipsr, cpu.primask) {
                 Some(exc) => {
                     self.bus.ppb[core].acknowledge(exc);
+                    // (Stacking stores to SRAM, maybe the stream's source.)
+                    self.bus.stream_catch_up(cpu.cycles, &mut self.board);
                     cpu.take_exception(&mut self.bus, exc);
                 }
                 None if cpu.sleeping => {
+                    self.bus.stream_catch_up(cpu.cycles, &mut self.board);
                     cpu.step(&mut self.bus);
                 }
                 // Run until one of the checks below could come out
@@ -1505,7 +1798,16 @@ impl System {
                         false => u64::MAX,
                     };
                     let cpu = &mut self.cores[core];
-                    cpu.run_threaded(&mut self.bus, limit.min(end).min(turn));
+                    let until = limit.min(end).min(turn);
+                    if self.bus.stream.is_some() {
+                        let mut bus = StreamBus {
+                            bus: &mut self.bus,
+                            board: &mut self.board,
+                        };
+                        cpu.run_threaded(&mut bus, until);
+                    } else {
+                        cpu.run_threaded(&mut self.bus, until);
+                    }
                 }
             }
             let cpu = &mut self.cores[core];
@@ -1561,6 +1863,9 @@ impl System {
                 .unwrap_or(self.cores[core].cycles)
                 .max(self.bus.time),
         );
+        // Caught up to the devices' time: from here the SPI is followed
+        // frame by frame again.
+        self.bus.stream = None;
     }
 
     /// Advance the system by one instruction of whichever core is next, or

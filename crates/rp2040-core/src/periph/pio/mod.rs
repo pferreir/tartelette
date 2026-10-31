@@ -7,7 +7,10 @@
 //! (fractionally divided) clock ticks, so pad edges come out with exact cycle
 //! timestamps, passed to the [`PioEnv`] as they happen. When every machine is
 //! stalled on something only the outside world can change (an empty FIFO, a
-//! pin, an IRQ flag) the remaining cycles are skipped in one go.
+//! pin, an IRQ flag) the remaining cycles are skipped in one go. A machine
+//! going round a loop that changes nothing outside itself (polling pins
+//! that hold still) counts as stalled too, once its state comes back to an
+//! earlier one: skipping then only runs it through what's left of a lap.
 //!
 //! Modelled details worth knowing: delay cycles start after an instruction
 //! completes, side-set applies on the first cycle of an instruction even if
@@ -18,7 +21,7 @@
 //! (stored only), the `IRQ` flags' routing to the system IRQs 4-7 (they are
 //! machine-visible only), and exact behaviour of simultaneous cross-machine
 //! reads (a machine sees the effects of lower-numbered ones in the same cycle).
-use sm::{Shared, Sm};
+use sm::{Shared, Sm, Snapshot};
 
 use super::Peripheral;
 
@@ -29,6 +32,8 @@ mod tests;
 pub const NUM_SM: usize = 4;
 const IMEM_WORDS: usize = 32;
 const FIFO_DEPTH: usize = 4;
+/// The longest loop looked for, in ticks of a machine's clock.
+const LOOP_TICKS: u32 = 1024;
 /// The pads that exist (GPIO0..=29).
 const PAD_MASK: u32 = 0x3FFF_FFFF;
 
@@ -72,6 +77,46 @@ pub struct Pio {
     pipe: [u32; 2],
     /// Machines that have re-evaluated their stall since anything last changed.
     settled: u8,
+    /// Machines found going round a loop with no effect outside themselves,
+    /// since anything last changed, and how long a lap takes (in system
+    /// cycles, divider phase included).
+    looping: u8,
+    lap: [u64; NUM_SM],
+    /// Each machine's search for such a loop.
+    search: [Search; NUM_SM],
+    /// Cycles the dividers of machines that don't run haven't been given
+    /// yet: they only matter once one starts, which takes a register write.
+    owed: u64,
+}
+
+/// A search for a loop with Brent's method: compare each state with one
+/// kept from earlier, kept again every power of two ticks.
+#[derive(Clone, Copy)]
+enum Search {
+    /// Starts at the machine's next tick that changes nothing outside it.
+    Fresh,
+    /// The state at absolute cycle `at`, `ticks` ticks ago; a new one is
+    /// kept after `span` ticks.
+    Looking {
+        kept: Snapshot,
+        at: u64,
+        ticks: u32,
+        span: u32,
+    },
+    /// No loop up to [`LOOP_TICKS`] long.
+    GaveUp,
+}
+
+/// What a machine's tick can change that the rest of the system, or the
+/// other machines, can see.
+#[derive(PartialEq, Eq)]
+struct Seen {
+    irq: u8,
+    out: u32,
+    oe: u32,
+    fdebug: u32,
+    tx: usize,
+    rx: usize,
 }
 
 impl Pio {
@@ -86,7 +131,98 @@ impl Pio {
             bypass: 0,
             pipe: [0; 2],
             settled: 0,
+            looping: 0,
+            lap: [0; NUM_SM],
+            search: [Search::Fresh; NUM_SM],
+            owed: 0,
         }
+    }
+
+    /// Give the stopped machines' dividers the cycles they're owed.
+    fn settle_dividers(&mut self) {
+        if self.owed != 0 {
+            self.settle_owed();
+        }
+    }
+
+    #[inline(never)]
+    fn settle_owed(&mut self) {
+        let owed = core::mem::take(&mut self.owed);
+        {
+            for n in 0..NUM_SM {
+                if !self.runs(n) {
+                    self.sm[n].run_divider(owed);
+                }
+            }
+        }
+    }
+
+    /// Something any machine may react to changed: they all look again, but
+    /// those whose stall still holds stay settled (their next ticks would
+    /// find just that). Called once the change is made.
+    #[inline(never)]
+    fn unsettle(&mut self) {
+        self.settled = (0..NUM_SM).fold(0, |m, n| {
+            m | (self.sm[n].stall_holds(n, &self.imem, &self.shared) as u8) << n
+        });
+        self.looping = 0;
+        self.search = [Search::Fresh; NUM_SM];
+    }
+
+    fn seen(&self, n: usize) -> Seen {
+        Seen {
+            irq: self.shared.irq,
+            out: self.shared.out,
+            oe: self.shared.oe,
+            fdebug: self.shared.fdebug,
+            tx: self.sm[n].tx.len(),
+            rx: self.sm[n].rx.len(),
+        }
+    }
+
+    /// Machine `n` just ticked at absolute cycle `at` without changing
+    /// anything outside itself: is it back in a state it was in before?
+    #[inline(never)]
+    fn look_for_loop(&mut self, n: usize, at: u64) {
+        let now = self.sm[n].snapshot();
+        self.search[n] = match self.search[n] {
+            Search::Fresh => Search::Looking {
+                kept: now,
+                at,
+                ticks: 0,
+                span: 1,
+            },
+            Search::Looking {
+                kept,
+                at: then,
+                ticks,
+                span,
+            } => {
+                let ticks = ticks + 1;
+                if now == kept {
+                    self.looping |= 1 << n;
+                    self.lap[n] = at - then;
+                    Search::GaveUp
+                } else if ticks < span {
+                    Search::Looking {
+                        kept,
+                        at: then,
+                        ticks,
+                        span,
+                    }
+                } else if span < LOOP_TICKS {
+                    Search::Looking {
+                        kept: now,
+                        at,
+                        ticks: 0,
+                        span: span * 2,
+                    }
+                } else {
+                    Search::GaveUp
+                }
+            }
+            Search::GaveUp => Search::GaveUp,
+        };
     }
 
     /// Whether the atomic register aliases (XOR / SET / CLR) mean anything at
@@ -116,17 +252,23 @@ impl Pio {
         (0..NUM_SM).fold(0, |m, n| m | (self.runs(n) as u8) << n)
     }
 
+    /// Machines that can't change anything until the outside acts: stalled,
+    /// or going round a loop that changes nothing outside themselves.
+    fn idle_machines(&self) -> u8 {
+        self.settled | self.looping
+    }
+
     /// Nothing can happen here until the outside acts: every running machine
     /// is parked and has already seen the current pad levels.
     pub fn parked(&self, pads: u32) -> bool {
         let running = self.running();
-        running & !self.settled == 0
+        running & !self.idle_machines() == 0
             && (running == 0 || (self.pipe == [pads, pads] && self.shared.inputs == pads))
     }
 
     /// Some machine is running and not parked on an external condition.
     pub fn active(&self) -> bool {
-        self.running() & !self.settled != 0
+        self.running() & !self.idle_machines() != 0
     }
 
     /// Step the block through `cycles` system clock cycles starting after
@@ -135,18 +277,26 @@ impl Pio {
         // Which machines run changes only through registers, or when one
         // that runs only for a forced instruction has executed it.
         let mut running = self.running();
+        if running == 0 {
+            self.pipe = [env.pads_in(); 2];
+            self.owed += cycles;
+            return;
+        }
+        // Stepping, every divider moves cycle by cycle.
+        self.settle_dividers();
         let mut done = 0;
         while done < cycles {
             let pads = env.pads_in();
             if running == 0 {
                 self.pipe = [pads, pads];
+                self.skip(cycles - done);
                 return;
             }
             let caught_up = self.pipe == [pads, pads] && self.shared.inputs == pads;
             // Everything is parked, the synchronizer has caught up, and the
             // machines last looked at exactly these pad levels: nothing can
             // happen until the outside world acts, so skip the rest.
-            if caught_up && running & !self.settled == 0 {
+            if caught_up && running & !self.idle_machines() == 0 {
                 self.skip(cycles - done);
                 return;
             }
@@ -157,6 +307,9 @@ impl Pio {
                     .filter(|&n| running >> n & 1 != 0)
                     .map(|n| {
                         let sm = &self.sm[n];
+                        if sm.exec_pending() {
+                            return 1;
+                        }
                         (sm.div256().saturating_sub(sm.acc) as u64)
                             .div_ceil(256)
                             .max(1)
@@ -168,6 +321,8 @@ impl Pio {
                     for (n, sm) in self.sm.iter_mut().enumerate() {
                         if running >> n & 1 != 0 {
                             sm.acc += 256 * idle as u32;
+                        } else {
+                            sm.run_divider(idle);
                         }
                     }
                     done += idle;
@@ -176,36 +331,48 @@ impl Pio {
             }
             // Two flip-flops: the pad level from two cycles ago, unless bypassed.
             let inputs = self.bypass & pads | !self.bypass & self.pipe[1];
-            if inputs != self.shared.inputs {
-                // A parked machine has to look again at what it waits on.
-                self.settled = 0;
-            }
+            let moved = inputs != self.shared.inputs;
             self.shared.inputs = inputs;
+            if moved {
+                // A parked machine has to look again at what it waits on.
+                self.unsettle();
+            }
             self.pipe = [pads, self.pipe[0]];
             let (old_out, old_oe) = (self.shared.out, self.shared.oe);
-            let mut changed_any = false;
             let mut forced_ran = false;
             for n in 0..NUM_SM {
-                if running >> n & 1 == 0 {
-                    continue;
-                }
+                // The dividers are free-running: a stopped machine's moves
+                // too, so it starts (or runs a forced instruction) in phase.
                 let div = self.sm[n].div256();
                 self.sm[n].acc += 256;
-                if self.sm[n].acc < div {
+                let tick = self.sm[n].acc >= div;
+                if tick {
+                    self.sm[n].acc -= div;
+                }
+                // An instruction written to SMx_INSTR runs at once, not on
+                // the machine's clock (only its retries, if it stalls).
+                if running >> n & 1 == 0 || !(tick || self.sm[n].exec_pending()) {
                     continue;
                 }
-                self.sm[n].acc -= div;
                 self.ticked = true;
                 forced_ran |= !self.sm[n].enabled;
+                let before = self.seen(n);
                 let progressed = self.sm[n].tick(n, &self.imem, &mut self.shared);
-                if progressed {
-                    changed_any = true;
+                if self.seen(n) != before {
+                    // Every machine may react to that, this one included.
+                    self.unsettle();
+                } else if progressed {
+                    // Only this machine's own state moved, which the others
+                    // can't see.
+                    self.settled &= !(1 << n);
+                    // (A machine that runs only for a forced instruction
+                    // stops once it's done: no loop to find.)
+                    if self.looping >> n & 1 == 0 && self.sm[n].enabled {
+                        self.look_for_loop(n, start + done + 1);
+                    }
                 } else {
                     self.settled |= 1 << n;
                 }
-            }
-            if changed_any {
-                self.settled = 0;
             }
             if forced_ran {
                 running = self.running();
@@ -217,20 +384,42 @@ impl Pio {
         }
     }
 
-    /// Let `cycles` pass with nothing for the machines to do: if any is
-    /// running, its divider moves; a stopped block doesn't move at all.
+    /// Let `cycles` pass with nothing for the machines to do: only the
+    /// (free-running) dividers move.
     pub fn idle(&mut self, cycles: u64) {
-        if (0..NUM_SM).any(|n| self.runs(n)) {
-            self.skip(cycles);
-        }
+        self.skip(cycles);
     }
 
-    /// Let `cycles` pass with every machine parked: only the dividers move.
+    /// Let `cycles` pass with every machine parked: the dividers move, and a
+    /// machine going round a loop runs what's left over after whole laps
+    /// (which leave it as it was).
     fn skip(&mut self, cycles: u64) {
-        for sm in &mut self.sm {
-            let div = sm.div256() as u64;
-            let acc = sm.acc as u64 + 256 * cycles;
-            sm.acc = if acc < div { acc } else { acc % div } as u32;
+        for n in 0..NUM_SM {
+            if self.looping >> n & 1 != 0 {
+                self.lap_through(n, cycles % self.lap[n]);
+            } else if self.runs(n) {
+                self.sm[n].run_divider(cycles);
+            }
+        }
+        self.owed += cycles;
+    }
+
+    /// Run looping machine `n` for `cycles` (less than a lap), tick by tick:
+    /// it changes nothing outside itself, so nothing else needs to run.
+    #[inline(never)]
+    fn lap_through(&mut self, n: usize, mut cycles: u64) {
+        let div = self.sm[n].div256() as u64;
+        while cycles > 0 {
+            let acc = self.sm[n].acc as u64;
+            // Cycles until the divider next fires (it does once acc reaches div).
+            let wait = (div.saturating_sub(acc)).div_ceil(256).max(1);
+            if wait > cycles {
+                self.sm[n].acc = (acc + 256 * cycles) as u32;
+                return;
+            }
+            self.sm[n].acc = (acc + 256 * wait - div) as u32;
+            self.sm[n].tick(n, &self.imem, &mut self.shared);
+            cycles -= wait;
         }
     }
 
@@ -299,7 +488,14 @@ impl Pio {
         }
     }
 
+    #[cfg(test)]
     fn sm_write(&mut self, n: usize, reg: u32, val: u32) {
+        self.settle_dividers();
+        self.sm_write_reg(n, reg, val);
+        self.unsettle();
+    }
+
+    fn sm_write_reg(&mut self, n: usize, reg: u32, val: u32) {
         let sm = &mut self.sm[n];
         match reg {
             0x0 => sm.clkdiv = val & 0xFFFF_FF00,
@@ -315,6 +511,7 @@ impl Pio {
             }
             0x10 => {
                 sm.forced = Some(val as u16);
+                sm.written = true;
                 sm.side_done = false;
             }
             0x14 => sm.pinctrl = val,
@@ -331,8 +528,22 @@ impl Default for Pio {
 
 impl Peripheral for Pio {
     fn read(&mut self, off: u32) -> u32 {
+        let v = self.read_reg(off);
         // Anything the firmware looks at or changes may unpark a machine.
-        self.settled = 0;
+        self.unsettle();
+        v
+    }
+
+    fn write(&mut self, off: u32, val: u32) {
+        // Which machines run may change: the stopped ones catch up first.
+        self.settle_dividers();
+        self.write_reg(off, val);
+        self.unsettle();
+    }
+}
+
+impl Pio {
+    fn read_reg(&mut self, off: u32) -> u32 {
         match off {
             0x000 => (0..NUM_SM).fold(0, |r, n| r | (self.sm[n].enabled as u32) << n),
             0x004 => self.fstat(),
@@ -369,8 +580,7 @@ impl Peripheral for Pio {
         }
     }
 
-    fn write(&mut self, off: u32, val: u32) {
-        self.settled = 0;
+    fn write_reg(&mut self, off: u32, val: u32) {
         match off {
             0x000 => {
                 for (n, sm) in self.sm.iter_mut().enumerate() {
@@ -405,7 +615,7 @@ impl Peripheral for Pio {
             0x048..=0x0C4 => self.imem[((off - 0x48) >> 2) as usize] = val as u16,
             0x0C8..=0x127 => {
                 let rel = off - 0xC8;
-                self.sm_write((rel / 0x18) as usize, rel % 0x18, val);
+                self.sm_write_reg((rel / 0x18) as usize, rel % 0x18, val);
             }
             0x12C => self.inte[0] = val & 0xFFF,
             0x130 => self.intf[0] = val & 0xFFF,

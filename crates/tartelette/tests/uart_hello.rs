@@ -364,7 +364,9 @@ fn pio_drives_the_dac_and_led_chain_and_reads_the_encoder() {
     let mut stop = StopReason::CycleLimit;
     for _ in 0..400 {
         stop = sys.run(50_000);
-        if stop != StopReason::CycleLimit {
+        // Waiting for the knob, the firmware sleeps with nothing to wake it
+        // (the PIO waits on the encoder's pins): go on, as a host would.
+        if !matches!(stop, StopReason::CycleLimit | StopReason::Sleeping) {
             break;
         }
         let t = text(&sys);

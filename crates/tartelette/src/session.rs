@@ -747,7 +747,10 @@ mod tests {
         let s = Session::new(&fw, Some(&board), &[], &net).unwrap();
         let settings = &s.sys.bus.flash.data[0x1f_f000..];
         assert_eq!(settings[..4], [0xF1, 0xF9, 0xDE, 0x03]);
-        assert!(settings[4..].iter().all(|&b| b == 0xFF), "the rest stays erased");
+        assert!(
+            settings[4..].iter().all(|&b| b == 0xFF),
+            "the rest stays erased"
+        );
         // An image already has what the firmware made of them.
         let image = vec![0xA5; 2 << 20];
         let s = Session::with_flash(&fw, Some(&board), &[], &net, Some(&image)).unwrap();

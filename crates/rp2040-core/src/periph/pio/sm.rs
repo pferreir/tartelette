@@ -46,6 +46,28 @@ impl Shared {
     }
 }
 
+/// A machine's own state: everything its next steps depend on besides the
+/// FIFOs and the block's shared state. Two equal snapshots with nothing
+/// observable in between mean the machine is going round a loop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct Snapshot {
+    pc: u8,
+    x: u32,
+    y: u32,
+    isr: u32,
+    isr_count: u8,
+    osr: u32,
+    osr_count: u8,
+    delay: u8,
+    forced: Option<u16>,
+    forced_after: Option<u16>,
+    stalled: bool,
+    side_done: bool,
+    pending_push: bool,
+    irq_waiting: bool,
+    acc: u32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Outcome {
     /// The instruction can't complete yet; try again next tick.
@@ -76,6 +98,8 @@ pub(super) struct Sm {
     /// An instruction injected through `SMx_INSTR` / `OUT EXEC` / `MOV EXEC`
     /// that has not completed yet.
     pub(super) forced: Option<u16>,
+    /// `forced` came from a write to SMx_INSTR and hasn't been tried yet.
+    pub(super) written: bool,
     /// Instruction to inject once the current one completes (`OUT/MOV EXEC`).
     pub(super) forced_after: Option<u16>,
     /// The current instruction stalled on its last attempt.
@@ -113,6 +137,7 @@ impl Sm {
             rx: VecDeque::new(),
             delay: 0,
             forced: None,
+            written: false,
             forced_after: None,
             stalled: false,
             side_done: false,
@@ -124,6 +149,26 @@ impl Sm {
         }
     }
 
+    pub(super) fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            pc: self.pc,
+            x: self.x,
+            y: self.y,
+            isr: self.isr,
+            isr_count: self.isr_count,
+            osr: self.osr,
+            osr_count: self.osr_count,
+            delay: self.delay,
+            forced: self.forced,
+            forced_after: self.forced_after,
+            stalled: self.stalled,
+            side_done: self.side_done,
+            pending_push: self.pending_push,
+            irq_waiting: self.irq_waiting,
+            acc: self.acc,
+        }
+    }
+
     /// Clear execution state (SM_RESTART); FIFOs, registers X/Y, PC and config stay.
     pub(super) fn restart(&mut self) {
         self.isr = 0;
@@ -132,6 +177,7 @@ impl Sm {
         self.osr_count = 32;
         self.delay = 0;
         self.forced = None;
+        self.written = false;
         self.forced_after = None;
         self.stalled = false;
         self.side_done = false;
@@ -158,6 +204,18 @@ impl Sm {
             (true, false) => 0,
             _ => FIFO_DEPTH,
         }
+    }
+
+    /// An instruction written to SMx_INSTR waits for its first attempt.
+    pub(super) fn exec_pending(&self) -> bool {
+        self.written && self.forced.is_some()
+    }
+
+    /// Let the divider run `cycles` with the machine executing nothing.
+    pub(super) fn run_divider(&mut self, cycles: u64) {
+        let div = self.div256() as u64;
+        let acc = self.acc as u64 + 256 * cycles;
+        self.acc = if acc < div { acc } else { acc % div } as u32;
     }
 
     /// Divider in 1/256 units (an integer part of 0 means 65536).
@@ -552,10 +610,57 @@ impl Sm {
         }
     }
 
+    /// Would the instruction this machine stalled on stall again, changing
+    /// nothing, if it ran now? (Mirrors the stall cases of [`Sm::exec`].)
+    pub(super) fn stall_holds(&self, n: usize, imem: &[u16; IMEM_WORDS], shared: &Shared) -> bool {
+        if !self.stalled || !self.side_done || self.delay > 0 {
+            return false;
+        }
+        let instr = self.forced.unwrap_or(imem[self.pc as usize]);
+        let arg = (instr & 0x1F) as u32;
+        match instr >> 13 {
+            1 => {
+                // WAIT
+                let pol = instr >> 7 & 1 != 0;
+                let value = match instr >> 5 & 3 {
+                    0 => shared.inputs >> arg & 1 != 0,
+                    1 => shared.inputs >> ((self.in_base() + arg) & 31) & 1 != 0,
+                    2 => shared.irq >> self.flag(n, arg) & 1 != 0,
+                    _ => false,
+                };
+                value != pol
+            }
+            // IN, its autopush waiting for room
+            2 => self.pending_push && self.rx.len() >= self.rx_depth(),
+            // OUT, its autopull waiting for data
+            3 => {
+                self.shiftctrl & SHIFT_AUTOPULL != 0
+                    && self.osr_count >= self.pull_thresh()
+                    && self.tx.is_empty()
+            }
+            4 => {
+                let (block, cond) = (instr >> 5 & 1 != 0, instr >> 6 & 1 != 0);
+                if instr >> 7 & 1 == 0 {
+                    // PUSH
+                    block
+                        && !(cond && self.isr_count < self.push_thresh())
+                        && self.rx.len() >= self.rx_depth()
+                } else {
+                    // PULL
+                    block && !(cond && self.osr_count < self.pull_thresh()) && self.tx.is_empty()
+                }
+            }
+            // IRQ ... wait, its flag still raised
+            6 => self.irq_waiting && shared.irq >> self.flag(n, arg) & 1 != 0,
+            _ => false,
+        }
+    }
+
     /// One tick of this machine's clock. Returns whether it changed anything
     /// anyone can observe (false = it stalled again on the same condition).
     pub(super) fn tick(&mut self, n: usize, imem: &[u16; IMEM_WORDS], shared: &mut Shared) -> bool {
         shared.dirty = false;
+        self.written = false;
         self.stall_tx = false;
         self.stall_rx = false;
         if self.delay > 0 {
