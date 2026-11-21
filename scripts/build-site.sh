@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Build the showcase web site: the landing page (site/), the web app
-# (crates/tartelette, under emu/) and the demos it opens (firmware/showcase,
-# under demos/), as one static directory for GitHub Pages or any web server.
+# Build the showcase web site: the landing page (site/index.md), the web app
+# (crates/tartelette, under emu/), the demos it opens (firmware/showcase,
+# under demos/) and the documentation (docs/, rendered by crates/sitedocs,
+# under docs/), as one static directory for GitHub Pages or any web server.
 #
 #   scripts/build-site.sh [OUT]        # OUT defaults to target/site
 #
@@ -60,15 +61,17 @@ elif [[ ${MICROPYTHON:-} == fetch ]]; then
     micropython=1
 fi
 
-echo "build-site: the landing page" >&2
+echo "build-site: the landing page and the documentation" >&2
+# site/index.md and docs/ become HTML (crates/sitedocs); the rest of site/
+# (the screenshots) is copied as is.
 cp -r "$root/site/." "$out/"
+rm -f "$out"/*.md
 cp "$root/assets/tartelette.png" "$out/img/logo.png"
-version=${MICROPYTHON_VERSION#*-}
-sed -i "s|{{REPO_URL}}|${REPO_URL%/}|g; s|{{MICROPYTHON_VERSION}}|$version|g" "$out/index.html"
-if [[ -z $micropython ]]; then
-    # Drop the MicroPython card: everything between its markers.
-    sed -i '/<!-- micropython -->/,/<!-- \/micropython -->/d' "$out/index.html"
-fi
+sitedocs=(--var "MICROPYTHON_VERSION=${MICROPYTHON_VERSION#*-}")
+# Without MicroPython, drop its entry from the page.
+[[ -n $micropython ]] || sitedocs+=(--drop micropython)
+(cd "$root" && env -u RUSTFLAGS cargo run -q -p sitedocs -- . "$out" "${REPO_URL%/}" "${sitedocs[@]}")
+
 touch "$out/.nojekyll"
 
 du -sh "$out" >&2

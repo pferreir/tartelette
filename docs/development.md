@@ -17,6 +17,7 @@ crates/
   tartelette/    front panel (native + web, eframe), headless runner,      deps: all of the above
                  `mkdisk`; end-to-end tests
   cpu-difftest/  differential tests of the CPU against Unicorn             dev-deps: armv6m
+  sitedocs/      renders docs/ as HTML for the demo site                   deps: pulldown-cmark
 ```
 
 `armv6m`, `pcb`, `pcb-devices`, `usbhost` and `rp2040-core` are `no_std` +
@@ -89,14 +90,35 @@ flag it still works, about 20% slower.
 
 `scripts/build-site.sh [OUT]` builds the static site GitHub Pages serves
 (`.github/workflows/pages.yml` runs it on each push to `master`): the
-landing page from `site/`, the web app under `emu/`, and the
-`firmware/showcase` demos under `demos/`. `MICROPYTHON=fetch` adds the
+landing page, the web app under `emu/`, the `firmware/showcase` demos under
+`demos/`, and the documentation under `docs/`. `MICROPYTHON=fetch` adds the
 official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
 one. Look at it with `python3 -m http.server -d target/site`.
+
+The landing page's text is `site/index.md`, and the documentation is the
+Markdown in `docs/`. `crates/sitedocs` (pulldown-cmark) turns both into HTML,
+with the layouts in `crates/sitedocs/src/landing.html` and `page.html`. The
+comment at the top of `site/index.md` explains how its Markdown maps onto
+the page: a `###` entry is a demo, its image the screenshot, a list of
+`Label: value` items its details, its last paragraph of links the buttons.
+
+Links are written as they would be on GitHub, relative to the Markdown file.
+Links between `.md` files become links between pages, links into `site/`
+(the screenshots, `emu/`) stay relative, and anything else in the
+repository goes to GitHub. Heading ids follow GitHub's, so
+`page.md#heading` links work in both places. Code blocks in `toml` and `sh`
+are highlighted (`crates/sitedocs/src/highlight.rs`).
 
 The page links each demo as `emu/?firmware=../demos/NAME.elf&board=...`.
 Its screenshots (`site/img/`) are checked in: retake them when a demo's
 look changes.
+
+To render the pages on their own, into `target/site`:
+
+```sh
+cargo run -p sitedocs -- . target/site https://github.com/OWNER/REPO \
+    --var MICROPYTHON_VERSION=v1.29.0 [--drop micropython]
+```
 
 ### MicroPython's test suite
 
