@@ -1,3 +1,8 @@
+> [!WARNING]
+> Much of this project's code was written with LLMs (large language models).
+> If that makes it a project you'd rather not use, that's fair: feel free to
+> skip it. See the FAQ at the bottom for more information.
+
 <p align="center">
   <img src="assets/tartelette.png" alt="tartelette" width="240">
 </p>
@@ -11,10 +16,20 @@ buttons and knobs, a port expander, a DAC, an SD card, LED strips, the Pico W's
 Wi-Fi/Bluetooth chip and the USB port. You get a front panel to poke at, or a
 headless runner for scripts and tests.
 
-It started as a way to develop firmware for the
-[BTL-01](boards/btl-01.toml), a MIDI sequencer / MIDI-to-CV module, without
-having to flash it every time, and grew from there. Unmodified firmware built
-with Embassy, rp2040-hal, pico-sdk and MicroPython runs on it.
+Right now, there is support for a limited number of peripherals [TODO: add link to list].
+
+
+## History
+
+It started as a way to develop firmware for the [BTL-01](boards/btl-01.toml),
+a MIDI sequencer / MIDI-to-CV module I've been working on for a few years. After
+years maintaining a WASM port which I used to test it, I though I could instead
+run it an an emulator. Unfortunately, nothing seemed to be available which lets
+me also simulate the hardware I'm using, so I decided to use LLMs to create one.
+This project doesn't aim to be an exact replica of the actual hardware (although
+it seems to do a pretty decent job so far), but rather to allow you to develop your
+toy project without having to flash a device every time. Unmodified firmware built
+with Embassy, rp2040-hal, pico-sdk and MicroPython runs on it. [TODO: add links to all those projects]
 
 <p align="center">
   <img src="assets/screenshots/btl-01.png" alt="The BTL-01 OS running in tartelette's front panel" width="49%">
@@ -240,3 +255,55 @@ The end-to-end tests build the firmware in `firmware/tests` and run it
 headless. `cpu-difftest` takes about a minute. See
 [docs/development.md](docs/development.md) for the browser checks and
 MicroPython's test suite.
+
+
+## FAQ
+
+### Was this project vibecoded?
+
+Yes, mostly. It was vibecoded by someone experienced in embedded software
+development and thus who knows (more or less) what they're doing, but I would
+be lying if I said I wrote most of the code myself.
+
+### Do you think it is ethical to use LLMs in software development?
+
+I think it can be ethical, as long as it is done with the right intent and
+in the right way. Pretty much like everything else.
+
+### Don't LLMs just regurgitate code stolen from FOSS developers?
+
+FOSS has always been a big tent sheltering FSF libertarians and corporate Open Source
+types. While I do not agree with the closed nature of the current LLM landscape
+(especially as it concerns the so-called “frontier models”), I would be lying if I
+said that I view using LLMs in software development as nefarious by definition. On
+the contrary - to me, FOSS has always been about making knowledge and tools accessible
+to everyone, and this technology has the potential to make software development more
+accessible than ever and to empower users with the means to find the solutions to their
+problems. I've always shared my code with the intent of seeing it used by someone else.
+Granted, there are rent-seekers taking advantage of this shared corpus of information right
+now, and I am hoping that open-weight models and local inference will soon give us a way out.
+
+### Why not develop Tartelette without LLMs?
+
+Let's put it like this: if I had no access to an LLM, this project wouldn't exist, as I
+don't have the time to develop anything of the sort using traditional methods. To me,
+this is a net positive.
+
+### What about the environmental impact of AI/LLMs?
+
+It's a legitimate concern. I confess it's the one I worry about most. On the other
+hand, writing code seems to me like one of the highest-legitimacy uses of scarce
+compute power. If we were to impose boundaries on LLM usage, we should worry
+about video generation first, for which 99% of use cases are useless, illegal or
+both. I understand that my neighbor using ChatGPT to generate cat videos doesn't
+offset my own CO₂ footprint, but I hope you'll understand that opinions can be nuanced.
+
+### Don't LLMs take the fun out of programming?
+
+Yes, in a way. On the other hand, you can be much more ambitious in your own engineering
+projects or spend time in other hobbies.
+
+Developing an emulator from scratch isn't my definition of fun, as it's a dependency,
+rather than my "main" project. Hence, I prefer to spend my time developing Eurorack
+modules, playing with the electronics and writing actual firmware (with and without LLM
+help).
