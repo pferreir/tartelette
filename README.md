@@ -261,6 +261,11 @@ headless. `cpu-difftest` takes about a minute. See
 [docs/development.md](docs/development.md) for the browser checks and
 MicroPython's test suite.
 
+## Contributing
+
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Pull
+requests should be small and focused, and while the code may be written
+with LLMs, descriptions and discussion must be your own words.
 
 ## FAQ
 
