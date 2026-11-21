@@ -4,7 +4,7 @@
 //! problems found.
 use egui::{Color32, RichText};
 use tartelette_runtime::{
-    LogEntry, Network, Session, Source,
+    Links, LogEntry, Session, Source,
     run::{self, Run, Shared, lock},
     synth::Patch,
     usb::UsbSide,
@@ -62,7 +62,7 @@ pub struct App {
     board: Option<Source>,
     /// Add-on boards on top of `board`, from the command line.
     shields: Vec<Source>,
-    net: Network,
+    links: Links,
     run: Option<Shared>,
     layout: Option<Layout>,
     panel: PanelState,
@@ -104,14 +104,14 @@ impl App {
         firmware: Option<Source>,
         board: Option<Source>,
         shields: Vec<Source>,
-        net: Network,
+        links: Links,
     ) -> Self {
         let mut app = Self {
             logo: None,
             firmware,
             board,
             shields,
-            net,
+            links,
             run: None,
             layout: None,
             panel: PanelState::default(),
@@ -158,7 +158,7 @@ impl App {
         self.watch
             .track(self.firmware.iter().chain(&self.board).chain(&self.shields));
         let Some(fw) = &self.firmware else { return };
-        match Session::new(fw, self.board.as_ref(), &self.shields, &self.net) {
+        match Session::new(fw, self.board.as_ref(), &self.shields, &self.links) {
             Ok(mut s) => {
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);

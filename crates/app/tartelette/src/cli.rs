@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
 use tartelette_runtime::{
-    BtMode, NetMode, Network, Source,
+    BtMode, Links, NetMode, Source,
     boards::{self, BOARDS, SHIELDS},
     synth::{self, Patch},
     uart::UartBridges,
@@ -177,9 +177,10 @@ impl RunArgs {
             .collect()
     }
 
-    pub fn network(&self) -> Network {
-        Network {
-            mode: self.net,
+    /// What the run connects to on the host.
+    pub fn links(&self) -> Links {
+        Links {
+            wifi: self.net,
             bt: self.bt,
             forwards: self.forward.clone(),
             usb: UsbBridges {

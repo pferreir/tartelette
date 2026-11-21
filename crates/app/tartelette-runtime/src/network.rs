@@ -2,6 +2,8 @@
 //! Wi-Fi, a mock neighbourhood or a real adapter for Bluetooth.
 use pcb::Board;
 
+use crate::Links;
+
 /// What the board's Wi-Fi chips are connected to.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
@@ -27,22 +29,9 @@ pub enum BtMode {
     Adapter(u16),
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct Network {
-    pub mode: NetMode,
-    pub bt: BtMode,
-    /// (host port, guest port): the host's `127.0.0.1:HOST` forwarded to a
-    /// TCP port on the guest (user mode only).
-    pub forwards: Vec<(u16, u16)>,
-    /// Which of the USB device's functions reach the host OS.
-    pub usb: crate::usb::UsbBridges,
-    /// Which UARTs reach the host OS.
-    pub uart: crate::uart::UartBridges,
-}
-
 /// Give every Wi-Fi chip on the board a network to talk to. The browser has no
 /// user-mode NAT, so there the chip finds no networks and the panel says why.
-pub(crate) fn connect(board: &mut Board, net: &Network) -> Result<(), String> {
+pub(crate) fn connect(board: &mut Board, net: &Links) -> Result<(), String> {
     let mut chips = board
         .devices_mut::<pcb_devices::cyw43439::Cyw43439>()
         .peekable();
@@ -50,7 +39,7 @@ pub(crate) fn connect(board: &mut Board, net: &Network) -> Result<(), String> {
         return Err("--forward: no Wi-Fi chip on the board".into());
     }
     for (_, chip) in chips {
-        match net.mode {
+        match net.wifi {
             #[cfg(not(target_arch = "wasm32"))]
             NetMode::User => {
                 let mut slirp = bridge_net::Slirp::new();

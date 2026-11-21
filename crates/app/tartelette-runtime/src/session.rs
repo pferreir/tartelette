@@ -10,7 +10,7 @@ use pcb_devices::sdcard::SdCard;
 use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
 use web_time::Instant;
 
-use crate::{Network, Source, boards::parse_board, network};
+use crate::{Links, Source, boards::parse_board, network};
 
 pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
 
@@ -68,7 +68,7 @@ impl Session {
         firmware: &Source,
         board: Option<&Source>,
         shields: &[Source],
-        net: &Network,
+        net: &Links,
     ) -> Result<Self, String> {
         Self::with_flash(firmware, board, shields, net, None)
     }
@@ -82,7 +82,7 @@ impl Session {
         firmware: &Source,
         board: Option<&Source>,
         shields: &[Source],
-        net: &Network,
+        net: &Links,
         flash: Option<&[u8]>,
     ) -> Result<Self, String> {
         let mut sys = System::new();
@@ -400,7 +400,7 @@ mod tests {
             &firmware("button-led"),
             Some(&board),
             &[],
-            &Network::default(),
+            &Links::default(),
         )
         .unwrap();
         assert_eq!(s.step(125 * 100, far()), 125 * 100);
@@ -426,9 +426,9 @@ mod tests {
     #[test]
     fn a_flash_image_goes_under_the_firmware() {
         let fw = firmware("button-led");
-        let plain = Session::new(&fw, None, &[], &Network::default()).unwrap();
+        let plain = Session::new(&fw, None, &[], &Links::default()).unwrap();
         let image = vec![0xA5; 4 << 20];
-        let s = Session::with_flash(&fw, None, &[], &Network::default(), Some(&image)).unwrap();
+        let s = Session::with_flash(&fw, None, &[], &Links::default(), Some(&image)).unwrap();
         let flash = &s.sys.bus.flash.data;
         assert_eq!(flash.len(), 4 << 20, "the chip is as large as the image");
         // The firmware is where it was; past it, the image is kept.
@@ -448,14 +448,8 @@ mod tests {
                 .all(|&b| b == 0xA5)
         );
         assert!(
-            Session::with_flash(
-                &fw,
-                None,
-                &[],
-                &Network::default(),
-                Some(&vec![0; 17 << 20])
-            )
-            .is_err()
+            Session::with_flash(&fw, None, &[], &Links::default(), Some(&vec![0; 17 << 20]))
+                .is_err()
         );
     }
 
@@ -466,7 +460,7 @@ mod tests {
             "b.toml",
             b"[[flash]]\naddr = 0x101ff000\nu16 = [63985, 990]\n".to_vec(),
         );
-        let net = Network::default();
+        let net = Links::default();
         let s = Session::new(&fw, Some(&board), &[], &net).unwrap();
         let settings = &s.sys.bus.flash.data[0x1f_f000..];
         assert_eq!(settings[..4], [0xF1, 0xF9, 0xDE, 0x03]);
@@ -488,7 +482,7 @@ mod tests {
             &firmware("button-led"),
             Some(&board),
             &[],
-            &Network::default(),
+            &Links::default(),
         )
         .unwrap();
         assert_eq!(s.step(CYCLES_PER_SEC as u64, far()), CYCLES_PER_SEC as u64);
@@ -498,7 +492,7 @@ mod tests {
 
     #[test]
     fn deadline_cuts_a_step_short() {
-        let mut s = Session::new(&firmware("button-led"), None, &[], &Network::default()).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &[], &Links::default()).unwrap();
         assert!(s.step(u64::MAX / 2, Instant::now()) == 0);
     }
 
@@ -510,7 +504,7 @@ mod tests {
                 &fw,
                 Some(&Source::new("x.toml", board.as_bytes().to_vec())),
                 &[],
-                &Network::default(),
+                &Links::default(),
             )
             .err()
             .unwrap()
@@ -524,7 +518,7 @@ mod tests {
                 &Source::new("junk.elf", vec![1, 2, 3]),
                 None,
                 &[],
-                &Network::default()
+                &Links::default()
             )
             .err()
             .unwrap()
@@ -534,7 +528,7 @@ mod tests {
 
     #[test]
     fn uart_text_is_kept_bounded() {
-        let mut s = Session::new(&firmware("button-led"), None, &[], &Network::default()).unwrap();
+        let mut s = Session::new(&firmware("button-led"), None, &[], &Links::default()).unwrap();
         s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
         s.drain();
         assert!(s.uart[0].len() <= UART_KEEP);
@@ -563,7 +557,7 @@ mod log_tests {
             &Source::new("fw", std::fs::read(path).unwrap()),
             Some(&Source::new("board", board)),
             &[],
-            &Network::default(),
+            &Links::default(),
         )
         .unwrap();
         assert_eq!(s.log_note, None);
@@ -597,7 +591,7 @@ mod bench {
             &Source::new("fw", fw),
             Some(&Source::new("board", board)),
             &[],
-            &Network::default(),
+            &Links::default(),
         )
         .unwrap();
         let t0 = Instant::now();

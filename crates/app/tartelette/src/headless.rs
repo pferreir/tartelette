@@ -38,7 +38,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         &fw,
         board.as_ref(),
         &args.shields()?,
-        &args.network(),
+        &args.links(),
         flash.as_deref(),
     )?;
     // What the flash holds before the firmware runs, to tell whether it wrote.
