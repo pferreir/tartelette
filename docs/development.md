@@ -87,8 +87,8 @@ To check that the core still builds for the browser:
 cargo build -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
 ```
 
-`.github/workflows/ci.yml` runs both on each push to `master` and on pull
-requests.
+`.github/workflows/ci.yml` runs both, along with `cargo fmt --check` and
+`cargo clippy -D warnings`, on each push to `main` and on pull requests.
 
 ### In a browser
 
@@ -113,7 +113,7 @@ flag it still works, about 20% slower.
 ### The demo site
 
 `scripts/build-site.sh [OUT]` builds the static site GitHub Pages serves
-(`.github/workflows/pages.yml` runs it on each push to `master`): the
+(`.github/workflows/pages.yml` runs it on each push to `main`): the
 landing page, the web app under `emu/`, the `firmware/showcase` demos under
 `demos/`, and the documentation under `docs/`. `MICROPYTHON=fetch` adds the
 official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
