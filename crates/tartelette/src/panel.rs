@@ -37,6 +37,10 @@
 //!
 //! A part can have several items, so inputs and outputs of one expander can
 //! sit apart with their own settings.
+//!
+//! Keyboard keys show as keycaps: a button's or encoder's in its title row
+//! (or under the widget when the title leaves no room), an expander pin's in
+//! its cell's corner.
 use std::collections::HashMap;
 
 use egui::{
@@ -483,6 +487,108 @@ impl Ctx<'_> {
     }
 }
 
+/// The text on a key's cap: arrows as arrows, everything else by name.
+fn cap_text(k: Key) -> &'static str {
+    match k {
+        Key::ArrowLeft => "←",
+        Key::ArrowRight => "→",
+        Key::ArrowUp => "↑",
+        Key::ArrowDown => "↓",
+        _ => k.symbol_or_name(),
+    }
+}
+
+/// Keycaps for `keys` in a row at `size`, laid out but not yet drawn.
+struct Keycaps {
+    caps: Vec<(std::sync::Arc<egui::Galley>, Vec2)>,
+    gap: f32,
+}
+
+impl Keycaps {
+    fn new(ui: &Ui, keys: &[Key], size: f32) -> Self {
+        let pad = vec2(size * 0.35, size * 0.15);
+        let caps = keys
+            .iter()
+            .map(|&k| {
+                let g = ui.painter().layout_no_wrap(
+                    cap_text(k).into(),
+                    FontId::monospace(size),
+                    ui.visuals().text_color(),
+                );
+                let s = vec2(g.size().x.max(g.size().y * 0.6), g.size().y) + pad * 2.0;
+                (g, s)
+            })
+            .collect();
+        Keycaps {
+            caps,
+            gap: size * 0.3,
+        }
+    }
+
+    fn size(&self) -> Vec2 {
+        let w: f32 = self.caps.iter().map(|(_, s)| s.x).sum();
+        let h = self.caps.iter().map(|(_, s)| s.y).fold(0.0, f32::max);
+        vec2(w + self.gap * self.caps.len().saturating_sub(1) as f32, h)
+    }
+
+    /// Draw the row with its right end at `right`, centred vertically on it.
+    fn draw(self, ui: &Ui, right: Pos2) {
+        let v = ui.visuals();
+        let p = ui.painter();
+        let mut x = right.x - self.size().x;
+        for (g, s) in self.caps {
+            let cap = Rect::from_min_size(pos2(x, right.y - s.y / 2.0), s);
+            p.rect_filled(cap, 3.0, v.extreme_bg_color);
+            p.rect_stroke(
+                cap,
+                3.0,
+                v.widgets.noninteractive.bg_stroke,
+                StrokeKind::Inside,
+            );
+            p.galley(cap.center() - g.size() / 2.0, g, v.text_color());
+            x += s.x + self.gap;
+        }
+    }
+}
+
+impl Ctx<'_> {
+    /// Show `keys` in the item's title row, at its right end; or, when the
+    /// title leaves no room, centred along the bottom of the body. Returns
+    /// the body left for the widget.
+    fn show_keys(&self, keys: &[Key]) -> Rect {
+        if keys.is_empty() {
+            return self.body;
+        }
+        let caps = Keycaps::new(self.ui, keys, 11.0);
+        let title = self
+            .ui
+            .painter()
+            .layout_no_wrap(
+                self.it.label.clone(),
+                FontId::proportional(12.0),
+                Color32::WHITE,
+            )
+            .size()
+            .x;
+        // The title starts 2 points left of the body; keep 6 points between.
+        let free = self.body.width() - 2.0 - 2.0 - title - 6.0;
+        if caps.size().x <= free {
+            caps.draw(
+                self.ui,
+                pos2(self.body.right() - 2.0, self.body.top() - 11.0),
+            );
+            self.body
+        } else {
+            let size = caps.size();
+            let bottom = self.body.center_bottom();
+            caps.draw(self.ui, bottom + vec2(size.x / 2.0, -size.y / 2.0));
+            let mut rest = self.body;
+            rest.max.y -= size.y + 4.0;
+            rest
+        }
+    }
+}
+
 /// An image of `px` texels fitted inside `outer`, centred: a whole number of
 /// physical pixels per texel when it fits at all, on the pixel grid.
 fn fit_pixels(outer: Rect, px: Vec2, pixels_per_point: f32) -> Rect {
@@ -634,8 +740,9 @@ fn button(c: Ctx, key: Option<Key>, out: &mut Vec<Request>) {
     let Some(b) = c.device::<Button>() else {
         return;
     };
-    let side = c.body.width().min(c.body.height()) * 0.8;
-    let rect = Rect::from_center_size(c.body.center(), Vec2::splat(side));
+    let body = c.show_keys(key.as_slice());
+    let side = body.width().min(body.height()) * 0.8;
+    let rect = Rect::from_center_size(body.center(), Vec2::splat(side));
     let mut resp = c.ui.interact(rect, c.id("button"), Sense::click_and_drag());
     if let Some(k) = key {
         resp = resp.on_hover_text(format!("hold, or {}", k.name()));
@@ -659,11 +766,19 @@ fn button(c: Ctx, key: Option<Key>, out: &mut Vec<Request>) {
 }
 
 fn encoder(c: Ctx, st: &mut PanelState, keys: Option<(Key, Key)>, out: &mut Vec<Request>) {
-    let side = c.body.width().min(c.body.height()) * 0.9;
-    let rect = Rect::from_center_size(c.body.center(), Vec2::splat(side));
+    let body = c.show_keys(keys.map(|(a, b)| vec![a, b]).as_deref().unwrap_or_default());
+    let side = body.width().min(body.height()) * 0.9;
+    let rect = Rect::from_center_size(body.center(), Vec2::splat(side));
     let resp =
         c.ui.interact(rect, c.id("knob"), Sense::drag())
-            .on_hover_text("drag around or scroll to turn");
+            .on_hover_text(match keys {
+                Some((ccw, cw)) => format!(
+                    "drag around or scroll to turn, or {} / {}",
+                    ccw.name(),
+                    cw.name()
+                ),
+                None => "drag around or scroll to turn".into(),
+            });
     let center = rect.center();
     let travel = st.travel.entry(c.it.part).or_default();
     if resp.drag_started() {
@@ -922,6 +1037,10 @@ fn expander(c: Ctx, st: &mut PanelState, x: &Expander, out: &mut Vec<Request>) {
             FontId::monospace(size),
             ink,
         );
+        if let Some(&k) = x.keys.get(i).filter(|_| interactive) {
+            let size = (d * 0.2).clamp(8.0, 11.0);
+            Keycaps::new(c.ui, &[k], size).draw(c.ui, cell.right_top() + vec2(-2.0, size * 0.75));
+        }
     }
 }
 

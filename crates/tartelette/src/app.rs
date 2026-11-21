@@ -719,6 +719,8 @@ impl eframe::App for App {
             .as_deref()
             .is_some_and(|r| r.session.halted.is_none() && r.clock.running);
         drop(guard);
+        // `restart` waits for every handle on the old run to go, this one too.
+        drop(run);
         if reset {
             self.restart();
         }
