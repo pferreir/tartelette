@@ -949,7 +949,10 @@ mod tests {
         );
         assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 0 }", &reg).is_err());
         let b = Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1 }", &reg).unwrap();
-        assert!(!b.device::<SdCard>("s").unwrap().inserted(), "no size: an empty slot");
+        assert!(
+            !b.device::<SdCard>("s").unwrap().inserted(),
+            "no size: an empty slot"
+        );
     }
 
     #[test]

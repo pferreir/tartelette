@@ -550,7 +550,9 @@ pub fn json_schema(registry: &Registry) -> String {
             ),
             (
                 "description",
-                J::Str(format!("the values, {bits}-bit little endian (one of u8, u16, u32)")),
+                J::Str(format!(
+                    "the values, {bits}-bit little endian (one of u8, u16, u32)"
+                )),
             ),
         ])
     };

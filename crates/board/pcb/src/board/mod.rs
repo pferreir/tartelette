@@ -313,7 +313,10 @@ impl Board {
                 v => {
                     return Err(doc::err(
                         &node.span,
-                        format!("flash must be an array of tables ([[flash]]), not {}", v.what()),
+                        format!(
+                            "flash must be an array of tables ([[flash]]), not {}",
+                            v.what()
+                        ),
                     ));
                 }
             }
@@ -392,7 +395,8 @@ impl Board {
             data = Some(bytes);
         }
         let (addr, addr_span) = addr.ok_or_else(|| doc::err(&span, "flash entry has no addr"))?;
-        let data = data.ok_or_else(|| doc::err(&span, "flash entry has no values (u8, u16 or u32)"))?;
+        let data =
+            data.ok_or_else(|| doc::err(&span, "flash entry has no values (u8, u16 or u32)"))?;
         if !FLASH_WINDOW.contains(&addr) || addr + data.len() as i64 > FLASH_WINDOW.end {
             return Err(doc::err(
                 &addr_span,
@@ -1308,8 +1312,14 @@ bus = "i2c0"
             "flash entry has no values (u8, u16 or u32)"
         );
         assert_eq!(flash("addr = 0x10000000\nu8 = []"), "u8 has no values");
-        assert_eq!(flash("addr = 0x10000000\nu8 = [256]"), "256 does not fit in u8");
-        assert_eq!(flash("addr = 0x10000000\nu16 = [-1]"), "-1 does not fit in u16");
+        assert_eq!(
+            flash("addr = 0x10000000\nu8 = [256]"),
+            "256 does not fit in u8"
+        );
+        assert_eq!(
+            flash("addr = 0x10000000\nu16 = [-1]"),
+            "-1 does not fit in u16"
+        );
         assert_eq!(
             flash("addr = 0x10000000\nu16 = [\"x\"]"),
             "u16 values must be numbers, not a string"
