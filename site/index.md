@@ -146,3 +146,7 @@ cargo run --release --bin stardust -- \
 
 Runs firmware built with Embassy, rp2040-hal, the Pico SDK and MicroPython. A
 lot of tartelette's code was written with AI assistance.
+
+Raspberry Pi, RP2040 and Pico are trademarks of Raspberry Pi Ltd. tartelette
+is an independent project, not affiliated with or endorsed by Raspberry Pi
+Ltd.

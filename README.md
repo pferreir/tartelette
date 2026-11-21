@@ -274,6 +274,19 @@ Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md). Pull
 requests should be small and focused, and while the code may be written
 with LLMs, descriptions and discussion must be your own words.
 
+## License
+
+tartelette is licensed under the GNU GPL v3 (see [LICENSE](LICENSE)).
+
+The RP2040 bootrom image in `crates/core/rp2040-core/bootrom/` is
+© Raspberry Pi (Trading) Ltd and is distributed under its own BSD-3-Clause
+license (see the [README](crates/core/rp2040-core/bootrom/README.md) there).
+
+Raspberry Pi, RP2040 and Pico are trademarks of Raspberry Pi Ltd. Pimoroni
+and Infineon are trademarks of their respective owners. tartelette is an
+independent project and is not affiliated with, endorsed by or sponsored by
+Raspberry Pi Ltd or any other company named here.
+
 ## FAQ
 
 ### Was this project vibecoded?
