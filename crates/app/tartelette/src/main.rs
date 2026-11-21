@@ -115,7 +115,10 @@ fn run_panel(
         options,
         Box::new(move |cc| {
             app::install_fonts(&cc.egui_ctx);
-            let app = slot.borrow_mut().take().expect("the app is only created once");
+            let app = slot
+                .borrow_mut()
+                .take()
+                .expect("the app is only created once");
             Ok(Box::new(app))
         }),
     )
