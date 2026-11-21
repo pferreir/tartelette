@@ -1,0 +1,152 @@
+# Publishes a release when a version tag is pushed:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match the workspace version in Cargo.toml. The tests
+# (ci.yml) run first; then the `tartelette` binary is built for each
+# platform below, and the web app (crates/tartelette, built with trunk) as a
+# static directory. All of it, with SHA256SUMS, goes on a GitHub release
+# whose notes are generated from the commits since the previous tag. A tag
+# with a suffix (v0.2.0-rc.1) makes a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches Cargo.toml
+        run: |
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match the workspace version ${version}"
+            exit 1
+          fi
+
+  test:
+    needs: check-version
+    uses: ./.github/workflows/ci.yml
+
+  binaries:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: release-${{ matrix.target }}-
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked -p tartelette
+
+      - name: Package
+        shell: bash
+        run: |
+          name=tartelette-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir -p "dist/$name"
+          cp README.md "dist/$name/"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            cp target/release/tartelette.exe "dist/$name/"
+            (cd dist && 7z a "$name.zip" "$name" >/dev/null)
+          else
+            cp target/release/tartelette "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*.*
+          if-no-files-found: error
+
+  web:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust targets
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: trunk
+        run: |
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin trunk
+          trunk --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-web-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: release-web-
+
+      - name: Build
+        run: |
+          name=tartelette-web-${GITHUB_REF_NAME}
+          (cd crates/tartelette && trunk build --release --public-url ./ --dist "$GITHUB_WORKSPACE/dist/$name")
+          rm -f "dist/$name/.trunk-lock"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [binaries, web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--title "tartelette ${GITHUB_REF_NAME}" --generate-notes --verify-tag)
+          [[ "${GITHUB_REF_NAME}" == *-* ]] && flags+=(--prerelease)
+          gh release create "${GITHUB_REF_NAME}" "${flags[@]}" dist/*

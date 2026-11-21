@@ -1,0 +1,58 @@
+# Runs the tests (docs/development.md, "Tests") on each push and pull
+# request, and checks that the core still builds for the browser.
+# release.yml calls it too, so a tag is only published if this passes.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml picks nightly; rustup installs it on first use.
+      # thumbv6m builds the test firmware, wasm32 the browser check.
+      - name: Rust targets
+        run: rustup target add thumbv6m-none-eabi wasm32-unknown-unknown
+
+      # ALSA for sound and MIDI; cmake for Unicorn (cpu-difftest).
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev cmake
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ci-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ci-${{ runner.os }}-
+
+      # The Wi-Fi and Bluetooth tests look for the CYW43439 blobs in Cargo's
+      # git checkouts of Embassy (crates/tartelette/tests/common). Fetching
+      # pico-w-ble's dependencies checks out the Embassy revision it pins,
+      # cyw43-firmware/ included, so those tests run instead of skipping.
+      - name: CYW43439 firmware
+        run: cargo fetch --manifest-path firmware/examples/pico-w-ble/Cargo.toml
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+      - name: Browser build
+        run: cargo build --locked -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown

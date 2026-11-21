@@ -39,13 +39,20 @@ fn main() -> std::process::ExitCode {
             print!("{}", cli::schema());
             Ok(())
         }
-        None => cli
+        None if cli.run.headless => cli
             .run
             .check_uart_links()
-            .and_then(|()| match cli.run.headless {
-                true => headless::run(&cli.run),
-                false => window(&cli.run),
-            }),
+            .and_then(|()| headless::run(&cli.run)),
+        None => {
+            #[cfg(windows)]
+            let detached = windows_console::detach_if_own();
+            let result = cli.run.check_uart_links().and_then(|()| window(&cli.run));
+            #[cfg(windows)]
+            if let (true, Err(e)) = (detached, &result) {
+                windows_console::show_error(e);
+            }
+            result
+        }
     };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -76,22 +83,77 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
                 .map_err(|e| format!("--sd-live: {e}"))?;
         }
     }
+    // On Windows, wgpu first (Direct3D 12 or Vulkan): plenty of Windows
+    // machines have no OpenGL 2.0 (VMs, Remote Desktop, no GPU driver), and
+    // the system's own OpenGL is 1.1. OpenGL if wgpu finds no adapter.
+    let app = std::rc::Rc::new(std::cell::RefCell::new(Some(app)));
+    #[cfg(windows)]
+    match run_panel(&app, eframe::Renderer::Wgpu) {
+        Err(e) if app.borrow().is_some() => eprintln!("wgpu: {e}; trying OpenGL"),
+        result => return result,
+    }
+    run_panel(&app, eframe::Renderer::Glow)
+}
+
+/// Run the front panel with `renderer`. The app stays in `slot` if the
+/// renderer fails to start, so another one can be tried.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_panel(
+    slot: &std::rc::Rc<std::cell::RefCell<Option<app::App>>>,
+    renderer: eframe::Renderer,
+) -> Result<(), String> {
     let options = eframe::NativeOptions {
+        renderer,
         viewport: egui::ViewportBuilder::default()
             .with_title("Tartelette")
             .with_inner_size([1100.0, 760.0])
             .with_icon(brand::window_icon()),
         ..Default::default()
     };
+    let slot = slot.clone();
     eframe::run_native(
         "tartelette",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             app::install_fonts(&cc.egui_ctx);
+            let app = slot.borrow_mut().take().expect("the app is only created once");
             Ok(Box::new(app))
         }),
     )
     .map_err(|e| e.to_string())
+}
+
+/// tartelette is a console program, so that it works from a terminal and in
+/// scripts like any other: the shell waits for it, and its output and exit
+/// status go where they should. Started from Explorer, though, Windows gives
+/// it a console window of its own, which the front panel has no use for.
+#[cfg(windows)]
+mod windows_console {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+
+    /// Close the console if no other process shares it, i.e. it was made for
+    /// this one rather than inherited from a terminal. True if it was.
+    pub fn detach_if_own() -> bool {
+        let mut pids = [0u32; 2];
+        // SAFETY: the buffer holds the 2 entries the call is told about.
+        let attached = unsafe { GetConsoleProcessList(pids.as_mut_ptr(), 2) };
+        // SAFETY: no arguments; stdout and stderr just go nowhere after it.
+        attached == 1 && unsafe { FreeConsole() } != 0
+    }
+
+    /// With no console to print it on, say why the panel didn't start.
+    pub fn show_error(msg: &str) {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Tartelette")
+            .set_description(msg)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

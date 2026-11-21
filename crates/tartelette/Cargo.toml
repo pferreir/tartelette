@@ -30,5 +30,10 @@ netstack = { path = "../netstack" }
 hcibridge = { path = "../hcibridge" }
 clap = { version = "4.6.7", features = ["derive"] }
 
+# wgpu (Direct3D 12, Vulkan) for the front panel on Windows, as well as
+# OpenGL: see `window` in src/main.rs.
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["wgpu"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 usbbridge = { path = "../usbbridge" }

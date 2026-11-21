@@ -62,6 +62,9 @@ To check that the core still builds for the browser:
 cargo build -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
 ```
 
+`.github/workflows/ci.yml` runs both on each push to `master` and on pull
+requests.
+
 ### In a browser
 
 The web build is checked in a headless Chromium-family browser
@@ -132,3 +135,17 @@ scripts/pgo-build.sh
 It needs `llvm-profdata` from rustc's LLVM (`llvm-tools`, or set
 `LLVM_PROFDATA`). `CYW43_FIRMWARE_DIR` adds the Pico W Wi-Fi example to the
 training run, and `PGO_FIRMWARE="a.uf2 b.elf"` any other firmware.
+
+## Releases
+
+Pushing a version tag publishes a release (`.github/workflows/release.yml`):
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The tag has to match `version` in the workspace `Cargo.toml`. The tests run
+first, then the release gets the `tartelette` binary for Linux (x86_64,
+aarch64), macOS (Apple silicon) and Windows, the web app as a static
+directory, and `SHA256SUMS`. A tag with a suffix (`v0.2.0-rc.1`) makes a
+pre-release.
