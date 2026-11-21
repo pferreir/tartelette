@@ -1,0 +1,8 @@
+[package]
+name = "sitedocs"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }

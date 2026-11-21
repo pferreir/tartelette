@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}} · tartelette docs</title>
+  <link rel="icon" href="{{UP}}img/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Saira+Semi+Condensed:wght@500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --paper: #fdfdfb;
+      --ink: #141414;
+      --dim: #62625e;
+      --rule: #141414;
+      --hair: #d4d4cf;
+      --tint: #f1f1ec;
+      --pad: #a8822a;
+      --screen: #222;
+      --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+      --cond: "Saira Semi Condensed", "Arial Narrow", sans-serif;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --paper: #1b1b1c; --ink: #ddd6c4; --dim: #8f8a7e; --rule: #ddd6c4; --hair: #3a3936;
+        --tint: #242423; --pad: #c9a548; --screen: #0e0e0e; color-scheme: dark;
+      }
+    }
+    :root[data-theme="dark"] {
+      --paper: #1b1b1c; --ink: #ddd6c4; --dim: #8f8a7e; --rule: #ddd6c4; --hair: #3a3936;
+      --tint: #242423; --pad: #c9a548; --screen: #0e0e0e; color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.65 "IBM Plex Sans", system-ui, sans-serif;
+    }
+    a { color: inherit; text-decoration-color: var(--pad); text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
+    a:hover { text-decoration-color: currentColor; }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+
+    .running {
+      display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+      font: 500 0.72rem/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--dim);
+      padding: 14px 0 10px;
+      border-bottom: 2px solid var(--rule);
+    }
+    .running a { text-decoration: none; }
+    .running a:hover { color: var(--ink); }
+    .running span { display: flex; gap: 18px; }
+    .leads { height: 9px; background: repeating-linear-gradient(90deg, var(--pad) 0 3px, transparent 3px 9px); opacity: 0.7; }
+
+    .layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 48px; padding-top: 32px; }
+    nav { font-size: 0.9rem; }
+    nav > ul { position: sticky; top: 20px; }
+    nav ul { list-style: none; margin: 0; padding: 0; }
+    nav li { margin: 0; }
+    nav a { display: block; padding: 3px 0 3px 10px; text-decoration: none; border-left: 2px solid transparent; color: var(--dim); }
+    nav a:hover { color: var(--ink); }
+    nav a[aria-current] { color: var(--ink); border-left-color: var(--pad); font-weight: 600; }
+    nav ul.sub { margin: 2px 0 6px 10px; }
+    nav ul.sub a { padding-top: 1px; padding-bottom: 1px; }
+    nav code { font: 0.82rem var(--mono); background: none; padding: 0; }
+
+    article { min-width: 0; max-width: 46em; padding-bottom: 24px; }
+    article h1 {
+      font: 700 clamp(2rem, 5vw, 2.9rem)/1.05 var(--cond);
+      letter-spacing: 0.02em;
+      margin: 0 0 24px;
+    }
+    article h1 code { font: inherit; color: var(--pad); background: none; padding: 0; }
+    article h2 {
+      font: 700 1.05rem/1.2 var(--cond);
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin: 44px 0 14px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--rule);
+    }
+    article h3 { font: 700 1.15rem/1.3 var(--cond); letter-spacing: 0.02em; margin: 30px 0 8px; }
+    article h4 { font-size: 1rem; margin: 22px 0 6px; }
+    h2 code, h3 code { text-transform: none; }
+    .anchor { float: left; margin-left: -1.1em; width: 1.1em; color: var(--pad); text-decoration: none; opacity: 0; font-family: var(--mono); }
+    h2:hover .anchor, h3:hover .anchor, h4:hover .anchor, .anchor:focus { opacity: 1; }
+    article p, article ul, article ol { margin: 0 0 14px; }
+    article li { margin: 3px 0; }
+    code {
+      font: 0.86em var(--mono);
+      background: var(--tint);
+      padding: 1px 4px;
+    }
+    pre {
+      margin: 0 0 18px;
+      background: var(--screen);
+      color: #e9e4d6;
+      padding: 12px 16px;
+      overflow-x: auto;
+      border-left: 3px solid var(--pad);
+    }
+    pre code { background: none; padding: 0; font-size: 0.82rem; line-height: 1.6; color: inherit; }
+    /* Highlighting (crates/sitedocs/src/highlight.rs). Code blocks are dark
+       in both themes, so one palette does. */
+    pre .c { color: #8a857a; font-style: italic; }
+    pre .s { color: #a7d39b; }
+    pre .n { color: #f0a07e; }
+    pre .k, pre .x { color: #e3c06a; }
+    pre .h { color: #fdf7e6; font-weight: 500; }
+    pre .f { color: #9cc4e4; }
+    pre .v { color: #d9a3d6; }
+    pre .p { color: #a39d90; }
+    .table { overflow-x: auto; margin: 0 0 18px; }
+    table { border-collapse: collapse; font-size: 0.9rem; min-width: 100%; }
+    th {
+      text-align: left;
+      font: 500 0.7rem/1.3 var(--mono); text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--dim);
+      border-bottom: 1px solid var(--rule);
+      padding: 6px 12px 6px 0;
+    }
+    td { border-bottom: 1px solid var(--hair); padding: 7px 12px 7px 0; vertical-align: top; }
+    td code { white-space: nowrap; }
+    blockquote { margin: 0 0 14px; padding: 2px 0 2px 16px; border-left: 3px solid var(--hair); color: var(--dim); }
+    hr { border: 0; border-top: 1px solid var(--hair); margin: 32px 0; }
+    img { max-width: 100%; }
+
+    footer { margin-top: 48px; font: 0.74rem/1.6 var(--mono); color: var(--dim); }
+    footer .row { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 12px 0 40px; border-top: 2px solid var(--rule); }
+
+    @media (max-width: 760px) {
+      .layout { grid-template-columns: 1fr; gap: 20px; padding-top: 20px; }
+      nav { border-bottom: 1px solid var(--hair); padding-bottom: 14px; }
+      nav > ul { position: static; display: flex; flex-wrap: wrap; gap: 2px 14px; }
+      nav a { padding: 2px 0; border-left: 0; }
+      nav a[aria-current] { text-decoration: underline; text-decoration-color: var(--pad); }
+      nav li:has(> ul.sub) { flex-basis: 100%; }
+      nav ul.sub { display: flex; flex-wrap: wrap; gap: 0 12px; margin: 0 0 0 0; }
+      .anchor { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="running">
+      <a href="{{DOCS_INDEX}}">tartelette / documentation</a>
+      <span><a href="{{UP}}">demos</a><a href="{{REPO_URL}}">source &#8599;</a></span>
+    </div>
+    <div class="leads" aria-hidden="true"></div>
+
+    <div class="layout">
+      <nav aria-label="Documentation">
+{{NAV}}
+      </nav>
+      <article>
+{{BODY}}
+      </article>
+    </div>
+
+    <footer>
+      <div class="row">
+        <span>{{SOURCE}}</span>
+        <a href="{{REPO_URL}}">{{REPO_URL}}</a>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>
