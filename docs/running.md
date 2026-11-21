@@ -43,7 +43,7 @@ section. The tabs at the bottom (**→ Dock right** moves them to the right,
 and the edge between them and the panel resizes them) are:
 
 - **UART0** and **UART1**, with a line to send text back (and a choice of line
-  ending);
+  ending; it waits until the firmware turns the UART's receiver on);
 - **USB serial**, the emulated device's CDC-ACM port, if it has one;
 - **USB**, the traffic log: enumeration, decoded control transfers, packets;
 - **Log**, the firmware's defmt output;
@@ -66,8 +66,8 @@ Output:
 
 | Stream | Goes to | Change with |
 |--------|---------|-------------|
-| UART0 | stdout | `--uart0 stdout\|stderr\|none\|FILE` |
-| UART1 | stderr | `--uart1 ...` |
+| UART0 | stdout (none if bridged) | `--uart0 stdout\|stderr\|none\|FILE` |
+| UART1 | stderr (none if bridged) | `--uart1 ...` |
 | USB serial | stdout (and stdin to it) | `--usb-bridge serial` |
 | board events | stderr | |
 | defmt log | stderr | `--log` |
@@ -75,6 +75,15 @@ Output:
 
 When MicroPython's REPL is on the USB serial port and something else prints on
 UART0, `--uart0 FILE` keeps the two apart.
+
+Stdin goes to the USB serial port; `--stdin uart0` (or `uart1`) types it into
+a UART instead. The bytes wait until the firmware turns the UART's receiver
+on, then arrive at its baud rate, and the run doesn't end on the firmware
+falling asleep while stdin is open or bytes are still on their way:
+
+```sh
+echo 'help' | tartelette fw.elf --headless --stdin uart0
+```
 
 Board events are printed with the emulated time they happened at, the part's
 name and the event, with its value when it carries one:
@@ -186,6 +195,22 @@ These only matter for boards with a `cyw43439` (the Pico W). See
 --net user|loopback|none   # default user: the host's network through a NAT
 --forward 8080:80          # host 127.0.0.1:8080 -> guest port 80
 --bt none|mock|hci0        # default none
+```
+
+## UART bridges
+
+On Linux, `--uart-bridge 0` (or `1`, or `0,1`) hands a UART to the host as a
+pseudo-terminal, as if a USB-serial adapter were wired to its pins: terminal
+programs, pyserial and the like open it. The firmware's baud rate paces the
+line, whatever the terminal is set to, and a program writing faster than that
+is held back by the terminal. What the firmware sends while nobody has it open
+is dropped, as with a real port. `--uart-tty-link 0=/tmp/ttyUART0` adds a
+symlink with a fixed name. It works with a window (the console tab says where
+the UART went) and headless.
+
+```sh
+tartelette fw.elf --uart-bridge 0 --uart-tty-link 0=/tmp/ttyUART0
+picocom -b 115200 /tmp/ttyUART0
 ```
 
 ## USB

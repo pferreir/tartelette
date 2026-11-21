@@ -95,6 +95,17 @@ pub struct RunArgs {
     /// `--usb-bridge serial`), e.g. /tmp/ttyACM
     #[arg(long, value_name = "PATH", requires = "usb_bridge")]
     pub usb_tty_link: Option<PathBuf>,
+    /// Hand UARTs to this computer as pseudo-terminals (Linux), which
+    /// terminal programs and pyserial open like a USB-serial adapter wired to
+    /// the pins: 0, 1 or 0,1. The firmware's baud rate paces the line; the
+    /// terminal's setting is ignored. Headless, a bridged UART's output goes
+    /// only there unless `--uart0`/`--uart1` say otherwise
+    #[arg(long, value_name = "0,1", value_delimiter = ',', value_parser = clap::value_parser!(u8).range(0..=1))]
+    pub uart_bridge: Vec<u8>,
+    /// Also make a symlink at PATH to UART N's pseudo-terminal (with
+    /// `--uart-bridge N`), e.g. 0=/tmp/ttyUART0
+    #[arg(long, value_name = "N=PATH", value_parser = uart_and_path)]
+    pub uart_tty_link: Vec<(usize, PathBuf)>,
     /// Patch a test voice into the board's outputs, played in the window's
     /// Synth panel or into `--wav`. An oscillator (WAVE is sine, triangle,
     /// saw or square) follows CV, a DAC channel (`dac.A`), at 1 V/octave
@@ -192,6 +203,25 @@ impl RunArgs {
                 hid: self.usb_bridge.iter().any(|b| b == "hid"),
                 midi: self.usb_bridge.iter().any(|b| b == "midi"),
             },
+            uart: crate::uart::UartBridges {
+                tty: [0, 1].map(|n| self.uart_bridge.contains(&n)),
+                links: [0, 1].map(|n| {
+                    let mut links = self.uart_tty_link.iter().filter(|(k, _)| *k == n);
+                    links.next_back().map(|(_, p)| p.clone())
+                }),
+            },
+        }
+    }
+
+    /// `--uart-tty-link` without the bridge it names.
+    pub fn check_uart_links(&self) -> Result<(), String> {
+        match self
+            .uart_tty_link
+            .iter()
+            .find(|(n, _)| !self.uart_bridge.contains(&(*n as u8)))
+        {
+            Some((n, _)) => Err(format!("--uart-tty-link {n}=...: needs --uart-bridge {n}")),
+            None => Ok(()),
         }
     }
 }
@@ -207,13 +237,21 @@ pub struct Headless {
     /// Stop after N cycles (125 per microsecond)
     #[arg(long, value_name = "N", requires = "headless")]
     pub max_cycles: Option<u64>,
-    /// Where UART0's output goes: stdout, stderr, nowhere (none), or FILE
-    /// (made anew; `./stdout` for a file of that name)
-    #[arg(long, value_name = "stdout|stderr|none|FILE", default_value = "stdout", value_parser = output, requires = "headless")]
-    pub uart0: Output,
-    /// Where UART1's output goes, as for `--uart0`
-    #[arg(long, value_name = "stdout|stderr|none|FILE", default_value = "stderr", value_parser = output, requires = "headless")]
-    pub uart1: Output,
+    /// Where UART0's output goes: stdout (the default, unless bridged),
+    /// stderr, nowhere (none), or FILE (made anew; `./stdout` for a file of
+    /// that name)
+    #[arg(long, value_name = "stdout|stderr|none|FILE", value_parser = output, requires = "headless")]
+    pub uart0: Option<Output>,
+    /// Where UART1's output goes, as for `--uart0` (stderr by default,
+    /// unless bridged)
+    #[arg(long, value_name = "stdout|stderr|none|FILE", value_parser = output, requires = "headless")]
+    pub uart1: Option<Output>,
+    /// What stdin is typed into: the USB serial port (the default), or a
+    /// UART. Bytes wait until the firmware turns the UART's receiver on, then
+    /// arrive at its baud rate; the run doesn't end on the firmware falling
+    /// asleep until stdin closes
+    #[arg(long, value_name = "usb|uart0|uart1", default_value = "usb", value_parser = ["usb", "uart0", "uart1"], requires = "headless")]
+    pub stdin: String,
     /// Keep the flash chip in FILE: it starts from FILE's contents (if it
     /// exists, instead of the board's `[[flash]]` entries) with the firmware
     /// on top, and is saved back at the end if the firmware wrote to it. What
@@ -376,6 +414,14 @@ fn output(s: &str) -> Result<Output, String> {
         "" => return Err("expected stdout, stderr, none or a file".into()),
         file => Output::File(file.into()),
     })
+}
+
+fn uart_and_path(s: &str) -> Result<(usize, PathBuf), String> {
+    let (n, file) = s.split_once('=').ok_or("expected N=PATH")?;
+    match n {
+        "0" | "1" => Ok((n.parse().unwrap(), file.into())),
+        _ => Err(format!("no UART{n}: 0 or 1")),
+    }
 }
 
 fn name_and_path(s: &str) -> Result<(String, PathBuf), String> {

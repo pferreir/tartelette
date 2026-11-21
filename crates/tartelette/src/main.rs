@@ -21,6 +21,7 @@ mod sdbrowse;
 mod session;
 mod sound;
 mod synth;
+mod uart;
 mod usb;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch;
@@ -36,8 +37,13 @@ fn main() -> std::process::ExitCode {
             print!("{}", cli::schema());
             Ok(())
         }
-        None if cli.run.headless => headless::run(&cli.run),
-        None => window(&cli.run),
+        None => cli
+            .run
+            .check_uart_links()
+            .and_then(|()| match cli.run.headless {
+                true => headless::run(&cli.run),
+                false => window(&cli.run),
+            }),
     };
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,

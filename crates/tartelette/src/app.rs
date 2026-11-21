@@ -485,9 +485,11 @@ impl App {
 
     /// A serial console: UART `n`, or the USB serial port for `None`.
     fn console(&mut self, ui: &mut egui::Ui, s: &mut Session, uart: Option<usize>) {
-        if uart.is_none()
-            && let Some(name) = s.usb.serial_bridge()
-        {
+        let bridge = match uart {
+            None => s.usb.serial_bridge(),
+            Some(n) => s.uarts.bridge(n),
+        };
+        if let Some(name) = bridge {
             ui.label(
                 RichText::new(format!(
                     "bridged to {name}: open it with a terminal program"
@@ -519,7 +521,7 @@ impl App {
                 let line = std::mem::take(&mut self.uart_line) + LINE_ENDINGS[self.line_ending].0;
                 match uart {
                     None => s.usb.input.extend(line.as_bytes()),
-                    Some(n) => s.send(n, line.as_bytes()),
+                    Some(n) => s.uarts.input[n].extend(line.as_bytes()),
                 }
                 send.request_focus();
             }

@@ -84,6 +84,114 @@ fn cli_sends_uart0_where_asked() {
     std::fs::remove_file(&file).unwrap();
 }
 
+/// Run uart-echo headless with `stdin` piped in.
+fn run_echo(args: &[&str], stdin: &[u8]) -> std::process::Output {
+    use std::{io::Write, process::Stdio};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tartelette"))
+        .arg(build_named("uart-echo"))
+        .args(["--headless", "--max-cycles", "500000000"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn cli_types_stdin_into_a_uart_once_its_receiver_is_on() {
+    // Sent at once, while the receiver is still off: nothing is lost.
+    let out = run_echo(&["--stdin", "uart0"], b"hello, world.");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "ready\nHELLO, WORLDbye\n",
+        "{stderr}"
+    );
+    assert!(stderr.contains("bkpt #1"), "{stderr}");
+}
+
+#[test]
+fn cli_stdin_goes_to_usb_unless_asked() {
+    // No USB device and nothing for UART0: the firmware sleeps for good.
+    let out = run_echo(&[], b"hello.");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ready\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("asleep"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli_bridges_a_uart_to_a_pseudo_terminal() {
+    use std::{
+        io::{Read, Write},
+        process::Stdio,
+    };
+    let link = std::env::temp_dir().join(format!("tartelette-ttyUART0-{}", std::process::id()));
+    let child = Command::new(env!("CARGO_BIN_EXE_tartelette"))
+        .arg(build_named("uart-echo"))
+        .args([
+            "--headless",
+            "--max-cycles",
+            "5000000000",
+            "--uart-bridge",
+            "0",
+        ])
+        .arg("--uart-tty-link")
+        .arg(format!("0={}", link.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    while !link.exists() {
+        assert!(started.elapsed().as_secs() < 30, "no {}", link.display());
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&link)
+        .unwrap();
+    tty.write_all(b"abc.").unwrap();
+    // "ready" may have gone out before the terminal was open (and then
+    // nowhere, as from a real port): look for the echo.
+    let mut got = Vec::new();
+    let mut buf = [0u8; 64];
+    while !got.ends_with(b"bye\n") {
+        let n = tty.read(&mut buf).unwrap();
+        assert!(n > 0);
+        got.extend_from_slice(&buf[..n]);
+    }
+    assert!(
+        got.ends_with(b"ABCbye\n"),
+        "{}",
+        String::from_utf8_lossy(&got)
+    );
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        out.stdout.is_empty(),
+        "a bridged UART's output goes only to its terminal"
+    );
+    assert!(stderr.contains("UART0 bridged to "), "{stderr}");
+    assert!(!link.exists(), "the symlink goes with the run");
+}
+
+#[test]
+fn cli_rejects_a_link_without_its_bridge() {
+    let out = Command::new(env!("CARGO_BIN_EXE_tartelette"))
+        .arg(build_firmware())
+        .args(["--headless", "--uart-tty-link", "1=/tmp/nope"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("needs --uart-bridge 1"));
+}
+
 #[test]
 fn timer_alarm_systick_and_pendsv_interrupts() {
     let elf = std::fs::read(build_named("irq-timer")).unwrap();

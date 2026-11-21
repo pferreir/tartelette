@@ -92,6 +92,8 @@ pub struct Network {
     pub forwards: Vec<(u16, u16)>,
     /// Which of the USB device's functions reach the host OS.
     pub usb: crate::usb::UsbBridges,
+    /// Which UARTs reach the host OS.
+    pub uart: crate::uart::UartBridges,
 }
 
 /// A message of the firmware's defmt log and the emulated time it was read at.
@@ -116,6 +118,8 @@ pub struct Session {
     pub warnings: Vec<String>,
     /// The USB host's side: serial console, traffic log, bridges.
     pub usb: crate::usb::UsbSide,
+    /// The far end of the UART lines: input for the firmware, bridges.
+    pub uarts: crate::uart::UartSide,
     rtt: Option<rtt::Rtt>,
     /// The test synthesizer playing live, which hears every board event.
     pub synth: Option<Arc<Mutex<crate::synth::Live>>>,
@@ -175,6 +179,7 @@ impl Session {
         sys.set_board(board);
         connect_network(&mut sys.board, net)?;
         let usb = crate::usb::UsbSide::new(&net.usb)?;
+        let uarts = crate::uart::UartSide::new(&net.uart)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
             _ if uf2 => (
                 None,
@@ -196,6 +201,7 @@ impl Session {
             log_note,
             warnings: Vec::new(),
             usb,
+            uarts,
             rtt,
             synth: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -214,8 +220,9 @@ impl Session {
         self.sys.cycles() as f64 / CYCLES_PER_SEC
     }
 
-    /// Queue text for the firmware to receive on UART `n`, at the firmware's
-    /// baud rate.
+    /// Put bytes on UART `n`'s line straight away, at the firmware's baud
+    /// rate; lost if its receiver is off (for live input like MIDI; text
+    /// that must arrive goes in `uarts.input`).
     pub fn send(&mut self, n: usize, bytes: &[u8]) {
         self.sys.send_uart(n, bytes);
     }
@@ -250,10 +257,26 @@ impl Session {
         self.sys.cycles() - start
     }
 
+    /// Move what each UART sent out of the emulator (to its bridge, and
+    /// returned), and the input waiting for it onto its line.
+    pub fn exchange_uarts(&mut self) -> [Vec<u8>; 2] {
+        let mut sent: [Vec<u8>; 2] = Default::default();
+        for (n, sent) in sent.iter_mut().enumerate() {
+            let uart = &mut self.sys.bus.uart[n];
+            *sent = std::mem::take(&mut uart.tx);
+            let (receiving, queued) = (uart.receiving(), uart.rx_queued());
+            let rx = self.uarts.exchange(n, sent, receiving, queued);
+            if !rx.is_empty() {
+                self.sys.send_uart(n, &rx);
+            }
+        }
+        self.warnings.append(&mut self.uarts.notes);
+        sent
+    }
+
     /// Move UART output and board events out of the emulator.
     fn drain(&mut self) {
-        for n in 0..2 {
-            let tx = std::mem::take(&mut self.sys.bus.uart[n].tx);
+        for (n, tx) in self.exchange_uarts().into_iter().enumerate() {
             if !tx.is_empty() {
                 let text = &mut self.uart[n];
                 text.push_str(&String::from_utf8_lossy(&tx));

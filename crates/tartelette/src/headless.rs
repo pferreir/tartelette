@@ -1,8 +1,8 @@
 //! Headless runs (native only): the firmware runs as fast as it can on a
 //! schedule of inputs, and its output streams to the terminal. UART0 and the
 //! USB serial port (unless bridged) go to stdout, and stdin goes to the USB
-//! serial port; UART1, board events, the firmware's log and the USB log go
-//! to stderr.
+//! serial port (or a UART, with `--stdin`); UART1, board events, the
+//! firmware's log and the USB log go to stderr.
 use std::{io::Write, path::Path};
 
 use pcb_devices::{cyw43439::Cyw43439, sdcard::SdCard, st7789::St7789};
@@ -101,7 +101,27 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let stdin = read_stdin();
     let mut stdin_open = true;
     let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
-    let mut uarts = [uart_output(&h.uart0)?, uart_output(&h.uart1)?];
+    // A bridged UART's output goes to its terminal, unless asked for here too.
+    let default = |n: usize, to: Output| match s.uarts.bridged(n) {
+        true => Output::None,
+        false => to,
+    };
+    let mut uarts = [
+        uart_output(
+            &h.uart0
+                .clone()
+                .unwrap_or_else(|| default(0, Output::Stdout)),
+        )?,
+        uart_output(
+            &h.uart1
+                .clone()
+                .unwrap_or_else(|| default(1, Output::Stderr)),
+        )?,
+    ];
+    let stdin_uart = h
+        .stdin
+        .strip_prefix("uart")
+        .map(|n| n.parse::<usize>().unwrap());
     let end = h.max_cycles.unwrap_or(u64::MAX); // the core starts at cycle 0
     let mut pending = inputs.into_iter().peekable();
     let started = std::time::Instant::now();
@@ -133,11 +153,6 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         if matches!(reason, StopReason::Breakpoint(_)) {
             sys.drain_uarts();
         }
-
-        for (uart, to) in sys.bus.uart.iter_mut().zip(&mut uarts) {
-            let _ = to.write_all(&std::mem::take(&mut uart.tx));
-            let _ = to.flush();
-        }
         let events = std::mem::take(&mut sys.board.events);
         if let Some((synth, samples, _)) = &mut wav {
             synth.feed(&events, samples);
@@ -161,13 +176,20 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         }
         loop {
             match stdin.try_recv() {
-                Ok(chunk) => s.usb.input.extend(chunk),
+                Ok(chunk) => match stdin_uart {
+                    Some(n) => s.uarts.input[n].extend(chunk),
+                    None => s.usb.input.extend(chunk),
+                },
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     stdin_open = false;
                     break;
                 }
             }
+        }
+        for (tx, to) in s.exchange_uarts().iter().zip(&mut uarts) {
+            let _ = to.write_all(tx);
+            let _ = to.flush();
         }
         s.exchange_usb();
         s.write_sd_files();
@@ -197,8 +219,22 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             }
             // A USB device waits for its host: for stdin, or for programs
             // on the far side of a bridge. Time passes as in real life.
+            // Bytes for a UART are on their way to it (on the line, or
+            // waiting for room there): they may wake the firmware.
             StopReason::Sleeping
-                if s.sys.usb_host().device().is_some() && (stdin_open || s.usb.bridged()) =>
+                if (0..2).any(|n| {
+                    let uart = &s.sys.bus.uart[n];
+                    uart.next_event().is_some()
+                        || (uart.receiving()
+                            && uart.rx_queued() == 0
+                            && !s.uarts.input[n].is_empty())
+                }) => {}
+            // So does a UART: for stdin, or for its bridge.
+            StopReason::Sleeping
+                if (s.sys.usb_host().device().is_some()
+                    && ((stdin_open && stdin_uart.is_none()) || s.usb.bridged()))
+                    || (stdin_open && stdin_uart.is_some())
+                    || s.uarts.any_bridged() =>
             {
                 const MS: u64 = 1000 * CYCLES_PER_US;
                 if h.speed.is_none() {

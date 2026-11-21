@@ -90,11 +90,18 @@ impl Pty {
 
     /// What programs wrote to the terminal since the last call.
     pub fn read(&mut self) -> Vec<u8> {
+        self.read_at_most(usize::MAX)
+    }
+
+    /// Up to `max` bytes of what programs wrote to the terminal. The rest
+    /// stays in the terminal, whose buffer filling up holds the writer back:
+    /// flow control for a device slower than the program.
+    pub fn read_at_most(&mut self, max: usize) -> Vec<u8> {
         let mut out = Vec::new();
         let mut buf = [0u8; 4096];
-        loop {
-            let n =
-                unsafe { libc::read(self.master.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+        while out.len() < max {
+            let want = buf.len().min(max - out.len());
+            let n = unsafe { libc::read(self.master.as_raw_fd(), buf.as_mut_ptr().cast(), want) };
             if n <= 0 {
                 break; // EAGAIN, or EIO while nobody has it open
             }
@@ -165,6 +172,10 @@ mod tests {
         tty.write_all(b"\r\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
         assert_eq!(pty.read(), b"\r\n", "raw: no translation, no echo");
+        tty.write_all(b"abcdef").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(pty.read_at_most(4), b"abcd");
+        assert_eq!(pty.read_at_most(4), b"ef");
         drop(tty);
         assert!(!pty.is_open());
         drop(pty);

@@ -115,6 +115,17 @@ impl Uart {
         self.kick();
     }
 
+    /// Is the receiver on? Until it is, bytes put on the line are lost, so a
+    /// host that wants them all waits for this.
+    pub fn receiving(&self) -> bool {
+        self.enabled(CR_RXE)
+    }
+
+    /// Host bytes on the line that haven't reached the receiver yet.
+    pub fn rx_queued(&self) -> usize {
+        self.rx_line.len()
+    }
+
     /// Bring the line up to cycle `to`: finish transmissions, land received
     /// bytes, expire the receive timeout. Returns whether anything happened.
     pub fn update(&mut self, to: u64) -> bool {
@@ -588,6 +599,18 @@ mod tests {
         u.write(0x44, INT_OE);
         u.write(0x04, 0);
         assert_eq!((u.read(0x3C) & INT_OE, u.read(0x04)), (0, 0));
+    }
+
+    #[test]
+    fn the_host_sees_the_receiver_and_the_line() {
+        let mut u = timed();
+        assert!(u.receiving());
+        u.receive(b"abc");
+        assert_eq!(u.rx_queued(), 3);
+        u.update(FRAME);
+        assert_eq!(u.rx_queued(), 2);
+        u.write(0x30, CR_UARTEN | CR_TXE);
+        assert!(!u.receiving());
     }
 
     #[test]
