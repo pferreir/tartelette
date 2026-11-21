@@ -13,7 +13,7 @@ use tartelette_runtime::{
 use crate::{
     brand::Logo,
     files::{self, Inbox, Slot},
-    midi::Midi,
+    midi_in::MidiInPicker,
     panel::{self, Layout, PanelState, Request},
     sdbrowse::{SdBrowser, Want},
     sound::Sound,
@@ -72,7 +72,7 @@ pub struct App {
     /// How many of `errors` the Problems tab has shown.
     errors_seen: usize,
     inbox: Inbox,
-    midi: Midi,
+    midi: MidiInPicker,
     tab: Tab,
     dock: DockSide,
     log_min: rtt::Level,
@@ -118,7 +118,7 @@ impl App {
             errors: Vec::new(),
             errors_seen: 0,
             inbox: Inbox::default(),
-            midi: Midi::new(),
+            midi: MidiInPicker::new(),
             tab: Tab::Uart(0),
             dock: DockSide::Bottom,
             log_min: rtt::Level::Trace,

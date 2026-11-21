@@ -13,7 +13,9 @@ use usbhost::{
     log::{Event, Kind},
 };
 
-use crate::midi_bridge::MidiBridge;
+pub mod midi;
+
+use midi::MidiBridge;
 
 /// Never keep more than this much serial text.
 const CONSOLE_KEEP: usize = 256 * 1024;

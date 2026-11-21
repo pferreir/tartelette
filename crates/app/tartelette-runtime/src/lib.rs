@@ -18,7 +18,6 @@
 //! network, Bluetooth adapter or pseudo-terminal to bridge to.
 pub mod boards;
 mod links;
-pub mod midi_bridge;
 pub mod network;
 pub mod run;
 pub mod session;

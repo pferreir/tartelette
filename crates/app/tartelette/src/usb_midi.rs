@@ -1,7 +1,7 @@
 //! Port choosers for the USB device's MIDI interface (see
 //! [`MidiBridge`]), in the console's USB tab.
 use egui::Ui;
-use tartelette_runtime::midi_bridge::MidiBridge;
+use tartelette_runtime::usb::midi::MidiBridge;
 
 /// Port choosers (when the ports are not virtual).
 pub fn ui(bridge: &mut MidiBridge, ui: &mut Ui) {

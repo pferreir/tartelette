@@ -1,8 +1,9 @@
-//! A real MIDI input port feeding the firmware's MIDI in (a UART receiver).
+//! A real MIDI input port, for the firmware's MIDI in (a UART receiver).
 //!
 //! Native it listens to an ALSA / CoreMIDI / WinMM port, in the browser to a
 //! WebMIDI one (the same `midir` calls; the browser asks for permission the
-//! first time, so there it only starts on a click).
+//! first time, so there it only starts on [`MidiIn::start`]). What arrives
+//! waits here until a front end [takes](MidiIn::take) it for the UART.
 use std::{
     collections::VecDeque,
     sync::{
@@ -11,19 +12,13 @@ use std::{
     },
 };
 
-use egui::{Color32, Context, RichText, Ui};
 use midir::{Ignore, MidiInput, MidiInputConnection};
-use web_time::{Duration, Instant};
 
 /// Bytes kept while the run is paused or busy; past this the oldest go.
 const KEEP: usize = 4096;
-/// How often the list of ports is read again.
-const REFRESH: Duration = Duration::from_secs(1);
-/// How long the activity light stays on after a byte.
-const LIGHT: Duration = Duration::from_millis(120);
 const CLIENT: &str = "tartelette";
 
-/// What the port's callback fills and the UI empties.
+/// What the port's callback fills and [`MidiIn::take`] empties.
 #[derive(Default)]
 struct Wire {
     bytes: Mutex<VecDeque<u8>>,
@@ -46,32 +41,59 @@ fn push_capped(q: &mut VecDeque<u8>, data: &[u8]) {
     q.drain(..extra);
 }
 
-pub struct Midi {
+pub struct MidiIn {
     /// Whether ports are being listed (the browser waits for a click).
     started: bool,
     ports: Vec<String>,
-    refreshed: Option<Instant>,
     selected: Option<String>,
     conn: Option<MidiInputConnection<()>>,
     wire: Arc<Wire>,
-    seen: u64,
-    lit_at: Option<Instant>,
-    error: Option<String>,
+    pub error: Option<String>,
 }
 
-impl Midi {
+impl Default for MidiIn {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MidiIn {
     pub fn new() -> Self {
         Self {
             started: !cfg!(target_arch = "wasm32"),
             ports: Vec::new(),
-            refreshed: None,
             selected: None,
             conn: None,
             wire: Arc::default(),
-            seen: 0,
-            lit_at: None,
             error: None,
         }
+    }
+
+    /// Have the ports been listed? In the browser this asks for permission,
+    /// so it waits for [`MidiIn::start`] (a click).
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    /// List the ports for the first time.
+    pub fn start(&mut self) {
+        self.started = true;
+        self.refresh();
+    }
+
+    /// The input ports, as of the last [`MidiIn::refresh`].
+    pub fn ports(&self) -> &[String] {
+        &self.ports
+    }
+
+    /// The port being listened to.
+    pub fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
+    }
+
+    /// Bytes received so far, for an activity light.
+    pub fn total(&self) -> u64 {
+        self.wire.total.load(Ordering::Relaxed)
     }
 
     /// The bytes received since the last call.
@@ -84,8 +106,8 @@ impl Midi {
             .collect()
     }
 
-    fn refresh(&mut self) {
-        self.refreshed = Some(Instant::now());
+    /// List the ports again.
+    pub fn refresh(&mut self) {
         match MidiInput::new(CLIENT) {
             Ok(input) => {
                 self.ports = input
@@ -99,7 +121,8 @@ impl Midi {
     }
 
     /// Listen to the port called `name` (or to none), dropping the old one.
-    fn select(&mut self, name: Option<String>, ctx: &Context) {
+    /// `wake` runs on MIDI's thread after each message, to wake the front end.
+    pub fn select(&mut self, name: Option<String>, wake: impl Fn() + Send + 'static) {
         self.conn = None;
         self.error = None;
         self.selected = None;
@@ -117,10 +140,10 @@ impl Midi {
         else {
             return self.error = Some(format!("{name}: port is gone"));
         };
-        let (wire, ctx) = (self.wire.clone(), ctx.clone());
+        let wire = self.wire.clone();
         let on_message = move |_: u64, data: &[u8], _: &mut ()| {
             wire.push(data);
-            ctx.request_repaint();
+            wake();
         };
         match input.connect(&port, "midi in", on_message, ()) {
             Ok(conn) => {
@@ -128,73 +151,6 @@ impl Midi {
                 self.selected = Some(name);
             }
             Err(e) => self.error = Some(format!("{name}: {e}")),
-        }
-    }
-
-    /// The toolbar part: a port chooser and an activity light.
-    pub fn ui(&mut self, ui: &mut Ui) {
-        if !self.started {
-            if ui
-                .button("MIDI in…")
-                .on_hover_text("Choose a MIDI input port (the browser asks for permission)")
-                .clicked()
-            {
-                self.started = true;
-                self.refresh();
-            }
-            return;
-        }
-        if self.refreshed.is_none_or(|t| t.elapsed() >= REFRESH) {
-            self.refresh();
-        }
-        let mut choice = None;
-        egui::ComboBox::from_id_salt("midi-in")
-            .selected_text(
-                self.selected
-                    .as_deref()
-                    .map_or("MIDI in: off".to_string(), |n| format!("MIDI: {n}")),
-            )
-            .width(150.0)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(self.selected.is_none(), "off")
-                    .clicked()
-                {
-                    choice = Some(None);
-                }
-                for name in &self.ports {
-                    if ui
-                        .selectable_label(self.selected.as_ref() == Some(name), name)
-                        .clicked()
-                    {
-                        choice = Some(Some(name.clone()));
-                    }
-                }
-                if self.ports.is_empty() {
-                    ui.weak("no MIDI input ports");
-                }
-            });
-        if let Some(name) = choice {
-            self.select(name, ui.ctx());
-        }
-        let total = self.wire.total.load(Ordering::Relaxed);
-        if total != self.seen {
-            self.seen = total;
-            self.lit_at = Some(Instant::now());
-        }
-        let lit = self.lit_at.is_some_and(|t| t.elapsed() < LIGHT);
-        if lit {
-            ui.ctx().request_repaint_after(LIGHT);
-        }
-        let color = if lit {
-            Color32::from_rgb(40, 230, 70)
-        } else {
-            ui.visuals().weak_text_color()
-        };
-        ui.label(RichText::new("●").color(color))
-            .on_hover_text("MIDI activity");
-        if let Some(e) = &self.error {
-            ui.label(RichText::new(e).color(ui.visuals().error_fg_color));
         }
     }
 }
@@ -215,10 +171,10 @@ mod tests {
 
     #[test]
     fn take_empties_what_the_callback_filled() {
-        let mut m = Midi::new();
+        let mut m = MidiIn::new();
         m.wire.push(&[0x90, 60, 100]);
         assert_eq!(m.take(), [0x90, 60, 100]);
         assert!(m.take().is_empty());
-        assert_eq!(m.wire.total.load(Ordering::Relaxed), 3);
+        assert_eq!(m.total(), 3);
     }
 }

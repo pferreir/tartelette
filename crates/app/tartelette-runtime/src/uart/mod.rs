@@ -7,8 +7,10 @@
 //! lost to a UART that is not set up yet, and a program writing to a bridge
 //! faster than the baud rate is held back by its terminal instead of piling
 //! up in the emulator. (A firmware too slow for the baud rate still overruns,
-//! as on the chip.)
+//! as on the chip.) A real MIDI input port can feed a UART too: see [`midi`].
 use std::collections::VecDeque;
+
+pub mod midi;
 
 /// Host bytes put on a UART's line ahead of the receiver at most.
 const LINE_AHEAD: usize = 64;
