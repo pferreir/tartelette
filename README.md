@@ -25,7 +25,7 @@ Right now, there is support for a limited number of peripherals (see
 It started as a way to develop firmware for the [BTL-01](boards/btl-01.toml),
 a MIDI sequencer / MIDI-to-CV module I've been working on for a few years. After
 years maintaining a WASM port which I used to test it, I though I could instead
-run it an an emulator. Unfortunately, nothing seemed to be available which lets
+run it on an emulator. Unfortunately, nothing seemed to be available which let
 me also simulate the hardware I'm using, so I decided to use LLMs to create one.
 This project doesn't aim to be an exact replica of the actual hardware (although
 it seems to do a pretty decent job so far), but rather to allow you to develop your
@@ -91,15 +91,15 @@ Fedora).
 From a checkout:
 
 ```sh
-git clone ssh://git@git.turbofish.cc:22122/pedro/tartelette-rp2040.git
-cd tartelette-rp2040
+git clone https://github.com/pferreir/tartelette
+cd tartelette
 cargo install --locked --path crates/app/tartelette
 ```
 
 Or straight from git:
 
 ```sh
-cargo install --locked --git ssh://git@git.turbofish.cc:22122/pedro/tartelette-rp2040.git tartelette
+cargo install --locked --git https://github.com/pferreir/tartelette tartelette
 ```
 
 The board files are compiled into the binary, so `tartelette` works from any
@@ -107,6 +107,9 @@ directory. While hacking on it, `cargo run --release -p tartelette -- ARGS`
 does the same as `tartelette ARGS`.
 
 ### In the browser
+
+The [demo site](https://pferreir.github.io/tartelette/) runs it with no
+install, with a few firmware to try. To build the web app yourself:
 
 ```sh
 rustup target add wasm32-unknown-unknown
