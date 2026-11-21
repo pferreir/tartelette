@@ -1,12 +1,16 @@
 use std::{
-    ffi::CStr,
+    ffi::{CStr, CString},
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 /// Bytes kept for a terminal that isn't reading; past this they are dropped.
 const KEEP: usize = 1 << 20;
+/// How long the bridge, when it goes, waits for the program on the terminal
+/// to read what is left for it.
+const DRAIN_WAIT: Duration = Duration::from_secs(1);
 
 /// The master side of a pseudo-terminal; programs open the other side.
 pub struct Pty {
@@ -136,8 +140,47 @@ impl Pty {
     }
 }
 
+impl Pty {
+    /// Wait, at most [`DRAIN_WAIT`], until the program on the terminal has
+    /// read everything the device wrote. Closing the master hangs the
+    /// terminal up, and Linux throws away what is still unread then.
+    fn drain(&mut self) {
+        let deadline = Instant::now() + DRAIN_WAIT;
+        while !self.pending.is_empty() && self.is_open() && Instant::now() < deadline {
+            self.write(&[]);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if !self.is_open() {
+            return;
+        }
+        // The terminal's own side says how much is waiting to be read. (Its
+        // being open here hides the program closing it, so the wait for one
+        // that leaves bytes unread runs to the deadline.)
+        let Ok(path) = CString::new(self.name.clone()) else {
+            return;
+        };
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+        if fd < 0 {
+            return;
+        }
+        let slave = unsafe { OwnedFd::from_raw_fd(fd) };
+        let unread = || {
+            let mut n: libc::c_int = 0;
+            let ok = unsafe { libc::ioctl(slave.as_raw_fd(), libc::FIONREAD, &mut n) } == 0;
+            if ok { n } else { 0 }
+        };
+        // Written bytes reach the count a moment later: empty means empty twice.
+        let mut empty = 0;
+        while empty < 2 && Instant::now() < deadline {
+            empty = if unread() == 0 { empty + 1 } else { 0 };
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
 impl Drop for Pty {
     fn drop(&mut self) {
+        self.drain();
         if let Some(link) = &self.link {
             let _ = std::fs::remove_file(link);
         }
@@ -180,5 +223,38 @@ mod tests {
         assert!(!pty.is_open());
         drop(pty);
         assert!(!dir.exists(), "the symlink goes with it");
+    }
+
+    #[test]
+    fn the_last_bytes_reach_a_terminal_that_reads_them_after_the_end() {
+        let mut pty = Pty::open(None).unwrap();
+        let mut tty = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pty.name)
+            .unwrap();
+        pty.write(b"bye\n");
+        // The program only gets round to reading once the bridge is going.
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut got = [0u8; 4];
+            tty.read_exact(&mut got).map(|()| got)
+        });
+        drop(pty);
+        assert_eq!(&reader.join().unwrap().unwrap(), b"bye\n");
+    }
+
+    #[test]
+    fn a_terminal_that_does_not_read_holds_the_end_up_only_briefly() {
+        let mut pty = Pty::open(None).unwrap();
+        let _tty = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&pty.name)
+            .unwrap();
+        pty.write(b"never read");
+        let started = std::time::Instant::now();
+        drop(pty);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 }
