@@ -27,8 +27,8 @@ pub struct UartBridges {
 pub struct UartSide {
     /// Waiting for UART `n`'s receiver: typed in the console, or stdin.
     pub input: [VecDeque<u8>; 2],
-    /// News from the bridges, for the UI to show once.
-    pub notes: Vec<String>,
+    /// News from the bridges, until they go to the run's output.
+    pub(crate) notes: Vec<String>,
     #[cfg(target_os = "linux")]
     pty: [Option<bridge_usb::Pty>; 2],
 }

@@ -2,9 +2,10 @@
 //! `tartelette` front panel, its headless mode and the tests share.
 //!
 //! * [`Session`]: one run, a firmware ELF or UF2 on a board, stepped
-//!   against a wall-clock deadline. It moves what the firmware sends out of
-//!   the emulator (UART text, board events, the defmt log, warnings) and
-//!   connects the board to the host as its [`Links`] ask: its radios
+//!   against a wall-clock deadline or a stretch at a time. What the
+//!   firmware sends (UART and USB serial bytes, board events, the defmt log,
+//!   warnings) comes out as an [`Output`] for the front end to show or print.
+//!   It connects the board to the host as its [`Links`] ask: the radios
 //!   ([`network`]), the far end of the USB cable ([`usb`]) and of the UART
 //!   lines ([`uart`]).
 //! * [`run`]: a session paced against the wall clock, natively on a thread
@@ -19,6 +20,7 @@
 pub mod boards;
 mod links;
 pub mod network;
+mod output;
 pub mod run;
 pub mod session;
 mod source;
@@ -28,5 +30,6 @@ pub mod usb;
 
 pub use links::Links;
 pub use network::{BtMode, NetMode};
-pub use session::{CYCLES_PER_SEC, LogEntry, Session};
+pub use output::Output;
+pub use session::{CYCLES_PER_SEC, Listener, LogEntry, Session};
 pub use source::Source;

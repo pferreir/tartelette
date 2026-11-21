@@ -8,7 +8,7 @@ use cpal::{
 };
 use egui::{Color32, RichText};
 use tartelette_runtime::{
-    Session,
+    Listener, Session,
     synth::{self, Kind, Live, Patch, Synth},
 };
 
@@ -49,7 +49,7 @@ impl Sound {
         match Synth::new(&s.sys.board, &patches, rate) {
             Ok(synth) => {
                 live.replace(synth);
-                s.synth = Some(out.live.clone());
+                s.listen(listener(&out.live));
                 self.error = None;
             }
             Err(e) => {
@@ -76,7 +76,7 @@ impl Sound {
         match open(&s.sys.board, &self.patches(s)) {
             Ok(out) => {
                 out.live.lock().unwrap().volume = self.volume;
-                s.synth = Some(out.live.clone());
+                s.listen(listener(&out.live));
                 self.out = Some(out);
                 self.error = None;
             }
@@ -85,7 +85,7 @@ impl Sound {
     }
 
     fn stop(&mut self, s: &mut Session) {
-        s.synth = None;
+        s.stop_listening();
         self.out = None;
     }
 
@@ -219,6 +219,12 @@ fn readout(ui: &mut egui::Ui, now: Option<(Option<f32>, bool)>) {
         };
         ui.monospace(text);
     });
+}
+
+/// Hands the run's board events to the live synth, as they happen.
+fn listener(live: &Arc<Mutex<Live>>) -> Listener {
+    let live = live.clone();
+    Box::new(move |events| live.lock().unwrap_or_else(|e| e.into_inner()).push(events))
 }
 
 /// Start the sound card playing the voices.

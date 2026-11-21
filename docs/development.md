@@ -37,7 +37,12 @@ touches the outside world (files, sockets, sound, MIDI, the pty) is in
 `tartelette-runtime` has no UI: what the front panel, the headless runner and
 tests share (a `Session` and its clock, board loading, the far ends of the
 USB cable and UART lines) lives there, and `tartelette` adds the command
-line, the window and the sound card.
+line, the window and the sound card. A `Session` hands what the firmware
+produced (serial bytes, board events, the defmt log, warnings) to its front
+end as an `Output` after each step: the front panel keeps a capped history
+of it for the dock, headless prints it. Anything that must hear board events
+as they happen, like the live synth, registers a listener on the session
+instead.
 
 `pcb` talks to the chip only through the `Pins` trait, which `rp2040-core`
 implements for its GPIO block. Peripherals stay inside `rp2040-core`: they are

@@ -95,12 +95,9 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         None => None,
     };
 
-    if !s.usb.serial_bridged() {
-        s.usb.keep_fresh();
-    }
     let stdin = read_stdin();
     let mut stdin_open = true;
-    let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+    let mut out = std::io::stdout();
     // A bridged UART's output goes to its terminal, unless asked for here too.
     let default = |n: usize, to: Output| match s.uarts.bridged(n) {
         true => Output::None,
@@ -118,6 +115,8 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 .unwrap_or_else(|| default(1, Output::Stderr)),
         )?,
     ];
+    // A bridged USB serial port's output goes to its terminal only.
+    let usb_serial = !s.usb.serial_bridged();
     let stdin_uart = h
         .stdin
         .strip_prefix("uart")
@@ -132,48 +131,23 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 std::thread::sleep(wait);
             }
         }
-        let sys = &mut s.sys;
-        while let Some(i) = pending.next_if(|i| i.cycle <= sys.cycles()) {
-            if !sys.input(&i.part, &i.action, i.value) {
+        while let Some(i) = pending.next_if(|i| i.cycle <= s.sys.cycles()) {
+            if !s.input(&i.part, &i.action, i.value) {
                 return Err(format!(
                     "part {:?} does not understand {:?}",
                     i.part, i.action
                 ));
             }
         }
-        let mut n = (end - sys.cycles().min(end)).min(CHUNK);
+        let mut n = (end - s.sys.cycles().min(end)).min(CHUNK);
         if let Some(next) = pending.peek() {
-            n = n.min(next.cycle - sys.cycles());
+            n = n.min(next.cycle - s.sys.cycles());
         }
         let reason = if n == 0 {
             StopReason::CycleLimit
         } else {
-            sys.run(n)
+            s.advance(n)
         };
-        if matches!(reason, StopReason::Breakpoint(_)) {
-            sys.drain_uarts();
-        }
-        let events = std::mem::take(&mut sys.board.events);
-        if let Some((synth, samples, _)) = &mut wav {
-            synth.feed(&events, samples);
-        }
-        for e in events {
-            let (name, t) = (&sys.board.parts[e.part].name, us(e.cycles));
-            // Switch-like events say it all in the label; others carry a value.
-            let _ = match e.label {
-                "on" | "off" | "pressed" | "released" => {
-                    writeln!(err, "[{t:>10.1} us] {name} {}", e.label)
-                }
-                _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
-            };
-        }
-        let board_warnings = sys.board.take_warnings();
-        for w in std::mem::take(&mut sys.warnings)
-            .into_iter()
-            .chain(board_warnings)
-        {
-            let _ = writeln!(err, "[{:>10.1} us] warning: {w}", us(sys.cycles()));
-        }
         loop {
             match stdin.try_recv() {
                 Ok(chunk) => match stdin_uart {
@@ -187,29 +161,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 }
             }
         }
-        for (tx, to) in s.exchange_uarts().iter().zip(&mut uarts) {
-            let _ = to.write_all(tx);
-            let _ = to.flush();
+        let mut o = s.take_output();
+        if let Some((synth, samples, _)) = &mut wav {
+            synth.feed(o.events.make_contiguous(), samples);
         }
-        s.exchange_usb();
-        s.write_sd_files();
-        let _ = out.write_all(&s.usb.take_fresh());
-        for e in s.usb.log.drain(..) {
-            if h.usb_log {
-                let _ = writeln!(err, "[{:>10.1} us] usb {}", e.at * 1e6, e.event.describe());
-            }
-        }
-        for w in std::mem::take(&mut s.warnings) {
-            let _ = writeln!(err, "[{:>10.1} us] {w}", us(s.sys.cycles()));
-        }
-        if h.log {
-            let t = us(s.sys.cycles());
-            for l in s.poll_log() {
-                let level = l.level.map_or("", rtt::Level::name);
-                let _ = writeln!(err, "[{t:>10.1} us] {level:<5} {}", l.text);
-            }
-        }
-        let _ = out.flush();
+        print(&s, o, h, &mut uarts, usb_serial.then_some(&mut out));
 
         match reason {
             StopReason::CycleLimit if s.sys.cycles() < end => {}
@@ -217,19 +173,12 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             StopReason::Sleeping if pending.peek().is_some_and(|i| i.cycle < end) => {
                 s.sys.idle_until(pending.peek().map_or(end, |i| i.cycle));
             }
-            // A USB device waits for its host: for stdin, or for programs
-            // on the far side of a bridge. Time passes as in real life.
-            // Bytes for a UART are on their way to it (on the line, or
-            // waiting for room there): they may wake the firmware.
-            StopReason::Sleeping
-                if (0..2).any(|n| {
-                    let uart = &s.sys.bus.uart[n];
-                    uart.next_event().is_some()
-                        || (uart.receiving()
-                            && uart.rx_queued() == 0
-                            && !s.uarts.input[n].is_empty())
-                }) => {}
-            // So does a UART: for stdin, or for its bridge.
+            // Bytes for a UART are on their way to it: they may wake the
+            // firmware.
+            StopReason::Sleeping if s.input_pending() => {}
+            // A USB device waits for its host: for stdin, or for programs on
+            // the far side of a bridge. So does a UART: for stdin, or for its
+            // bridge. Time passes as in real life.
             StopReason::Sleeping
                 if (s.sys.usb_host().device().is_some()
                     && ((stdin_open && stdin_uart.is_none()) || s.usb.bridged()))
@@ -251,6 +200,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         std::fs::write(file, synth::wav(&samples, synth::WAV_RATE))
             .map_err(|e| format!("{}: {e}", file.display()))?;
     }
+    let mut err = std::io::stderr();
     let board = &mut s.sys.board;
     for (name, file) in &h.dump_screen {
         if let Some(lcd) = board.device::<St7789>(name) {
@@ -318,6 +268,55 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         eprint!("{}", s.sys.core_report(core));
     }
     Ok(())
+}
+
+/// Print what a stretch of the run produced: each UART to where it goes, the
+/// USB serial port to `usb_serial` (stdout, unless it is bridged), and
+/// everything else on stderr, stamped with the emulated time.
+fn print(
+    s: &Session,
+    o: tartelette_runtime::Output,
+    h: &crate::cli::Headless,
+    uarts: &mut [Box<dyn Write>; 2],
+    usb_serial: Option<&mut std::io::Stdout>,
+) {
+    let mut err = std::io::stderr();
+    for e in &o.events {
+        let (name, t) = (&s.sys.board.parts[e.part].name, us(e.cycles));
+        // Switch-like events say it all in the label; others carry a value.
+        let _ = match e.label {
+            "on" | "off" | "pressed" | "released" => {
+                writeln!(err, "[{t:>10.1} us] {name} {}", e.label)
+            }
+            _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
+        };
+    }
+    let now = us(s.sys.cycles());
+    for w in &o.warnings {
+        let _ = writeln!(err, "[{now:>10.1} us] warning: {w}");
+    }
+    for (tx, to) in o.uart.iter().zip(uarts) {
+        let _ = to.write_all(tx);
+        let _ = to.flush();
+    }
+    if let Some(out) = usb_serial {
+        let _ = out.write_all(&o.usb_serial);
+        let _ = out.flush();
+    }
+    if h.usb_log {
+        for e in &o.usb_log {
+            let _ = writeln!(err, "[{:>10.1} us] usb {}", e.at * 1e6, e.event.describe());
+        }
+    }
+    for n in &o.notes {
+        let _ = writeln!(err, "[{now:>10.1} us] {n}");
+    }
+    if h.log {
+        for e in &o.log {
+            let level = e.line.level.map_or("", rtt::Level::name);
+            let _ = writeln!(err, "[{:>10.1} us] {level:<5} {}", e.at * 1e6, e.line.text);
+        }
+    }
 }
 
 /// Where a UART's output goes.

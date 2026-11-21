@@ -1,10 +1,10 @@
-//! The emulated PC's side of the USB cable, outside the emulator: the serial
-//! console text, the traffic log, and the bridges that hand the device's
-//! functions to the host OS (see [`UsbBridges`]).
+//! The emulated PC's side of the USB cable, outside the emulator: input for
+//! the serial port, and the bridges that hand the device's functions to the
+//! host OS (see [`UsbBridges`]).
 //!
-//! Without a bridge every function still works inside the emulator: the
-//! serial port's text shows in the console, and HID reports and MIDI
-//! messages show in the log (and are otherwise dropped).
+//! Without a bridge every function still works inside the emulator: what the
+//! serial port sends and the traffic log go to the run's [`Output`], and HID
+//! reports and MIDI messages show in the log (and are otherwise dropped).
 use std::collections::VecDeque;
 
 use usbhost::{
@@ -13,14 +13,11 @@ use usbhost::{
     log::{Event, Kind},
 };
 
+use crate::Output;
+
 pub mod midi;
 
 use midi::MidiBridge;
-
-/// Never keep more than this much serial text.
-const CONSOLE_KEEP: usize = 256 * 1024;
-/// Never keep more than this many log entries.
-const LOG_KEEP: usize = 5000;
 
 /// Which functions go to the host OS (from the command line).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -42,17 +39,12 @@ pub struct LogEntry {
 }
 
 pub struct UsbSide {
-    /// Everything the serial port sent, as text.
-    pub console: String,
-    /// What it sent since the last [`UsbSide::take_fresh`] (headless runs).
-    fresh: Option<Vec<u8>>,
     /// Typed into the console, for the device.
     pub input: VecDeque<u8>,
-    pub log: VecDeque<LogEntry>,
     /// What is attached, in words, once enumerated.
     pub summary: Option<String>,
-    /// Problems and news from the bridges, for the UI to show once.
-    pub notes: Vec<String>,
+    /// News from the bridges, until they go to the run's output.
+    notes: Vec<String>,
     generation: u32,
     #[cfg(target_os = "linux")]
     pty: Option<bridge_usb::Pty>,
@@ -82,10 +74,7 @@ impl UsbSide {
         #[cfg(not(target_os = "linux"))]
         let notes = Vec::new();
         Ok(Self {
-            console: String::new(),
-            fresh: None,
             input: VecDeque::new(),
-            log: VecDeque::new(),
             summary: None,
             notes,
             generation: 0,
@@ -97,16 +86,6 @@ impl UsbSide {
             uhid: Vec::new(),
             midi: MidiBridge::new(bridges.midi)?,
         })
-    }
-
-    /// Keep the serial output for [`UsbSide::take_fresh`] too.
-    pub fn keep_fresh(&mut self) {
-        self.fresh.get_or_insert_with(Vec::new);
-    }
-
-    /// Serial output since the last call (with [`UsbSide::keep_fresh`]).
-    pub fn take_fresh(&mut self) -> Vec<u8> {
-        self.fresh.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Is the serial port bridged to a pseudo-terminal?
@@ -138,13 +117,17 @@ impl UsbSide {
         self.midi.connected()
     }
 
-    /// Move everything between the host's functions and the outside world.
-    /// `seconds` converts host time (cycles) for the log.
-    pub fn exchange(&mut self, host: &mut Host, seconds: impl Fn(u64) -> f64) {
+    /// Move everything between the host's functions and the outside world,
+    /// and what the device sent to `out`. `seconds` converts host time
+    /// (cycles) for the log.
+    pub(crate) fn exchange(
+        &mut self,
+        host: &mut Host,
+        seconds: impl Fn(u64) -> f64,
+        out: &mut Output,
+    ) {
+        out.notes(self.notes.drain(..));
         for event in host.take_events() {
-            if self.log.len() >= LOG_KEEP {
-                self.log.pop_front();
-            }
             if let Kind::Note(n) = &event.kind
                 && n.starts_with("configured ")
             {
@@ -153,7 +136,7 @@ impl UsbSide {
             if matches!(event.kind, Kind::Detached) {
                 self.summary = None;
             }
-            self.log.push_back(LogEntry {
+            out.usb_log(LogEntry {
                 at: seconds(event.at),
                 event,
             });
@@ -162,9 +145,10 @@ impl UsbSide {
             self.generation = host.generation();
             self.rebind(host);
         }
-        self.serial(host);
+        self.serial(host, out);
         #[cfg(target_os = "linux")]
         self.hid(host);
+        out.notes(self.notes.drain(..));
         for f in &mut host.functions {
             match f {
                 Function::Midi(m) => self.midi.exchange(m),
@@ -182,7 +166,7 @@ impl UsbSide {
         self.uhid.clear();
     }
 
-    fn serial(&mut self, host: &mut Host) {
+    fn serial(&mut self, host: &mut Host, out: &mut Output) {
         let Some(s) = host.serial() else {
             return;
         };
@@ -195,20 +179,7 @@ impl UsbSide {
             pty.write(&rx);
             s.tx.extend(pty.read());
         }
-        if rx.is_empty() {
-            return;
-        }
-        if let Some(fresh) = &mut self.fresh {
-            fresh.extend_from_slice(&rx);
-        }
-        self.console.push_str(&String::from_utf8_lossy(&rx));
-        if self.console.len() > CONSOLE_KEEP {
-            let mut cut = self.console.len() - CONSOLE_KEEP / 2;
-            while !self.console.is_char_boundary(cut) {
-                cut += 1;
-            }
-            self.console.drain(..cut);
-        }
+        out.usb_serial(&rx);
     }
 
     #[cfg(target_os = "linux")]

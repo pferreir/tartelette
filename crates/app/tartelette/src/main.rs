@@ -24,7 +24,6 @@ mod preload;
 mod schema;
 mod sdbrowse;
 mod sound;
-mod usb_midi;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch;
 

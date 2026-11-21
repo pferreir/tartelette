@@ -1,26 +1,22 @@
-//! One emulated run: firmware + board, stepped against a wall-clock budget.
-//! No UI here, so it behaves the same natively and in the browser.
-use std::{
-    collections::VecDeque,
-    sync::{Arc, Mutex},
-};
-
+//! One emulated run: firmware + board, and the host's side of its links.
+//! No UI here, so it behaves the same natively, in the browser and headless.
+//!
+//! A front end steps the run ([`Session::step`] against a wall-clock
+//! deadline, or [`Session::advance`] one stretch at a time) and takes what
+//! it produced with [`Session::take_output`].
 use pcb::BoardEvent;
 use pcb_devices::sdcard::SdCard;
 use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
 use web_time::Instant;
 
-use crate::{Links, Source, boards::parse_board, network};
+use crate::{Links, Output, Source, boards::parse_board, network, uart::UartSide, usb::UsbSide};
 
 pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
 
-/// Cycles per `System::run` call: small enough to stay responsive to the
-/// host-time budget, large enough to keep the per-call overhead down.
+/// Cycles per `System::run` call in [`Session::step`]: small enough to stay
+/// responsive to the host-time budget, large enough to keep the per-call
+/// overhead down.
 const CHUNK: u64 = 250_000;
-/// Never keep more than this much UART text per port.
-const UART_KEEP: usize = 256 * 1024;
-/// Never keep more than this many log messages.
-const LOG_KEEP: usize = 5000;
 
 /// A message of the firmware's defmt log and the emulated time it was read at.
 pub struct LogEntry {
@@ -28,27 +24,25 @@ pub struct LogEntry {
     pub line: rtt::Line,
 }
 
+/// Hears every board event as it is taken out of the emulator, on the thread
+/// that steps the run (a live synth, which must not wait for the UI).
+pub type Listener = Box<dyn FnMut(&[BoardEvent]) + Send>;
+
 pub struct Session {
     pub sys: System,
-    /// Why the firmware stopped for good (breakpoint), if it did.
+    /// Why the firmware stopped for good (breakpoint, fault), if it did
+    /// during [`Session::step`].
     pub halted: Option<StopReason>,
-    /// Everything each UART has sent, as text.
-    pub uart: [String; 2],
-    /// Board events since the UI last took them.
-    pub events: Vec<BoardEvent>,
-    /// The firmware's defmt-over-RTT log, oldest first, and why there is
-    /// none when the firmware has no log or it cannot be decoded.
-    pub log: VecDeque<LogEntry>,
+    /// Why there is no defmt log, when the firmware has none or it cannot be
+    /// decoded.
     pub log_note: Option<String>,
-    /// Wiring problems the emulator spotted, since the UI last took them.
-    pub warnings: Vec<String>,
-    /// The USB host's side: serial console, traffic log, bridges.
-    pub usb: crate::usb::UsbSide,
+    /// The USB host's side: input for the serial port, bridges.
+    pub usb: UsbSide,
     /// The far end of the UART lines: input for the firmware, bridges.
-    pub uarts: crate::uart::UartSide,
+    pub uarts: UartSide,
+    output: Output,
     rtt: Option<rtt::Rtt>,
-    /// The test synthesizer playing live, which hears every board event.
-    pub synth: Option<Arc<Mutex<crate::synth::Live>>>,
+    listener: Option<Listener>,
     /// SD cards whose writes go straight to a file: part name, file.
     #[cfg(not(target_arch = "wasm32"))]
     sd_files: Vec<SdFile>,
@@ -68,9 +62,9 @@ impl Session {
         firmware: &Source,
         board: Option<&Source>,
         shields: &[Source],
-        net: &Links,
+        links: &Links,
     ) -> Result<Self, String> {
-        Self::with_flash(firmware, board, shields, net, None)
+        Self::with_flash(firmware, board, shields, links, None)
     }
 
     /// Like `new`, with the flash chip holding `flash` (a whole-chip image)
@@ -82,7 +76,7 @@ impl Session {
         firmware: &Source,
         board: Option<&Source>,
         shields: &[Source],
-        net: &Links,
+        links: &Links,
         flash: Option<&[u8]>,
     ) -> Result<Self, String> {
         let mut sys = System::new();
@@ -103,9 +97,9 @@ impl Session {
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
         sys.set_board(board);
-        network::connect(&mut sys.board, net)?;
-        let usb = crate::usb::UsbSide::new(&net.usb)?;
-        let uarts = crate::uart::UartSide::new(&net.uart)?;
+        network::connect(&mut sys.board, links)?;
+        let usb = UsbSide::new(&links.usb)?;
+        let uarts = UartSide::new(&links.uart)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
             _ if uf2 => (
                 None,
@@ -118,27 +112,22 @@ impl Session {
             ),
             Err(e) => (None, Some(e)),
         };
-        Ok(Self {
+        let mut s = Self {
             sys,
             halted: None,
-            uart: Default::default(),
-            events: Vec::new(),
-            log: VecDeque::new(),
             log_note,
-            warnings: Vec::new(),
             usb,
             uarts,
+            output: Output::default(),
             rtt,
-            synth: None,
+            listener: None,
             #[cfg(not(target_arch = "wasm32"))]
             sd_files: Vec::new(),
-        })
-        .map(|mut s: Self| {
-            // A bridged port is closed until a program opens it.
-            let lines = !s.usb.serial_bridged();
-            s.sys.with_usb_host(|h| h.serial_lines = lines);
-            s
-        })
+        };
+        // A bridged port is closed until a program opens it.
+        let lines = !s.usb.serial_bridged();
+        s.sys.with_usb_host(|h| h.serial_lines = lines);
+        Ok(s)
     }
 
     /// Emulated seconds since power-up.
@@ -156,101 +145,108 @@ impl Session {
     /// Do something to a board part (see each device's docs for actions).
     pub fn input(&mut self, part: &str, action: &str, value: i64) -> bool {
         let ok = self.sys.input(part, action, value);
-        self.drain();
+        self.collect();
         ok
     }
 
-    /// Run up to `cycles`, stopping early once `deadline` has passed. Returns
-    /// the cycles actually emulated (time spent asleep counts).
+    /// Let `listener` hear every board event from now on, in place of the
+    /// one before.
+    pub fn listen(&mut self, listener: Listener) {
+        self.listener = Some(listener);
+    }
+
+    pub fn stop_listening(&mut self) {
+        self.listener = None;
+    }
+
+    /// Everything the run produced since the last call.
+    pub fn take_output(&mut self) -> Output {
+        std::mem::take(&mut self.output)
+    }
+
+    /// Run up to `cycles`, stopping early once `deadline` has passed, or for
+    /// good on a breakpoint or fault (see `halted`). With every core asleep
+    /// time passes anyway: the host may wake them. Returns the cycles
+    /// emulated (time spent asleep counts).
     pub fn step(&mut self, cycles: u64, deadline: Instant) -> u64 {
         let start = self.sys.cycles();
         let end = start + cycles;
         while self.halted.is_none() && self.sys.cycles() < end && Instant::now() < deadline {
             let target = self.sys.cycles() + (end - self.sys.cycles()).min(CHUNK);
-            match self.sys.run(target - self.sys.cycles()) {
+            match self.run(target - self.sys.cycles()) {
                 StopReason::CycleLimit => {}
                 // Nothing can wake the cores except the host: let the time pass.
                 StopReason::Sleeping => self.sys.idle_until(target),
-                r => {
-                    if matches!(r, StopReason::Breakpoint(_)) {
-                        self.sys.drain_uarts();
-                    }
-                    self.halted = Some(r);
-                }
+                r => self.halted = Some(r),
             }
-            self.drain();
+            self.collect();
         }
         self.sys.cycles() - start
     }
 
-    /// Move what each UART sent out of the emulator (to its bridge, and
-    /// returned), and the input waiting for it onto its line.
-    pub fn exchange_uarts(&mut self) -> [Vec<u8>; 2] {
-        let mut sent: [Vec<u8>; 2] = Default::default();
-        for (n, sent) in sent.iter_mut().enumerate() {
+    /// Run up to `cycles` once, and say why it stopped; what to do about
+    /// sleeping cores or a breakpoint is up to the caller.
+    pub fn advance(&mut self, cycles: u64) -> StopReason {
+        let r = self.run(cycles);
+        self.collect();
+        r
+    }
+
+    /// Is input from the host on its way to the firmware: bytes on a UART's
+    /// line, or waiting for a receiver that is on? They may wake it.
+    pub fn input_pending(&self) -> bool {
+        (0..2).any(|n| {
+            let uart = &self.sys.bus.uart[n];
+            uart.next_event().is_some()
+                || (uart.receiving() && uart.rx_queued() == 0 && !self.uarts.input[n].is_empty())
+        })
+    }
+
+    fn run(&mut self, cycles: u64) -> StopReason {
+        let r = self.sys.run(cycles);
+        if matches!(r, StopReason::Breakpoint(_)) {
+            // The UARTs keep sending what is in their FIFOs, as on the chip.
+            self.sys.drain_uarts();
+        }
+        r
+    }
+
+    /// Move what the emulator produced into the output, and what the host
+    /// has for the firmware onto its lines.
+    fn collect(&mut self) {
+        for n in 0..2 {
             let uart = &mut self.sys.bus.uart[n];
-            *sent = std::mem::take(&mut uart.tx);
+            let sent = std::mem::take(&mut uart.tx);
             let (receiving, queued) = (uart.receiving(), uart.rx_queued());
-            let rx = self.uarts.exchange(n, sent, receiving, queued);
+            let rx = self.uarts.exchange(n, &sent, receiving, queued);
             if !rx.is_empty() {
                 self.sys.send_uart(n, &rx);
             }
+            self.output.uart(n, &sent);
         }
-        self.warnings.append(&mut self.uarts.notes);
-        sent
-    }
-
-    /// Move UART output and board events out of the emulator.
-    fn drain(&mut self) {
-        for (n, tx) in self.exchange_uarts().into_iter().enumerate() {
-            if !tx.is_empty() {
-                let text = &mut self.uart[n];
-                text.push_str(&String::from_utf8_lossy(&tx));
-                if text.len() > UART_KEEP {
-                    let mut cut = text.len() - UART_KEEP / 2;
-                    while !text.is_char_boundary(cut) {
-                        cut += 1;
-                    }
-                    text.drain(..cut);
-                }
-            }
+        self.output.notes(self.uarts.notes.drain(..));
+        let events = std::mem::take(&mut self.sys.board.events);
+        if let Some(listener) = &mut self.listener
+            && !events.is_empty()
+        {
+            listener(&events);
         }
-        if let Some(synth) = &self.synth {
-            synth
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(&self.sys.board.events);
-        }
-        self.events.append(&mut self.sys.board.events);
-        self.warnings.append(&mut self.sys.warnings);
-        self.warnings.extend(self.sys.board.take_warnings());
-        self.exchange_usb();
+        self.output.events(events);
+        self.output.warnings(self.sys.warnings.drain(..));
+        self.output.warnings(self.sys.board.take_warnings());
+        let (usb, output) = (&mut self.usb, &mut self.output);
+        self.sys
+            .with_usb_host(|h| usb.exchange(h, |cycles| cycles as f64 / CYCLES_PER_SEC, output));
         #[cfg(not(target_arch = "wasm32"))]
         self.write_sd_files();
-        let lines = self.poll_log();
-        let at = self.seconds();
-        self.log
-            .extend(lines.into_iter().map(|line| LogEntry { at, line }));
-        let extra = self.log.len().saturating_sub(LOG_KEEP);
-        self.log.drain(..extra);
-    }
-
-    /// Move data between the USB host's functions and the console, log and
-    /// bridges.
-    pub fn exchange_usb(&mut self) {
-        let usb = &mut self.usb;
-        self.sys
-            .with_usb_host(|h| usb.exchange(h, |cycles| cycles as f64 / CYCLES_PER_SEC));
-        self.warnings.append(&mut self.usb.notes);
-    }
-
-    /// Read out what the firmware has logged since the last call.
-    pub fn poll_log(&mut self) -> Vec<rtt::Line> {
-        let mut lines = Vec::new();
         if let Some(rtt) = self.rtt.as_mut() {
+            let mut lines = Vec::new();
             rtt.poll(&mut self.sys.bus.sram.data, SRAM_BASE, &mut lines);
+            let at = self.sys.cycles() as f64 / CYCLES_PER_SEC;
+            for line in lines {
+                self.output.log(LogEntry { at, line });
+            }
         }
-        lines
     }
 
     /// SD card contents by part name, to carry over into a fresh run (a reset
@@ -265,8 +261,6 @@ impl Session {
             .collect()
     }
 
-    /// Load a disk image into the card `name`. It stops writing to any file
-    /// it was writing to: that file holds a different disk.
     /// A copy of the card `name`'s image, with how many blocks the firmware
     /// has written to it so far (to tell later whether the copy is stale).
     /// None for an empty slot.
@@ -287,6 +281,8 @@ impl Session {
             .map(|c| c.blocks_written)
     }
 
+    /// Load a disk image into the card `name`. It stops writing to any file
+    /// it was writing to: that file holds a different disk.
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         self.sd_files.retain(|f| f.part != name);
@@ -328,10 +324,10 @@ impl Session {
 
     /// Write the blocks written since last time to the cards' files. A file
     /// that fails is dropped, with a warning.
-    pub fn write_sd_files(&mut self) {
+    fn write_sd_files(&mut self) {
         use std::io::{Seek, SeekFrom, Write};
         let board = &mut self.sys.board;
-        let warnings = &mut self.warnings;
+        let mut failed = Vec::new();
         self.sd_files.retain_mut(|f| {
             let Some(card) = board.device_mut::<SdCard>(&f.part) else {
                 return false;
@@ -347,7 +343,7 @@ impl Session {
             };
             write()
                 .map_err(|e| {
-                    warnings.push(format!(
+                    failed.push(format!(
                         "{}: {e}; no longer writing SD card {} to it",
                         f.path.display(),
                         f.part
@@ -355,6 +351,7 @@ impl Session {
                 })
                 .is_ok()
         });
+        self.output.warnings(failed);
     }
 }
 
@@ -412,11 +409,13 @@ mod tests {
         assert!(s.input("user", "release", 0));
         s.step(10_000_000, far());
         assert_eq!(s.halted, Some(StopReason::Breakpoint(1)));
-        assert_eq!(s.uart[0], "done\n");
-        // Events are moved out of the board for the UI; nothing piles up there.
+        let out = s.take_output();
+        assert_eq!(out.uart[0], b"done\n");
+        // Events are moved out of the board; nothing piles up there.
         assert!(s.sys.board.events.is_empty());
-        let labels: Vec<_> = s.events.iter().map(|e| e.label).collect();
+        let labels: Vec<_> = out.events.iter().map(|e| e.label).collect();
         assert_eq!(labels, ["pressed", "on", "released", "off"]);
+        assert!(s.take_output().is_empty(), "taken once");
         // A halted run stays put.
         let t = s.sys.cycles();
         assert_eq!(s.step(1000, far()), 0);
@@ -526,12 +525,81 @@ mod tests {
         );
     }
 
+    const BUTTON_LED: &[u8] = b"parts.status = { kind = \"led\", gpio = 25 }\nparts.user = { kind = \"button\", gpio = 2 }";
+
+    /// The button-led board, pressed at 1 ms and released at 2 ms, stepped
+    /// by `step`: what it printed, and its events (when and what).
+    fn pressed_and_released(
+        mut step: impl FnMut(&mut Session, u64),
+    ) -> (Vec<u8>, Vec<(u64, &'static str)>) {
+        let board = Source::new("t.toml", BUTTON_LED.to_vec());
+        let mut s = Session::new(
+            &firmware("button-led"),
+            Some(&board),
+            &[],
+            &Links::default(),
+        )
+        .unwrap();
+        let (mut uart, mut events) = (Vec::new(), Vec::new());
+        let mut take = |s: &mut Session| {
+            let o = s.take_output();
+            uart.extend(&o.uart[0]);
+            events.extend(o.events.iter().map(|e| (e.cycles, e.label)));
+        };
+        for (at, action) in [(125_000, "press"), (250_000, "release")] {
+            let n = at - s.sys.cycles();
+            step(&mut s, n);
+            take(&mut s);
+            s.input("user", action, 0);
+        }
+        step(&mut s, 10_000_000);
+        take(&mut s);
+        (uart, events)
+    }
+
     #[test]
-    fn uart_text_is_kept_bounded() {
-        let mut s = Session::new(&firmware("button-led"), None, &[], &Links::default()).unwrap();
-        s.sys.bus.uart[0].tx = vec![b'x'; UART_KEEP + 10];
-        s.drain();
-        assert!(s.uart[0].len() <= UART_KEEP);
+    fn advance_and_step_produce_the_same_output() {
+        let by_step = pressed_and_released(|s, n| {
+            s.step(n, far());
+        });
+        let by_advance = pressed_and_released(|s, n| {
+            let end = s.sys.cycles() + n;
+            while s.sys.cycles() < end {
+                match s.advance(end - s.sys.cycles()) {
+                    StopReason::CycleLimit => {}
+                    StopReason::Sleeping => s.sys.idle_until(end),
+                    _ => break,
+                }
+            }
+        });
+        assert_eq!(by_step.0, b"done\n");
+        assert_eq!(by_step.1.len(), 4);
+        assert_eq!(by_step, by_advance);
+    }
+
+    #[test]
+    fn the_listener_hears_every_event_the_output_gets() {
+        let board = Source::new("t.toml", BUTTON_LED.to_vec());
+        let mut s = Session::new(
+            &firmware("button-led"),
+            Some(&board),
+            &[],
+            &Links::default(),
+        )
+        .unwrap();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let h = heard.clone();
+        s.listen(Box::new(move |events: &[BoardEvent]| {
+            h.lock().unwrap().extend(events.iter().map(|e| e.label));
+        }));
+        s.step(1000, far());
+        s.input("user", "press", 0);
+        s.step(1000, far());
+        s.stop_listening();
+        s.input("user", "release", 0);
+        let labels: Vec<_> = s.take_output().events.iter().map(|e| e.label).collect();
+        assert_eq!(labels, ["pressed", "on", "released"]);
+        assert_eq!(*heard.lock().unwrap(), ["pressed", "on"]);
     }
 }
 
@@ -562,14 +630,14 @@ mod log_tests {
         .unwrap();
         assert_eq!(s.log_note, None);
         s.step(125_000_000, Instant::now() + Duration::from_secs(60));
+        let log = s.take_output().log;
         assert!(
-            s.log
-                .iter()
+            log.iter()
                 .any(|e| e.line.text.contains("Entering main loop")),
             "{:?}",
-            s.log.iter().map(|e| &e.line.text).collect::<Vec<_>>()
+            log.iter().map(|e| &e.line.text).collect::<Vec<_>>()
         );
-        let first = s.log.front().unwrap();
+        let first = log.front().unwrap();
         assert!(first.at > 0.0 && first.at < 1.0);
     }
 }
