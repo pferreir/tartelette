@@ -8,13 +8,14 @@ edition.workspace = true
 rp2040-core = { path = "../rp2040-core" }
 pcb = { path = "../pcb" }
 pcb-devices = { path = "../pcb-devices" }
+tartelette-runtime = { path = "../tartelette-runtime" }
+sdimage = { path = "../sdimage" }
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = { version = "0.37.0", features = ["monochrome_emoji_fonts"] }
 rfd = "0.17.2"
 web-time = "1.1.0"
 midir = "0.11.1"
 rtt = { path = "../rtt" }
-usbhost = { path = "../usbhost" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 cpal = "0.18"
 
@@ -26,8 +27,7 @@ web-sys = { version = "0.3.106", features = ["Blob", "Url", "HtmlAnchorElement",
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "1.0.1"
-netstack = { path = "../netstack" }
-hcibridge = { path = "../hcibridge" }
+tartelette-runtime = { path = "../tartelette-runtime", features = ["clap"] }
 clap = { version = "4.6.7", features = ["derive"] }
 
 # wgpu (Direct3D 12, Vulkan) for the front panel on Windows, as well as
@@ -35,5 +35,5 @@ clap = { version = "4.6.7", features = ["derive"] }
 [target.'cfg(windows)'.dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["wgpu"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-usbbridge = { path = "../usbbridge" }
+[dev-dependencies]
+usbhost = { path = "../usbhost" }

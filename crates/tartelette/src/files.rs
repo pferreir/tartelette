@@ -3,7 +3,7 @@
 //! drains each frame, whichever way they arrived.
 use std::sync::{Arc, Mutex};
 
-use crate::session::Source;
+use tartelette_runtime::Source;
 
 /// What a loaded file is for.
 #[derive(Clone, Debug, PartialEq)]

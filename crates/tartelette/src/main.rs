@@ -13,18 +13,14 @@ mod files;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 mod midi;
-mod midi_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod mkdisk;
 mod panel;
 #[cfg(target_arch = "wasm32")]
 mod preload;
 mod sdbrowse;
-mod session;
 mod sound;
-mod synth;
-mod uart;
-mod usb;
+mod usb_midi;
 #[cfg(not(target_arch = "wasm32"))]
 mod watch;
 
@@ -65,7 +61,7 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn window(args: &cli::RunArgs) -> Result<(), String> {
-    use session::Source;
+    use tartelette_runtime::Source;
     let firmware = args
         .firmware
         .as_deref()

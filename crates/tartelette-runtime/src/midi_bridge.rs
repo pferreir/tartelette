@@ -11,7 +11,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use egui::Ui;
 use midir::{MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use usbhost::function::Midi;
 
@@ -114,7 +113,6 @@ impl MidiBridge {
     }
 
     /// Are messages going anywhere?
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // headless only
     pub fn connected(&self) -> bool {
         self.out.is_some() || self._input.is_some()
     }
@@ -134,7 +132,8 @@ impl MidiBridge {
         }
     }
 
-    fn refresh(&mut self) {
+    /// Read the port lists again.
+    pub fn refresh(&mut self) {
         match (MidiOutput::new(CLIENT), MidiInput::new(CLIENT)) {
             (Ok(o), Ok(i)) => {
                 self.outputs = o
@@ -153,7 +152,8 @@ impl MidiBridge {
         }
     }
 
-    fn connect_out(&mut self, name: Option<String>) {
+    /// Send the device's messages to the port `name` (None: nowhere).
+    pub fn connect_out(&mut self, name: Option<String>) {
         self.out = None;
         self.out_name = None;
         self.error = None;
@@ -177,7 +177,8 @@ impl MidiBridge {
         }
     }
 
-    fn connect_in(&mut self, name: Option<String>) {
+    /// Feed the device messages from the port `name` (None: from nowhere).
+    pub fn connect_in(&mut self, name: Option<String>) {
         self._input = None;
         self.in_name = None;
         self.error = None;
@@ -203,82 +204,41 @@ impl MidiBridge {
         }
     }
 
-    /// Port choosers (when the ports are not virtual).
-    pub fn ui(&mut self, ui: &mut Ui) {
-        if self.virtual_ports {
-            ui.label(format!("MIDI: {}", self.describe()));
-            return;
-        }
-        if !self.started {
-            if ui
-                .button("Connect MIDI…")
-                .on_hover_text("Choose MIDI ports for the device (the browser asks for permission)")
-                .clicked()
-            {
-                self.started = true;
-                self.refresh();
-            }
-            return;
-        }
-        let mut out_choice = None;
-        let mut in_choice = None;
-        let mut opened = false;
-        ui.label("MIDI out →");
-        let r = egui::ComboBox::from_id_salt("usb-midi-out")
-            .selected_text(self.out_name.as_deref().unwrap_or("off"))
-            .width(140.0)
-            .show_ui(ui, |ui| {
-                opened = true;
-                if ui
-                    .selectable_label(self.out_name.is_none(), "off")
-                    .clicked()
-                {
-                    out_choice = Some(None);
-                }
-                for n in &self.outputs {
-                    if ui
-                        .selectable_label(self.out_name.as_ref() == Some(n), n)
-                        .clicked()
-                    {
-                        out_choice = Some(Some(n.clone()));
-                    }
-                }
-            });
-        let _ = r;
-        ui.label("in ←");
-        egui::ComboBox::from_id_salt("usb-midi-in")
-            .selected_text(self.in_name.as_deref().unwrap_or("off"))
-            .width(140.0)
-            .show_ui(ui, |ui| {
-                opened = true;
-                if ui.selectable_label(self.in_name.is_none(), "off").clicked() {
-                    in_choice = Some(None);
-                }
-                for n in &self.inputs {
-                    if ui
-                        .selectable_label(self.in_name.as_ref() == Some(n), n)
-                        .clicked()
-                    {
-                        in_choice = Some(Some(n.clone()));
-                    }
-                }
-            });
-        if opened && self.outputs.is_empty() && self.inputs.is_empty() {
-            self.refresh();
-        }
-        if let Some(c) = out_choice {
-            self.connect_out(c);
-        }
-        if let Some(c) = in_choice {
-            self.connect_in(c);
-        }
-        if ui
-            .small_button("⟳")
-            .on_hover_text("List the ports again")
-            .clicked()
-        {
-            self.refresh();
-        }
+    /// Are the ports virtual (made by the emulator) rather than chosen?
+    pub fn virtual_ports(&self) -> bool {
+        self.virtual_ports
+    }
+
+    /// Have the port lists been read? In the browser this asks for
+    /// permission, so it waits for [`MidiBridge::start`] (a click).
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    /// Read the port lists for the first time.
+    pub fn start(&mut self) {
+        self.started = true;
+        self.refresh();
+    }
+
+    /// The ports the device's messages can go to.
+    pub fn outputs(&self) -> &[String] {
+        &self.outputs
+    }
+
+    /// The ports that can feed messages to the device.
+    pub fn inputs(&self) -> &[String] {
+        &self.inputs
+    }
+
+    /// The port the device's messages go to.
+    pub fn out_name(&self) -> Option<&str> {
+        self.out_name.as_deref()
+    }
+
+    /// The port feeding messages to the device.
+    pub fn in_name(&self) -> Option<&str> {
+        self.in_name.as_deref()
     }
 }
 

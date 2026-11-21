@@ -58,8 +58,7 @@ use pcb_devices::{
     st7789::St7789,
     ws2812::Ws2812,
 };
-
-use crate::session::Session;
+use tartelette_runtime::Session;
 
 /// Detents per knob revolution, for turning by dragging around the knob.
 const DETENTS_PER_REV: f32 = 20.0;

@@ -12,8 +12,6 @@
 //!
 //! Patches name parts and outputs (`saw:dac.A:expander.0`, `kick:expander.0`),
 //! so they survive a reset or a reloaded board.
-// Rendering to a file is for headless runs, which the web build has not.
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 use std::{collections::VecDeque, fmt, str::FromStr};
 
 use pcb::{Board, BoardEvent};
@@ -595,7 +593,7 @@ impl Synth {
 }
 
 /// A synth playing live: the emulator pushes events, the sound card pulls
-/// samples. Events play [`LEAD_SECS`] after they happened, against the
+/// samples. Events play `LEAD_SECS` after they happened, against the
 /// sound card's clock; when the emulator runs slower or faster than real
 /// time the two are lined up again.
 pub struct Live {

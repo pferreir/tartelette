@@ -7,6 +7,7 @@ crates/
   armv6m/        Cpu, Bus trait, Ram, exceptions, Ppb (NVIC/SysTick/SCB)   deps: none
   pcb/           device framework + Board (no chip knowledge)              deps: toml
   pcb-devices/   stock device models + `registry()`                        deps: pcb
+  sdimage/       SD card images: FAT16/32 formatter and reader             deps: none
   usbhost/       USB host for the emulated device: enumeration, CDC-ACM,   deps: none
                  HID, USB-MIDI, traffic log
   rp2040-core/   peripherals, ELF/UF2 loading, SystemBus, System           deps: armv6m, pcb, usbhost
@@ -14,17 +15,24 @@ crates/
   netstack/      user-mode network (slirp-style NAT) for the Wi-Fi chip    deps: pcb-devices, smoltcp (std)
   hcibridge/     a real Bluetooth adapter through an HCI user channel      deps: pcb-devices, libc (Linux)
   usbbridge/     the USB device's serial port as a pty, HID as UHID        deps: usbhost, libc (Linux)
-  tartelette/    front panel (native + web, eframe), headless runner,      deps: all of the above
-                 `mkdisk`; end-to-end tests
+  tartelette-runtime/
+                 Session (firmware + board, stepped), pacing, boards,      deps: rp2040-core, pcb-devices,
+                 the host's side of USB/UART/radios, test synth            rtt, the bridges, midir
+  tartelette/    front panel (native + web, eframe), headless runner,      deps: tartelette-runtime,
+                 `mkdisk`; end-to-end tests                                sdimage, eframe, cpal
   cpu-difftest/  differential tests of the CPU against Unicorn             dev-deps: armv6m
   sitedocs/      renders docs/ as HTML for the demo site                   deps: pulldown-cmark
 ```
 
-`armv6m`, `pcb`, `pcb-devices`, `usbhost` and `rp2040-core` are `no_std` +
+`armv6m`, `pcb`, `pcb-devices`, `sdimage`, `usbhost` and `rp2040-core` are `no_std` +
 `alloc`, deterministic, and do no I/O. The same core runs natively and in the
 browser, and two runs with the same inputs are identical. Everything that
 touches the outside world (files, sockets, sound, MIDI, the pty) is in
-`tartelette` or one of the bridge crates.
+`tartelette-runtime`, `tartelette` or one of the bridge crates.
+`tartelette-runtime` has no UI: what the front panel, the headless runner and
+tests share (a `Session` and its clock, board loading, the far ends of the
+USB cable and UART lines) lives there, and `tartelette` adds the command
+line, the window and the sound card.
 
 `pcb` talks to the chip only through the `Pins` trait, which `rp2040-core`
 implements for its GPIO block. Peripherals stay inside `rp2040-core`: they are

@@ -1,7 +1,7 @@
 //! `mkdisk`: a blank SD card image for `--sd`.
 use std::io::{Seek, SeekFrom, Write};
 
-use pcb_devices::fat::Fat;
+use sdimage::Fat;
 
 use crate::cli::MkdiskArgs;
 
@@ -19,7 +19,7 @@ pub fn run(args: &MkdiskArgs) -> Result<(), String> {
         _ => Fat::Fat32,
     };
     let dirs: Vec<&str> = dir.iter().map(String::as_str).collect();
-    let regions = pcb_devices::fat::format(fat, *size_mb as usize, label, &dirs)
+    let regions = sdimage::format(fat, *size_mb as usize, label, &dirs)
         .map_err(|e| format!("mkdisk: {e}"))?;
     let write = || -> std::io::Result<()> {
         let mut f = if *force {

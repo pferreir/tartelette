@@ -26,7 +26,6 @@ pub mod button;
 pub mod cyw43439;
 pub mod dac8165;
 pub mod encoder;
-pub mod fat;
 pub mod hci;
 pub mod led;
 pub mod mcp23008;

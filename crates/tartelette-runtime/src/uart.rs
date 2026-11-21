@@ -74,7 +74,6 @@ impl UartSide {
     }
 
     /// Is any UART bridged (so that input can come from there)?
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // headless only
     pub fn any_bridged(&self) -> bool {
         (0..2).any(|n| self.bridged(n))
     }

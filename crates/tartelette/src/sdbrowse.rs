@@ -2,7 +2,7 @@
 //! of the card's image taken when the tab opens or on Refresh. Read
 //! only, so it can never fight with the firmware over the file system.
 use egui::{Color32, RichText};
-use pcb_devices::fat::read::{self, Entry, FatType};
+use sdimage::read::{self, Entry, FatType};
 
 use crate::files;
 
@@ -370,8 +370,7 @@ mod tests {
 
     #[test]
     fn browses_a_card_and_keeps_its_place_on_refresh() {
-        let image =
-            pcb_devices::fat::blank_fat16_image(8, "CARD", &["SAMPLES", "PATTERNS"]).unwrap();
+        let image = sdimage::blank_fat16_image(8, "CARD", &["SAMPLES", "PATTERNS"]).unwrap();
         let mut b = SdBrowser::new("sd".into(), image.clone(), 1.5, 0);
         assert_eq!(b.volume, Ok("\"CARD\", FAT16".to_string()));
         let names = |b: &SdBrowser| -> Vec<String> {

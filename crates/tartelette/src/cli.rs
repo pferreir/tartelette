@@ -4,8 +4,13 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
-
-use crate::session::{BOARDS, BtMode, NetMode, Network, SHIELDS, Source};
+use tartelette_runtime::{
+    BtMode, NetMode, Network, Source,
+    boards::{self, BOARDS, SHIELDS},
+    synth::{self, Patch},
+    uart::UartBridges,
+    usb::UsbBridges,
+};
 
 /// Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on an emulated board, with a front
 /// panel window or headless.
@@ -113,8 +118,8 @@ pub struct RunArgs {
     /// LED part, or `open`. A drum (kick, snare, hat, openhat, clap) plays a
     /// hit on each rising edge of GATE. Left out, CV and GATE are the board's
     /// first. Repeat for more voices
-    #[arg(long, value_name = "WAVE[:CV[:GATE]]|DRUM[:GATE]", value_parser = clap::value_parser!(crate::synth::Patch))]
-    pub osc: Vec<crate::synth::Patch>,
+    #[arg(long, value_name = "WAVE[:CV[:GATE]]|DRUM[:GATE]", value_parser = clap::value_parser!(Patch))]
+    pub osc: Vec<Patch>,
     /// Patch a drum kit into the board's first four gates (kick, snare,
     /// closed and open hat; on the BTL-01 gates A..D), with any `--osc`
     /// voices, to hear the firmware as a drum machine
@@ -137,7 +142,7 @@ fn file_or_builtin(
         return Source::from_file(path);
     }
     let name = path.to_string_lossy();
-    match crate::session::builtin(builtin, &name) {
+    match boards::builtin(builtin, &name) {
         Some(src) => Ok(src),
         None => {
             let names: Vec<_> = builtin.iter().map(|(n, _)| *n).collect();
@@ -151,8 +156,8 @@ fn file_or_builtin(
 
 impl RunArgs {
     /// The voices `--osc` and `--drums` ask for, or else the board's default.
-    pub fn patches(&self, board: &pcb::Board) -> Vec<crate::synth::Patch> {
-        crate::synth::patches(&self.osc, self.drums, board)
+    pub fn patches(&self, board: &pcb::Board) -> Vec<Patch> {
+        synth::patches(&self.osc, self.drums, board)
     }
 
     /// The `--board` file, or else the built-in board of that name.
@@ -176,13 +181,13 @@ impl RunArgs {
             mode: self.net,
             bt: self.bt,
             forwards: self.forward.clone(),
-            usb: crate::usb::UsbBridges {
+            usb: UsbBridges {
                 serial: self.usb_bridge.iter().any(|b| b == "serial"),
                 serial_link: self.usb_tty_link.clone(),
                 hid: self.usb_bridge.iter().any(|b| b == "hid"),
                 midi: self.usb_bridge.iter().any(|b| b == "midi"),
             },
-            uart: crate::uart::UartBridges {
+            uart: UartBridges {
                 tty: [0, 1].map(|n| self.uart_bridge.contains(&n)),
                 links: [0, 1].map(|n| {
                     let mut links = self.uart_tty_link.iter().filter(|(k, _)| *k == n);
@@ -543,7 +548,7 @@ mod tests {
         };
         for (name, _) in BOARDS {
             let b = board(name).unwrap().unwrap();
-            crate::session::parse_board(Some(&b), &[]).unwrap();
+            boards::parse_board(Some(&b), &[]).unwrap();
             assert!(b.path.is_none());
         }
         let file = board(concat!(
@@ -575,11 +580,10 @@ mod tests {
         let shields = run.shields().unwrap();
         assert_eq!(shields[0].name, "pico-display-2.toml");
         for (name, _) in BOARDS.iter().filter(|(n, _)| *n != "btl-01") {
-            let b = crate::session::parse_board(Some(&board(name).unwrap().unwrap()), &shields)
-                .unwrap();
+            let b = boards::parse_board(Some(&board(name).unwrap().unwrap()), &shields).unwrap();
             assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
         }
-        let b = crate::session::parse_board(None, &shields).unwrap();
+        let b = boards::parse_board(None, &shields).unwrap();
         assert_eq!(b.name, "Pico");
         assert_eq!(b.shields, ["Pico Display Pack 2.0"]);
         assert!(

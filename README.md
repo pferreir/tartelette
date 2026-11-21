@@ -223,11 +223,13 @@ crates/
   rp2040-core/   the chip: memory map, peripherals, ELF/UF2 loading
   pcb/           the device framework and board-file parser (chip-agnostic)
   pcb-devices/   the device models
+  sdimage/       SD card images: FAT formatter and reader
   usbhost/       the USB host on the other end of the cable
   netstack/      user-mode network for the Wi-Fi chip
   hcibridge/     a real Bluetooth adapter behind the emulated chip (Linux)
   usbbridge/     USB serial as a pty, HID through uhid (Linux)
   rtt/           defmt-over-RTT log reader
+  tartelette-runtime/  running firmware on a board, without a UI
   tartelette/    the app: front panel (native and web) and headless runner
   cpu-difftest/  the CPU tested against Unicorn
 boards/          board and shield files, and their JSON schema

@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::session::Source;
+use tartelette_runtime::Source;
 
 const EVERY: Duration = Duration::from_millis(500);
 

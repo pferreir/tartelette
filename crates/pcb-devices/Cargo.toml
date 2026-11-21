@@ -9,5 +9,5 @@ pcb = { path = "../pcb" }
 [dev-dependencies]
 embedded-hal = "1.0.0"
 embedded-sdmmc = "0.10.0"
-fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
+sdimage = { path = "../sdimage" }
 sha2 = "0.11.1"

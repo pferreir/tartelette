@@ -2,12 +2,22 @@
 //! partition and an empty file system in it, which is what `embedded-sdmmc`
 //! (and so the BTL-01 OS) mounts as volume 0, optionally with some empty
 //! top-level directories. A formatted disk is almost all zeros, so
-//! [`format`] returns only the few regions that are not. [`read`] reads
+//! [`format()`] returns only the few regions that are not. [`read`] reads
 //! what is on one.
 //!
 //! Readers tell FAT16 from FAT32 by the cluster count alone (FAT32 has at
 //! least 65525), so FAT32 needs a disk of at least [`Fat::Fat32`]'s
 //! [`min_mb`](Fat::min_mb), even with the smallest clusters.
+//!
+//! `no_std` (+ alloc), with no knowledge of the emulator: the `sdcard`
+//! device model in `pcb-devices` takes any image, and the front panel and
+//! `tartelette mkdisk` use this crate to make and browse them.
+#![no_std]
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
 use alloc::{format, string::String, vec, vec::Vec};
 
 pub mod read;

@@ -1,5 +1,5 @@
 //! The Synth tab: test oscillators and drums patched into the board's outputs,
-//! played through the sound card (see [`crate::synth`]).
+//! played through the sound card (see [`tartelette_runtime::synth`]).
 use std::sync::{Arc, Mutex};
 
 use cpal::{
@@ -7,9 +7,8 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use egui::{Color32, RichText};
-
-use crate::{
-    session::Session,
+use tartelette_runtime::{
+    Session,
     synth::{self, Kind, Live, Patch, Synth},
 };
 

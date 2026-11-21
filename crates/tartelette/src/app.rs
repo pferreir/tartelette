@@ -3,6 +3,12 @@
 //! consoles, the firmware's log, USB, the synth, SD card browsers and the
 //! problems found.
 use egui::{Color32, RichText};
+use tartelette_runtime::{
+    LogEntry, Network, Session, Source,
+    run::{self, Run, Shared, lock},
+    synth::Patch,
+    usb::UsbSide,
+};
 
 use crate::{
     brand::Logo,
@@ -10,7 +16,6 @@ use crate::{
     midi::Midi,
     panel::{self, Layout, PanelState, Request},
     sdbrowse::{SdBrowser, Want},
-    session::{self, Network, Run, Session, Shared, Source, lock},
     sound::Sound,
 };
 
@@ -143,7 +148,7 @@ impl App {
             (g.clock.running, g.clock.speed)
         });
         if let Some(old) = old {
-            session::stop(old);
+            run::stop(old);
         }
         self.layout = None;
         self.panel = PanelState::default();
@@ -171,7 +176,7 @@ impl App {
                 let (layout, warnings) = Layout::new(&s.sys.board);
                 self.errors = warnings;
                 self.layout = Some(layout);
-                self.run = Some(session::start(s, running, speed));
+                self.run = Some(run::start(s, running, speed));
             }
             Err(e) => self.errors.push(e),
         }
@@ -180,7 +185,7 @@ impl App {
     /// Start with the voices `--osc` and `--drums` (or the page's `osc` and
     /// `drums`) ask for, on the Synth tab (without either, the board's
     /// default voice).
-    pub fn set_voices(&mut self, osc: &[crate::synth::Patch], drums: bool) {
+    pub fn set_voices(&mut self, osc: &[Patch], drums: bool) {
         if osc.is_empty() && !drums {
             return;
         }
@@ -569,7 +574,7 @@ impl App {
                 s.log.clear();
             }
         });
-        let shown: Vec<&session::LogEntry> = s
+        let shown: Vec<&LogEntry> = s
             .log
             .iter()
             .filter(|e| e.line.level.is_none_or(|l| l >= self.log_min))
@@ -640,7 +645,7 @@ impl eframe::App for App {
         let mut guard = run.as_ref().map(lock);
         #[cfg(target_arch = "wasm32")]
         if let Some(Run { session, clock }) = guard.as_deref_mut() {
-            clock.tick(session, session::FRAME_BUDGET);
+            clock.tick(session, run::FRAME_BUDGET);
         }
         // Real MIDI goes to the firmware only while it runs; otherwise it is dropped.
         let midi = self.midi.take();
@@ -745,9 +750,9 @@ fn usb_log_view(ui: &mut egui::Ui, s: &mut Session) {
             Some(d) => ui.label(d),
             None => ui.label(RichText::new("no USB device configured").weak()),
         };
-        if crate::usb::UsbSide::has_midi(s.sys.usb_host()) {
+        if UsbSide::has_midi(s.sys.usb_host()) {
             ui.separator();
-            s.usb.midi.ui(ui);
+            crate::usb_midi::ui(&mut s.usb.midi, ui);
             if let Some(e) = &s.usb.midi.error {
                 ui.label(RichText::new(e).color(ui.visuals().error_fg_color));
             }
@@ -771,7 +776,7 @@ fn usb_log_view(ui: &mut egui::Ui, s: &mut Session) {
 }
 
 /// `time  LEVEL  message`, the level in its colour.
-fn log_job(ui: &egui::Ui, e: &session::LogEntry) -> egui::text::LayoutJob {
+fn log_job(ui: &egui::Ui, e: &LogEntry) -> egui::text::LayoutJob {
     use egui::{FontId, TextFormat, text::LayoutJob};
     let v = ui.visuals();
     let font = FontId::monospace(12.0);

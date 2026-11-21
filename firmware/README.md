@@ -92,13 +92,14 @@ UART0. They are emulator only: some stop on `bkpt`, and most need the test
 to act as the board around them (press a button, turn a knob, pull a pin, put
 data on an SD card) at the right moment.
 
-The tests in `crates/tartelette` build them as needed
-(`cargo test -p tartelette`); nothing else uses them.
+The tests in `crates/tartelette` and `crates/tartelette-runtime` build them
+as needed (`cargo test -p tartelette -p tartelette-runtime`); nothing else
+uses them.
 
 | Firmware          | Checks | Run by |
 |-------------------|--------|--------|
 | `uart-hello`      | UART0, `.data`/`.bss` init, the bootrom's function table | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
-| `button-led`      | a GPIO input driving a GPIO output through the board | `tests/uart_hello.rs`, `src/session.rs` |
+| `button-led`      | a GPIO input driving a GPIO output through the board | `tests/uart_hello.rs`, `tartelette-runtime/src/session.rs` |
 | `io-test`         | SIO outputs, pad pulls, input loopback, edge interrupts | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `irq-timer`       | TIMER alarms, SysTick, PendSV, WFI | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `batch-timer`     | interrupts landing on the exact cycle while the core spins | `tests/batch_equivalence.rs` |

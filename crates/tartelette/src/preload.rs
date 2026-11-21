@@ -14,14 +14,10 @@ use eframe::{
     wasm_bindgen::{JsCast as _, JsValue},
     web_sys,
 };
+use tartelette_runtime::{Source, boards, synth::Patch};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::{
-    app::App,
-    files::Slot,
-    session::{self, Source},
-    synth::Patch,
-};
+use crate::{app::App, files::Slot};
 
 #[derive(Default)]
 pub struct Preload {
@@ -49,14 +45,14 @@ impl Preload {
             p.firmware = p.take(fetch(&url).await);
         }
         if let Some(name) = get("board") {
-            p.board = p.take(named(session::BOARDS, &name).await);
+            p.board = p.take(named(boards::BOARDS, &name).await);
         }
         for name in params
             .get_all("shield")
             .iter()
             .filter_map(|v| v.as_string())
         {
-            if let Some(s) = p.take(named(session::SHIELDS, &name).await) {
+            if let Some(s) = p.take(named(boards::SHIELDS, &name).await) {
                 p.shields.push(s);
             }
         }
@@ -93,7 +89,7 @@ impl Preload {
 
 /// A built-in board or shield, or else the file at that URL.
 async fn named(list: &[(&str, &str)], name: &str) -> Result<Source, String> {
-    match session::builtin(list, name) {
+    match boards::builtin(list, name) {
         Some(src) => Ok(src),
         None => fetch(name).await,
     }

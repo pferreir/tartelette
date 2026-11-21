@@ -98,13 +98,11 @@ impl UsbSide {
     }
 
     /// Keep the serial output for [`UsbSide::take_fresh`] too.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // headless only
     pub fn keep_fresh(&mut self) {
         self.fresh.get_or_insert_with(Vec::new);
     }
 
     /// Serial output since the last call (with [`UsbSide::keep_fresh`]).
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // headless only
     pub fn take_fresh(&mut self) -> Vec<u8> {
         self.fresh.as_mut().map(std::mem::take).unwrap_or_default()
     }
@@ -130,7 +128,6 @@ impl UsbSide {
     }
 
     /// Is anything bridged to the host OS (so that input can come from there)?
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))] // headless only
     pub fn bridged(&self) -> bool {
         #[cfg(target_os = "linux")]
         if self.pty.is_some() || self.hid {

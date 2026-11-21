@@ -7,12 +7,12 @@ use std::{io::Write, path::Path};
 
 use pcb_devices::{cyw43439::Cyw43439, sdcard::SdCard, st7789::St7789};
 use rp2040_core::system::{CYCLES_PER_US, StopReason};
-
-use crate::{
-    cli::{Output, RunArgs},
-    session::{Session, Source},
+use tartelette_runtime::{
+    Session, Source,
     synth::{self, Synth},
 };
+
+use crate::cli::{Output, RunArgs};
 
 const CHUNK: u64 = 100_000;
 

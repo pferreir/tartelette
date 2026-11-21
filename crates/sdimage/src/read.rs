@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn finds_the_file_system_in_an_mbr_partition() {
         // Our own formatter: an MBR with FAT16 1 MiB in, label in the root.
-        let d = crate::fat::blank_fat16_image(8, "CARD", &["SAMPLES", "PATTERNS"]).unwrap();
+        let d = crate::blank_fat16_image(8, "CARD", &["SAMPLES", "PATTERNS"]).unwrap();
         let v = open(&d).unwrap();
         assert_eq!(
             (v.fat_type, v.label.as_str(), v.offset),
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn our_fat32_disks_read_here_and_in_fatfs() {
         use std::io::{Read, Write};
-        let mut d = crate::fat::blank_image(crate::fat::Fat::Fat32, 40, "CARD", &["DATA"]).unwrap();
+        let mut d = crate::blank_image(crate::Fat::Fat32, 40, "CARD", &["DATA"]).unwrap();
         let v = open(&d).unwrap();
         assert_eq!(
             (v.fat_type, v.label.as_str(), v.offset),

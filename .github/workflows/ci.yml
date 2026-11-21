@@ -55,4 +55,4 @@ jobs:
         run: cargo test --workspace --locked
 
       - name: Browser build
-        run: cargo build --locked -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
+        run: cargo build --locked -p armv6m -p pcb -p pcb-devices -p sdimage -p rp2040-core -p tartelette-runtime -p tartelette --target wasm32-unknown-unknown

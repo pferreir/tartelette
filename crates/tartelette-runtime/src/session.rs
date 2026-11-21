@@ -2,13 +2,15 @@
 //! No UI here, so it behaves the same natively and in the browser.
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 
-use pcb::{Board, BoardEvent};
+use pcb::BoardEvent;
 use pcb_devices::sdcard::SdCard;
 use rp2040_core::system::{CYCLES_PER_US, StopReason, System};
-use web_time::{Duration, Instant};
+use web_time::Instant;
+
+use crate::{Network, Source, boards::parse_board, network};
 
 pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
 
@@ -19,82 +21,6 @@ const CHUNK: u64 = 250_000;
 const UART_KEEP: usize = 256 * 1024;
 /// Never keep more than this many log messages.
 const LOG_KEEP: usize = 5000;
-
-/// A file the run was built from.
-#[derive(Clone)]
-pub struct Source {
-    pub name: String,
-    pub bytes: Vec<u8>,
-    /// Where it came from on disk (native only), for reloading.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub path: Option<std::path::PathBuf>,
-}
-
-impl Source {
-    pub fn new(name: impl Into<String>, bytes: Vec<u8>) -> Self {
-        Self {
-            name: name.into(),
-            bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            path: None,
-        }
-    }
-
-    /// Read a file, remembering where it came from.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_file(path: &std::path::Path) -> Result<Self, String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        Ok(Self {
-            name,
-            bytes,
-            path: std::fs::canonicalize(path).ok(),
-        })
-    }
-}
-
-/// What the board's Wi-Fi chips are connected to.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg_attr(not(target_arch = "wasm32"), derive(clap::ValueEnum))]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the command line picks one
-pub enum NetMode {
-    /// The host's network, through a user-mode NAT (the host's 127.0.0.1 is 10.0.2.2)
-    #[default]
-    User,
-    /// A deterministic fake network with only a gateway
-    Loopback,
-    /// No network, as in the browser
-    None,
-}
-
-/// What the board's Bluetooth radios are connected to.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))] // only the command line picks one
-pub enum BtMode {
-    /// No radio, as in the browser: the firmware finds and reaches nobody.
-    #[default]
-    None,
-    /// Mock devices in software: a central, a BLE MIDI peripheral, a battery.
-    Mock,
-    /// A real adapter (`hciN`), through a Linux HCI user channel.
-    Adapter(u16),
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Network {
-    pub mode: NetMode,
-    pub bt: BtMode,
-    /// (host port, guest port): the host's `127.0.0.1:HOST` forwarded to a
-    /// TCP port on the guest (user mode only).
-    pub forwards: Vec<(u16, u16)>,
-    /// Which of the USB device's functions reach the host OS.
-    pub usb: crate::usb::UsbBridges,
-    /// Which UARTs reach the host OS.
-    pub uart: crate::uart::UartBridges,
-}
 
 /// A message of the firmware's defmt log and the emulated time it was read at.
 pub struct LogEntry {
@@ -177,7 +103,7 @@ impl Session {
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
         sys.set_board(board);
-        connect_network(&mut sys.board, net)?;
+        network::connect(&mut sys.board, net)?;
         let usb = crate::usb::UsbSide::new(&net.usb)?;
         let uarts = crate::uart::UartSide::new(&net.uart)?;
         let (rtt, log_note) = match rtt::Rtt::new(&firmware.bytes) {
@@ -432,267 +358,12 @@ impl Session {
     }
 }
 
-/// Give every Wi-Fi chip on the board a network to talk to. The browser has no
-/// user-mode NAT, so there the chip finds no networks and the panel says why.
-fn connect_network(board: &mut Board, net: &Network) -> Result<(), String> {
-    let mut chips = board
-        .devices_mut::<pcb_devices::cyw43439::Cyw43439>()
-        .peekable();
-    if chips.peek().is_none() && !net.forwards.is_empty() {
-        return Err("--forward: no Wi-Fi chip on the board".into());
-    }
-    for (_, chip) in chips {
-        match net.mode {
-            #[cfg(not(target_arch = "wasm32"))]
-            NetMode::User => {
-                let mut slirp = netstack::Slirp::new();
-                for &(host, guest) in &net.forwards {
-                    let addr = slirp
-                        .forward(host, guest)
-                        .map_err(|e| format!("--forward {host}:{guest}: {e}"))?;
-                    eprintln!("forwarding {addr} to the guest's port {guest}");
-                }
-                chip.set_backend(Box::new(slirp));
-            }
-            NetMode::Loopback => chip.set_backend(pcb_devices::net::LoopbackBackend::boxed()),
-            _ => {}
-        }
-    }
-    connect_bluetooth(board, net.bt)
-}
-
-/// Give every Bluetooth radio on the board its controller. A real adapter
-/// can serve only one.
-fn connect_bluetooth(board: &mut Board, bt: BtMode) -> Result<(), String> {
-    use pcb_devices::{
-        cyw43439::bt::bt_address,
-        hci::{peers, virt::VirtualController},
-    };
-    let mut chips = board.devices_mut::<pcb_devices::cyw43439::Cyw43439>();
-    while let Some((name, chip)) = chips.next() {
-        match bt {
-            BtMode::None => {}
-            BtMode::Mock => chip.set_bt_backend(Box::new(VirtualController::new(
-                bt_address(chip.mac()),
-                peers::neighbourhood(),
-            ))),
-            BtMode::Adapter(dev) => {
-                if chips.next().is_some() {
-                    return Err(format!(
-                        "--bt hci{dev}: the board has more than one Bluetooth radio"
-                    ));
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    chip.set_bt_backend(hcibridge::open(dev)?);
-                    eprintln!("{name}: Bluetooth bridged to hci{dev}");
-                }
-                #[cfg(target_arch = "wasm32")]
-                let _ = (name, dev);
-                return Ok(());
-            }
-        }
-        let _ = name;
-    }
-    Ok(())
-}
-
-/// The board used without one: a plain Raspberry Pi Pico.
-pub const PICO_BOARD: &str = include_str!("../../../boards/pico.toml");
-
-/// The boards in the repository's `boards/`, built in so that an installed
-/// `tartelette` has them too.
-pub const BOARDS: &[(&str, &str)] = &[
-    ("pico", PICO_BOARD),
-    ("btl-01", include_str!("../../../boards/btl-01.toml")),
-    ("pico-w", include_str!("../../../boards/pico-w.toml")),
-];
-
-/// The shields in `boards/shields/`.
-pub const SHIELDS: &[(&str, &str)] = &[(
-    "pico-display-2",
-    include_str!("../../../boards/shields/pico-display-2.toml"),
-)];
-
-/// The built-in board or shield called `name` in `list`.
-pub fn builtin(list: &[(&str, &str)], name: &str) -> Option<Source> {
-    list.iter()
-        .find(|(n, _)| *n == name)
-        .map(|(n, text)| Source::new(format!("{n}.toml"), text.as_bytes().to_vec()))
-}
-
-/// Build the board from its file (a plain Pico without one) and the shields on
-/// top, with the RP2040's pin rules for buses.
-pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Board, String> {
-    let mut registry = pcb_devices::registry();
-    registry.set_pin_check(rp2040_core::pinmux::check_bus_pin);
-    let text = |s: &Source| {
-        std::str::from_utf8(&s.bytes)
-            .map(str::to_owned)
-            .map_err(|_| format!("{}: not a text file", s.name))
-    };
-    let mut b = match board {
-        Some(s) => {
-            Board::parse_with(&text(s)?, &registry).map_err(|e| format!("{}:{e}", s.name))?
-        }
-        None => Board::parse_with(PICO_BOARD, &registry).map_err(|e| format!("pico.toml:{e}"))?,
-    };
-    for s in shields {
-        b.add_shield(&text(s)?, &registry)
-            .map_err(|e| format!("{}:{e}", s.name))?;
-    }
-    Ok(b)
-}
-
-/// Paces a run against the wall clock.
-pub struct Clock {
-    pub running: bool,
-    /// Emulated time per wall-clock time (`f64::INFINITY` = as fast as possible).
-    pub speed: f64,
-    last: Instant,
-    /// Emulated cycles owed to the run (fractional, so slow speeds work).
-    owed: f64,
-    /// Measured speed over the last second, as a ratio to real time.
-    measured: f64,
-    window: (Instant, u64),
-}
-
-/// Host time the emulator may take per UI frame, so the UI stays smooth.
-#[cfg(target_arch = "wasm32")]
-pub const FRAME_BUDGET: Duration = Duration::from_millis(14);
-/// Host time per slice on the emulator thread: short, so the UI can take the
-/// lock between slices.
-#[cfg(not(target_arch = "wasm32"))]
-const THREAD_SLICE: Duration = Duration::from_millis(2);
-/// Don't try to catch up more than this after a stall (window dragged, tab hidden).
-const MAX_OWED_SECS: f64 = 0.1;
-
-impl Clock {
-    pub fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            running: true,
-            speed: 1.0,
-            last: now,
-            owed: 0.0,
-            measured: 0.0,
-            window: (now, 0),
-        }
-    }
-
-    /// Advance `s` by the wall time since the last tick.
-    pub fn tick(&mut self, s: &mut Session, budget: Duration) -> u64 {
-        let now = Instant::now();
-        let dt = (now - self.last).as_secs_f64();
-        self.last = now;
-        let mut done = 0;
-        if self.running && s.halted.is_none() {
-            let want = if self.speed.is_finite() {
-                self.owed = (self.owed + dt * self.speed * CYCLES_PER_SEC)
-                    .min(MAX_OWED_SECS * self.speed * CYCLES_PER_SEC);
-                self.owed as u64
-            } else {
-                u64::MAX / 2
-            };
-            done = s.step(want, now + budget);
-            self.owed = (self.owed - done as f64).max(0.0);
-        } else {
-            self.owed = 0.0;
-        }
-        self.window.1 += done;
-        let span = (now - self.window.0).as_secs_f64();
-        if span >= 0.5 {
-            self.measured = self.window.1 as f64 / CYCLES_PER_SEC / span;
-            self.window = (now, 0);
-        }
-        done
-    }
-
-    /// Emulated seconds per real second, measured.
-    pub fn measured(&self) -> f64 {
-        self.measured
-    }
-}
-
-/// A session with its pacing clock. Natively a thread steps it in the
-/// background (the UI only locks it to draw); on the web the UI ticks it.
-pub struct Run {
-    pub session: Session,
-    pub clock: Clock,
-}
-
-pub type Shared = Arc<Mutex<Run>>;
-
-/// How many UI callers are waiting for the lock; the emulator thread backs
-/// off while any are, and otherwise keeps stepping without a pause.
-#[cfg(not(target_arch = "wasm32"))]
-static UI_WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-pub fn lock(r: &Shared) -> MutexGuard<'_, Run> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::sync::atomic::Ordering::SeqCst;
-        UI_WAITING.fetch_add(1, SeqCst);
-        let g = r.lock().unwrap_or_else(|e| e.into_inner());
-        UI_WAITING.fetch_sub(1, SeqCst);
-        g
-    }
-    #[cfg(target_arch = "wasm32")]
-    r.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-// In the browser the run never leaves the UI thread, and a USB MIDI bridge
-// holds WebMIDI connections (JS objects, not `Send`); natively they are.
-#[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
-pub fn start(session: Session, running: bool, speed: f64) -> Shared {
-    let mut clock = Clock::new();
-    clock.running = running;
-    clock.speed = speed;
-    let shared = Arc::new(Mutex::new(Run { session, clock }));
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // Ends by itself once the UI drops its handle (reset, new firmware).
-        let weak = Arc::downgrade(&shared);
-        std::thread::spawn(move || {
-            while let Some(run) = weak.upgrade() {
-                let done = {
-                    let mut g = run.lock().unwrap_or_else(|e| e.into_inner());
-                    let Run { session, clock } = &mut *g;
-                    clock.tick(session, THREAD_SLICE)
-                };
-                drop(run);
-                // Leave the UI a window to take the lock, only when it wants it.
-                if done == 0 {
-                    std::thread::sleep(Duration::from_micros(1000));
-                } else if UI_WAITING.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                    std::thread::sleep(Duration::from_micros(100));
-                }
-            }
-        });
-    }
-    shared
-}
-
-/// End a run. Natively this waits for the emulator thread to let go of it, so
-/// its host sockets (port forwards) are closed before a new run binds them.
-pub fn stop(run: Shared) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let weak = Arc::downgrade(&run);
-        drop(run);
-        while weak.strong_count() > 0 {
-            std::thread::sleep(Duration::from_micros(100));
-        }
-    }
-    #[cfg(target_arch = "wasm32")]
-    drop(run);
-}
-
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, process::Command};
 
     use pcb_devices::is_lit;
+    use web_time::Duration;
 
     use super::*;
 
@@ -872,6 +543,8 @@ mod tests {
 
 #[cfg(test)]
 mod log_tests {
+    use web_time::Duration;
+
     use super::*;
 
     /// The BTL-01 OS logs over defmt-rtt; set `BTL_FIRMWARE` to its ELF.
@@ -909,10 +582,12 @@ mod log_tests {
 
 #[cfg(test)]
 mod bench {
+    use web_time::Duration;
+
     use super::*;
 
     /// Host speed of `Session::step` in 14 ms slices, no GUI. Run with
-    /// `cargo test --release -p tartelette bench_ -- --ignored --nocapture`.
+    /// `cargo test --release -p tartelette-runtime bench_ -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bench_headless_slices() {

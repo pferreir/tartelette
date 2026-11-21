@@ -149,7 +149,7 @@ fn new_card(bench: &Rc<RefCell<Bench>>, use_crc: bool) -> SdCard<SdSpi, NoDelay>
 
 /// An MBR with one FAT16 partition and a freshly formatted, empty file system in it.
 fn formatted_image(megabytes: usize) -> Vec<u8> {
-    pcb_devices::fat::blank_fat16_image(megabytes, "", &[]).unwrap()
+    sdimage::blank_fat16_image(megabytes, "", &[]).unwrap()
 }
 
 /// A pattern that makes misplaced bytes obvious.
@@ -243,8 +243,7 @@ fn files_round_trip_through_a_fat_filesystem() {
 
 #[test]
 fn a_volume_label_shows_up_as_an_empty_directory_entry() {
-    let bench =
-        bench_with_image(pcb_devices::fat::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
+    let bench = bench_with_image(sdimage::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
     let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
     let root = volume.open_root_dir().unwrap();
@@ -259,7 +258,7 @@ fn a_volume_label_shows_up_as_an_empty_directory_entry() {
 
 #[test]
 fn a_formatted_directory_can_be_entered_and_written_to() {
-    use pcb_devices::fat::{Fat, MIN_MB32, blank_image};
+    use sdimage::{Fat, MIN_MB32, blank_image};
     for (fat, mb) in [(Fat::Fat16, IMAGE_MB), (Fat::Fat32, MIN_MB32)] {
         directory_round_trip(blank_image(fat, mb, "", &["data", "songs"]).unwrap());
     }
@@ -304,7 +303,7 @@ fn directory_round_trip(image: Vec<u8>) {
 #[test]
 fn every_formatted_size_mounts_and_keeps_a_file() {
     // Different sizes get different cluster and FAT sizes.
-    use pcb_devices::fat::{Fat, MIN_MB, MIN_MB32, blank_image};
+    use sdimage::{Fat, MIN_MB, MIN_MB32, blank_image};
     for (fat, mb) in [
         (Fat::Fat16, MIN_MB),
         (Fat::Fat16, 33),
