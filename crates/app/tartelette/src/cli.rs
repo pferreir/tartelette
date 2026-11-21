@@ -1,5 +1,6 @@
 //! Command line (native only): one set of options for the front panel and for
-//! headless runs, plus the `mkdisk` tool.
+//! headless runs, plus the `mkdisk`, `parts` and `schema` subcommands (each
+//! run by its own module).
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
@@ -305,35 +306,6 @@ impl Headless {
     }
 }
 
-/// `tartelette parts [KIND]`.
-pub fn parts(args: &PartsArgs) -> Result<(), String> {
-    let registry = pcb_devices::registry();
-    match &args.kind {
-        Some(name) => {
-            let kind = registry.get(name).ok_or_else(|| {
-                let names: Vec<_> = registry.kinds().map(|k| k.name).collect();
-                format!("no device kind {name:?} (there are {})", names.join(", "))
-            })?;
-            print!("{}", pcb::board::spec::describe(kind));
-        }
-        None => {
-            let width = registry.kinds().map(|k| k.name.len()).max().unwrap_or(0);
-            for k in registry.kinds() {
-                println!("{:width$}  {}", k.name, k.summary);
-            }
-            println!(
-                "\n`tartelette parts KIND` describes one; a part is `[parts.NAME]` with `kind = \"KIND\"` and its keys."
-            );
-        }
-    }
-    Ok(())
-}
-
-/// `tartelette schema`.
-pub fn schema() -> String {
-    pcb::board::spec::json_schema(&pcb_devices::registry())
-}
-
 /// Make a blank SD card image: an MBR with one empty FAT32 (or FAT16)
 /// partition, as the BTL-01 OS mounts it (the file is sparse).
 #[derive(Args, Debug)]
@@ -594,19 +566,6 @@ mod tests {
                 .err()
                 .unwrap()
                 .contains("pico-display-2")
-        );
-    }
-
-    #[test]
-    fn the_committed_schema_is_up_to_date() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../boards/board.schema.json"
-        );
-        let committed = std::fs::read_to_string(path).unwrap_or_default();
-        assert!(
-            committed == schema(),
-            "boards/board.schema.json is stale: run `cargo run -p tartelette -- schema > boards/board.schema.json`"
         );
     }
 }

@@ -16,8 +16,12 @@ mod midi;
 #[cfg(not(target_arch = "wasm32"))]
 mod mkdisk;
 mod panel;
+#[cfg(not(target_arch = "wasm32"))]
+mod parts;
 #[cfg(target_arch = "wasm32")]
 mod preload;
+#[cfg(not(target_arch = "wasm32"))]
+mod schema;
 mod sdbrowse;
 mod sound;
 mod usb_midi;
@@ -30,9 +34,9 @@ fn main() -> std::process::ExitCode {
     let cli = cli::Cli::parse();
     let result = match &cli.command {
         Some(cli::Command::Mkdisk(args)) => mkdisk::run(args),
-        Some(cli::Command::Parts(args)) => cli::parts(args),
+        Some(cli::Command::Parts(args)) => parts::run(args),
         Some(cli::Command::Schema) => {
-            print!("{}", cli::schema());
+            print!("{}", schema::json());
             Ok(())
         }
         None if cli.run.headless => cli
