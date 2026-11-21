@@ -8,7 +8,6 @@
 //! Reading RAM directly (not through the bus) leaves the emulation untouched.
 use defmt_decoder::{DecodeError, StreamDecoder, Table};
 use object::{Object, ObjectSymbol};
-use rp2040_core::system::{SRAM_BASE, System};
 
 /// Offsets inside the control block (`SEGGER_RTT_CB`) and its first up buffer.
 const ID: &[u8] = b"SEGGER RTT";
@@ -87,12 +86,12 @@ impl Rtt {
     }
 
     /// Empty the firmware's RTT buffer and add the messages in it to `out`.
-    pub fn poll(&mut self, sys: &mut System, out: &mut Vec<Line>) {
-        let ram = &mut sys.bus.sram.data;
-        let Some(start) = self.control.checked_sub(SRAM_BASE) else {
+    /// `ram` is the RAM holding the control block, mapped at address `base`.
+    pub fn poll(&mut self, ram: &mut [u8], base: u32, out: &mut Vec<Line>) {
+        let Some(start) = self.control.checked_sub(base) else {
             return;
         };
-        let bytes = drain(ram, start as usize);
+        let bytes = drain(ram, base, start as usize);
         if bytes.is_empty() {
             return;
         }
@@ -122,9 +121,9 @@ fn word(ram: &[u8], at: usize) -> Option<u32> {
 }
 
 /// Take the bytes waiting in up-channel 0 of the control block at `control`
-/// (an offset into `ram`) and mark them read. Nothing if there is no valid
+/// (an offset into `ram`, which is mapped at `base`) and mark them read. Nothing if there is no valid
 /// block yet (the firmware writes its id last, once the buffer is set up).
-fn drain(ram: &mut [u8], control: usize) -> Vec<u8> {
+fn drain(ram: &mut [u8], base: u32, control: usize) -> Vec<u8> {
     let at = |off: u32| control + off as usize;
     if ram.get(control..control + ID.len()) != Some(ID) || ram.len() < at(MIN_BLOCK) {
         return Vec::new();
@@ -139,7 +138,7 @@ fn drain(ram: &mut [u8], control: usize) -> Vec<u8> {
         return Vec::new();
     };
     let (size, write, read) = (size as usize, write as usize, read as usize);
-    let Some(buf) = buf.checked_sub(SRAM_BASE).map(|b| b as usize) else {
+    let Some(buf) = buf.checked_sub(base).map(|b| b as usize) else {
         return Vec::new();
     };
     if max_up == 0 || size == 0 || write >= size || read >= size || buf + size > ram.len() {
@@ -159,6 +158,9 @@ fn drain(ram: &mut [u8], control: usize) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Where the RAM is mapped (the RP2040's SRAM).
+    const BASE: u32 = 0x2000_0000;
+
     /// RAM holding a control block at offset 0x40 and a ring of `size` bytes at 0x100.
     fn ram(size: u32, write: u32, read: u32) -> Vec<u8> {
         let mut r = vec![0u8; 0x400];
@@ -166,7 +168,7 @@ mod tests {
             |r: &mut Vec<u8>, off: usize, v: u32| r[off..off + 4].copy_from_slice(&v.to_le_bytes());
         r[0x40..0x40 + ID.len()].copy_from_slice(ID);
         put(&mut r, 0x40 + MAX_UP as usize, 1);
-        put(&mut r, 0x40 + BUF as usize, SRAM_BASE + 0x100);
+        put(&mut r, 0x40 + BUF as usize, BASE + 0x100);
         put(&mut r, 0x40 + SIZE as usize, size);
         put(&mut r, 0x40 + WRITE as usize, write);
         put(&mut r, 0x40 + READ as usize, read);
@@ -179,10 +181,10 @@ mod tests {
     #[test]
     fn drains_what_was_written_and_marks_it_read() {
         let mut r = ram(16, 5, 2);
-        assert_eq!(drain(&mut r, 0x40), [2, 3, 4]);
+        assert_eq!(drain(&mut r, BASE, 0x40), [2, 3, 4]);
         assert_eq!(word(&r, 0x40 + READ as usize), Some(5));
         assert!(
-            drain(&mut r, 0x40).is_empty(),
+            drain(&mut r, BASE, 0x40).is_empty(),
             "nothing new the second time"
         );
     }
@@ -190,7 +192,7 @@ mod tests {
     #[test]
     fn follows_the_ring_around_its_end() {
         let mut r = ram(16, 3, 14);
-        assert_eq!(drain(&mut r, 0x40), [14, 15, 0, 1, 2]);
+        assert_eq!(drain(&mut r, BASE, 0x40), [14, 15, 0, 1, 2]);
         assert_eq!(word(&r, 0x40 + READ as usize), Some(3));
     }
 
@@ -198,13 +200,13 @@ mod tests {
     fn ignores_a_block_that_is_not_set_up_yet_or_is_garbage() {
         let mut r = ram(16, 5, 2);
         r[0x40] = 0; // the id is written last by the firmware
-        assert!(drain(&mut r, 0x40).is_empty());
+        assert!(drain(&mut r, BASE, 0x40).is_empty());
         let mut r = ram(16, 99, 2); // write offset outside the buffer
-        assert!(drain(&mut r, 0x40).is_empty());
+        assert!(drain(&mut r, BASE, 0x40).is_empty());
         let mut r = ram(0, 0, 0);
-        assert!(drain(&mut r, 0x40).is_empty());
+        assert!(drain(&mut r, BASE, 0x40).is_empty());
         assert!(
-            drain(&mut r, 0x3FF).is_empty(),
+            drain(&mut r, BASE, 0x3FF).is_empty(),
             "block runs off the end of RAM"
         );
     }

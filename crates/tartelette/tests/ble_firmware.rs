@@ -13,7 +13,7 @@ use pcb_devices::{
     cyw43439::{Cyw43439, bt::bt_address},
     hci::{peers, virt::VirtualController},
 };
-use rp2040_core::system::{CYCLES_PER_US, StopReason, System};
+use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
 
 fn build(bin: &str) -> Option<Vec<u8>> {
     static BUILT: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -90,7 +90,7 @@ fn run_with(elf: &[u8], mock: bool, ms: u64, batching: bool) -> Run {
             StopReason::CycleLimit => {}
             r => panic!("{r:?}"),
         }
-        rtt.poll(&mut sys, &mut raw);
+        rtt.poll(&mut sys.bus.sram.data, SRAM_BASE, &mut raw);
         for e in std::mem::take(&mut sys.board.events) {
             events.push((
                 e.cycles as f64 / CYCLES_PER_US as f64 / 1000.0,

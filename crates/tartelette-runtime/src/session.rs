@@ -7,7 +7,7 @@ use std::{
 
 use pcb::BoardEvent;
 use pcb_devices::sdcard::SdCard;
-use rp2040_core::system::{CYCLES_PER_US, StopReason, System};
+use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
 use web_time::Instant;
 
 use crate::{Network, Source, boards::parse_board, network};
@@ -248,7 +248,7 @@ impl Session {
     pub fn poll_log(&mut self) -> Vec<rtt::Line> {
         let mut lines = Vec::new();
         if let Some(rtt) = self.rtt.as_mut() {
-            rtt.poll(&mut self.sys, &mut lines);
+            rtt.poll(&mut self.sys.bus.sram.data, SRAM_BASE, &mut lines);
         }
         lines
     }

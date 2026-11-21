@@ -11,7 +11,7 @@ crates/
   usbhost/       USB host for the emulated device: enumeration, CDC-ACM,   deps: none
                  HID, USB-MIDI, traffic log
   rp2040-core/   peripherals, ELF/UF2 loading, SystemBus, System           deps: armv6m, pcb, usbhost
-  rtt/           defmt-over-RTT reader                                     deps: rp2040-core, defmt-decoder
+  rtt/           defmt-over-RTT reader                                     deps: defmt-decoder, object
   netstack/      user-mode network (slirp-style NAT) for the Wi-Fi chip    deps: pcb-devices, smoltcp (std)
   hcibridge/     a real Bluetooth adapter through an HCI user channel      deps: pcb-devices, libc (Linux)
   usbbridge/     the USB device's serial port as a pty, HID as UHID        deps: usbhost, libc (Linux)
@@ -37,6 +37,11 @@ line, the window and the sound card.
 `pcb` talks to the chip only through the `Pins` trait, which `rp2040-core`
 implements for its GPIO block. Peripherals stay inside `rp2040-core`: they are
 tied to reset gating, IRQ lines, DMA and PIO.
+
+`rp2040-core` also owns what is on the other end of the USB cable: a
+`usbhost::Host`, which `System` polls from its own scheduler so that every
+transaction lands on the cycle it would on a real bus, as the board's devices
+do. Frontends reach it through `System::usb_host` and `System::with_usb_host`.
 
 ### Adding a device
 

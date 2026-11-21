@@ -6,8 +6,8 @@ edition.workspace = true
 [dependencies]
 defmt-decoder = "1.2.0"
 object = "0.36.7"
-rp2040-core = { path = "../rp2040-core" }
 
 [dev-dependencies]
+rp2040-core = { path = "../rp2040-core" }
 pcb = { path = "../pcb" }
 pcb-devices = { path = "../pcb-devices" }

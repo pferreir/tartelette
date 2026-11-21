@@ -1,6 +1,6 @@
 //! Reads the log of a real defmt-rtt firmware. Set `BTL_FIRMWARE` to its ELF
 //! (the BTL-01 OS built with its `log` feature); skipped otherwise.
-use rp2040_core::system::{StopReason, System};
+use rp2040_core::system::{SRAM_BASE, StopReason, System};
 
 #[test]
 fn decodes_the_log_of_the_btl_os() {
@@ -28,7 +28,7 @@ fn decodes_the_log_of_the_btl_os() {
             StopReason::CycleLimit => {}
             r => panic!("{r:?}"),
         }
-        rtt.poll(&mut sys, &mut lines);
+        rtt.poll(&mut sys.bus.sram.data, SRAM_BASE, &mut lines);
     }
     for l in &lines {
         println!("{:?} {}", l.level, l.text);
