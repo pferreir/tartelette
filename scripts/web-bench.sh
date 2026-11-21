@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Time the emulator core in a browser, with and without WebAssembly tail
-# calls (the CPU interpreter's threaded dispatch, crates/armv6m/src/cpu/
+# calls (the CPU interpreter's threaded dispatch, crates/core/armv6m/src/cpu/
 # threaded.rs), on firmware/tests/cpu-bench.
 #
 #   scripts/web-bench.sh [ROUNDS]       # default 3 rounds of each
@@ -29,7 +29,7 @@ cp target/firmware/cpu-bench/thumbv6m-none-eabi/release/cpu-bench "$work/cpu-ben
 for variant in tail loop; do
     flag=$([[ $variant == tail ]] && echo +tail-call || echo -- -tail-call)
     RUSTFLAGS="-C target-feature=${flag#-- }" cargo build --release --quiet \
-        --target wasm32-unknown-unknown --manifest-path bench/web/Cargo.toml \
+        --target wasm32-unknown-unknown --manifest-path tools/web-bench/Cargo.toml \
         --target-dir "target/web-bench/$variant"
     cp "target/web-bench/$variant/wasm32-unknown-unknown/release/web_bench.wasm" "$work/$variant.wasm"
 done
@@ -40,7 +40,7 @@ if command -v llvm-objdump >/dev/null; then
         exit 1
     fi
 fi
-cp bench/web/index.html "$work/"
+cp tools/web-bench/index.html "$work/"
 query="rounds=$rounds"
 if [[ -n ${MICROPYTHON_UF2:-} ]]; then
     cp "$MICROPYTHON_UF2" "$work/micropython.uf2"
@@ -53,7 +53,7 @@ server=$!
 sleep 0.5
 
 echo "web-bench: running in the browser" >&2
-out=$(node bench/web/cdp.mjs "http://127.0.0.1:$port/index.html?$query" "document.title !== 'running'")
+out=$(node tools/web-bench/cdp.mjs "http://127.0.0.1:$port/index.html?$query" "document.title !== 'running'")
 grep -v '^RESULT ' <<<"$out" | grep -v 'favicon\|404' >&2 || true
 node -e '
 const results = JSON.parse(process.argv[1]);

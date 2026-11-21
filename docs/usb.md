@@ -18,7 +18,7 @@ datasheet: the registers, the 4 KiB dual-port RAM, the buffer control words
 (AVAILABLE, FULL, PID, LENGTH, STALL, double buffering and its buffer
 selector), BUFF_STATUS and the SIE_STATUS interrupts.
 
-The host (`crates/usbhost`) speaks to it one transaction at a time: SETUP, IN
+The host (`crates/core/usbhost`) speaks to it one transaction at a time: SETUP, IN
 and OUT tokens, answered with data, ACK, NAK or STALL from the endpoint's
 buffer control word. Each transaction takes as long as it would on a
 full-speed bus. Like everything else, it runs on emulated time and is

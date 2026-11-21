@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the showcase web site: the landing page (site/index.md), the web app
-# (crates/tartelette, under emu/), the demos it opens (firmware/showcase,
-# under demos/) and the documentation (docs/, rendered by crates/sitedocs,
+# (crates/app/tartelette, under emu/), the demos it opens (firmware/showcase,
+# under demos/) and the documentation (docs/, rendered by tools/sitedocs,
 # under docs/), as one static directory for GitHub Pages or any web server.
 #
 #   scripts/build-site.sh [OUT]        # OUT defaults to target/site
@@ -36,7 +36,7 @@ rm -rf "$out"
 mkdir -p "$out/emu" "$out/demos"
 
 echo "build-site: the web app" >&2
-(cd "$root/crates/tartelette" && trunk build --release --public-url ./ --dist "$out/emu")
+(cd "$root/crates/app/tartelette" && trunk build --release --public-url ./ --dist "$out/emu")
 rm -f "$out/emu/.trunk-lock"
 
 echo "build-site: the demo firmware" >&2
@@ -62,7 +62,7 @@ elif [[ ${MICROPYTHON:-} == fetch ]]; then
 fi
 
 echo "build-site: the landing page and the documentation" >&2
-# site/index.md and docs/ become HTML (crates/sitedocs); the rest of site/
+# site/index.md and docs/ become HTML (tools/sitedocs); the rest of site/
 # (the screenshots) is copied as is.
 cp -r "$root/site/." "$out/"
 rm -f "$out"/*.md

@@ -6,7 +6,7 @@ edition = "2021"
 # Standalone (not part of the emulator workspace). The USB composite device
 # of `../pico-usb` (serial port, HID keyboard, USB-MIDI) on rp2040-hal and
 # the usb-device class crates, polled from the main loop; see ../README.md.
-# The emulator's tests run it (crates/tartelette/tests/usb_firmware.rs).
+# The emulator's tests run it (crates/app/tartelette/tests/usb_firmware.rs).
 
 [workspace]
 

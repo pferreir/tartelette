@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*/*", "tools/*"]
+# Its own workspace: built for wasm32 alone, see scripts/web-bench.sh.
+exclude = ["tools/web-bench"]
 
 [workspace.package]
 version = "0.1.0"

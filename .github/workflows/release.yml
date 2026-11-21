@@ -4,7 +4,7 @@
 #
 # The tag must match the workspace version in Cargo.toml. The tests
 # (ci.yml) run first; then the `tartelette` binary is built for each
-# platform below, and the web app (crates/tartelette, built with trunk) as a
+# platform below, and the web app (crates/app/tartelette, built with trunk) as a
 # static directory. All of it, with SHA256SUMS, goes on a GitHub release
 # whose notes are generated from the commits since the previous tag. A tag
 # with a suffix (v0.2.0-rc.1) makes a pre-release.
@@ -115,7 +115,7 @@ jobs:
       - name: Build
         run: |
           name=tartelette-web-${GITHUB_REF_NAME}
-          (cd crates/tartelette && trunk build --release --public-url ./ --dist "$GITHUB_WORKSPACE/dist/$name")
+          (cd crates/app/tartelette && trunk build --release --public-url ./ --dist "$GITHUB_WORKSPACE/dist/$name")
           rm -f "dist/$name/.trunk-lock"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
 

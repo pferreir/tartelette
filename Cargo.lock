@@ -336,6 +336,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-hci"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pcb-devices",
+]
+
+[[package]]
+name = "bridge-net"
+version = "0.1.0"
+dependencies = [
+ "pcb-devices",
+ "smoltcp",
+]
+
+[[package]]
+name = "bridge-usb"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "usbhost",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1617,14 +1641,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hcibridge"
-version = "0.1.0"
-dependencies = [
- "libc",
- "pcb-devices",
-]
-
-[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2149,14 +2165,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
-]
-
-[[package]]
-name = "netstack"
-version = "0.1.0"
-dependencies = [
- "pcb-devices",
- "smoltcp",
 ]
 
 [[package]]
@@ -3502,15 +3510,15 @@ dependencies = [
 name = "tartelette-runtime"
 version = "0.1.0"
 dependencies = [
+ "bridge-hci",
+ "bridge-net",
+ "bridge-usb",
  "clap",
- "hcibridge",
  "midir",
- "netstack",
  "pcb",
  "pcb-devices",
  "rp2040-core",
  "rtt",
- "usbbridge",
  "usbhost",
  "web-time",
 ]
@@ -3771,14 +3779,6 @@ dependencies = [
  "cmake",
  "heck",
  "pkg-config",
-]
-
-[[package]]
-name = "usbbridge"
-version = "0.1.0"
-dependencies = [
- "libc",
- "usbhost",
 ]
 
 [[package]]

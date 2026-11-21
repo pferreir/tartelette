@@ -1,0 +1,11 @@
+[package]
+name = "bridge-usb"
+description = "Linux bridges for the emulated USB device's functions: a pseudo-terminal for its serial port, UHID for its HID interfaces"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+usbhost = { path = "../../core/usbhost" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

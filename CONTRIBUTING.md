@@ -23,7 +23,7 @@ which build you ran (native or browser, version or commit).
   [docs/development.md](docs/development.md)). If something can't run on
   your machine, say so in the pull request.
 - **Tests** for new behaviour, ideally a firmware run headless in
-  `crates/tartelette/tests`.
+  `crates/app/tartelette/tests`.
 - **Documentation** updated in the same pull request: `docs/`, the
   `README.md` device list, the board schema.
 - **Determinism and the web build** are not negotiable: the core crates stay

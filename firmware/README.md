@@ -92,7 +92,7 @@ UART0. They are emulator only: some stop on `bkpt`, and most need the test
 to act as the board around them (press a button, turn a knob, pull a pin, put
 data on an SD card) at the right moment.
 
-The tests in `crates/tartelette` and `crates/tartelette-runtime` build them
+The tests in `crates/app/tartelette` and `crates/app/tartelette-runtime` build them
 as needed (`cargo test -p tartelette -p tartelette-runtime`); nothing else
 uses them.
 

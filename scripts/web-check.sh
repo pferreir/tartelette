@@ -32,7 +32,7 @@ firmware=$(realpath "$firmware")
 shot=$(realpath -m "${2:-target/web-check.png}")
 
 echo "web-check: building the web app" >&2
-(cd crates/tartelette && trunk build --release --dist "$work" >/dev/null)
+(cd crates/app/tartelette && trunk build --release --dist "$work" >/dev/null)
 
 port=$((8000 + RANDOM % 1000))
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$work" >/dev/null 2>&1 &
@@ -43,7 +43,7 @@ clicks=()
 IFS=';' read -ra points <<<"${CLICK:-}"
 for p in "${points[@]}"; do clicks+=(--click "$p"); done
 echo "web-check: running $(basename "$firmware")" >&2
-node bench/web/cdp.mjs "http://127.0.0.1:$port/index.html" \
+node tools/web-bench/cdp.mjs "http://127.0.0.1:$port/index.html" \
     "document.querySelector('canvas')?.width > 0" \
     --drop "$firmware" --wait "${WAIT_MS:-8000}" "${clicks[@]}" --screenshot "$shot" |
     grep -v 'GL Driver\|integrity\|favicon\|404'

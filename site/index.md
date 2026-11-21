@@ -5,7 +5,7 @@ header: tartelette / rp2040 emulator / demos
 ---
 
 <!--
-The demo site's landing page. crates/sitedocs turns it into index.html
+The demo site's landing page. tools/sitedocs turns it into index.html
 (scripts/build-site.sh runs it), with these conventions:
 
 - The paragraph right after the title, in italics, is the subtitle.
@@ -135,7 +135,7 @@ up as a MIDI device. [How to run it](../docs/running.md).
 > the firmware log and the synth.
 
 ```sh
-cargo install --locked --path crates/tartelette
+cargo install --locked --path crates/app/tartelette
 cd firmware/showcase
 cargo run --release --bin groovebox    # stardust, lumen, picosh
 cargo run --release --bin stardust -- \

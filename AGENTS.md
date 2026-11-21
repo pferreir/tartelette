@@ -47,8 +47,8 @@ One line, imperative, prefixed with the area:
 | `[cpu]`      | `armv6m`, `cpu-difftest` |
 | `[core]`     | `rp2040-core`: peripherals, bus, ELF/UF2 loading |
 | `[devices]`  | `pcb`, `pcb-devices`, `boards/` |
-| `[usb]`      | `usbhost`, `usbbridge` |
-| `[net]`      | `netstack`, `hcibridge`, CYW43439 Wi-Fi/BLE |
+| `[usb]`      | `usbhost`, `bridge-usb` |
+| `[net]`      | `bridge-net`, `bridge-hci`, CYW43439 Wi-Fi/BLE |
 | `[sd]`       | `sdimage` |
 | `[rtt]`      | `rtt` |
 | `[runtime]`  | `tartelette-runtime` |
@@ -63,6 +63,8 @@ One line, imperative, prefixed with the area:
 Use two prefixes (`[core][devices]`) only when a change really spans them;
 otherwise split the commit.
 
+No Co-Authored-By or Assisted-By, because I don't do free publicity.
+
 ## Code
 
 - Match the surrounding style; `rustfmt.toml` sets import grouping.
@@ -71,7 +73,7 @@ otherwise split the commit.
 - Comments describe the code as it is, not how it changed. No "now uses X
   instead of Y", "fixed", "new" or notes addressed to the reviewer; that
   belongs in the commit message.
-- Prefer tests that run firmware headless (`crates/tartelette/tests`) for
+- Prefer tests that run firmware headless (`crates/app/tartelette/tests`) for
   emulated behaviour, and unit tests for pure logic.
 
 ## Documentation

@@ -4,24 +4,29 @@
 
 ```
 crates/
-  armv6m/        Cpu, Bus trait, Ram, exceptions, Ppb (NVIC/SysTick/SCB)   deps: none
-  pcb/           device framework + Board (no chip knowledge)              deps: toml
-  pcb-devices/   stock device models + `registry()`                        deps: pcb
-  sdimage/       SD card images: FAT16/32 formatter and reader             deps: none
-  usbhost/       USB host for the emulated device: enumeration, CDC-ACM,   deps: none
-                 HID, USB-MIDI, traffic log
-  rp2040-core/   peripherals, ELF/UF2 loading, SystemBus, System           deps: armv6m, pcb, usbhost
-  rtt/           defmt-over-RTT reader                                     deps: defmt-decoder, object
-  netstack/      user-mode network (slirp-style NAT) for the Wi-Fi chip    deps: pcb-devices, smoltcp (std)
-  hcibridge/     a real Bluetooth adapter through an HCI user channel      deps: pcb-devices, libc (Linux)
-  usbbridge/     the USB device's serial port as a pty, HID as UHID        deps: usbhost, libc (Linux)
-  tartelette-runtime/
-                 Session (firmware + board, stepped), pacing, boards,      deps: rp2040-core, pcb-devices,
-                 the host's side of USB/UART/radios, test synth            rtt, the bridges, midir
-  tartelette/    front panel (native + web, eframe), headless runner,      deps: tartelette-runtime,
-                 `mkdisk`; end-to-end tests                                sdimage, eframe, cpal
-  cpu-difftest/  differential tests of the CPU against Unicorn             dev-deps: armv6m
-  sitedocs/      renders docs/ as HTML for the demo site                   deps: pulldown-cmark
+  core/                  the chip, no_std and I/O-free
+    armv6m/              Cpu, Bus trait, Ram, exceptions, Ppb (NVIC/SysTick/SCB)  deps: none
+    rp2040-core/         peripherals, ELF/UF2 loading, SystemBus, System          deps: armv6m, pcb, usbhost
+    usbhost/             USB host for the emulated device: enumeration, CDC-ACM,  deps: none
+                         HID, USB-MIDI, traffic log
+  board/                 what is around the chip, no_std and I/O-free
+    pcb/                 device framework + Board (no chip knowledge)             deps: toml
+    pcb-devices/         stock device models + `registry()`                       deps: pcb
+    sdimage/             SD card images: FAT16/32 formatter and reader            deps: none
+  host/                  the host's side: bridges to the OS, log reader
+    bridge-net/          user-mode network (slirp-style NAT) for the Wi-Fi chip   deps: pcb-devices, smoltcp (std)
+    bridge-hci/          a real Bluetooth adapter through an HCI user channel     deps: pcb-devices, libc (Linux)
+    bridge-usb/          the USB device's serial port as a pty, HID as UHID       deps: usbhost, libc (Linux)
+    rtt/                 defmt-over-RTT reader                                    deps: defmt-decoder, object
+  app/
+    tartelette-runtime/  Session (firmware + board, stepped), pacing, boards,     deps: rp2040-core, pcb-devices,
+                         the host's side of USB/UART/radios, test synth           rtt, the bridges, midir
+    tartelette/          front panel (native + web, eframe), headless runner,     deps: tartelette-runtime,
+                         `mkdisk`; end-to-end tests                               sdimage, eframe, cpal
+tools/
+  cpu-difftest/          differential tests of the CPU against Unicorn            dev-deps: armv6m
+  sitedocs/              renders docs/ as HTML for the demo site                  deps: pulldown-cmark
+  web-bench/             the core as a bare wasm module, timed in browsers        deps: rp2040-core
 ```
 
 `armv6m`, `pcb`, `pcb-devices`, `sdimage`, `usbhost` and `rp2040-core` are `no_std` +
@@ -56,7 +61,7 @@ cargo run -p tartelette -- schema > boards/board.schema.json
 ```
 
 For it to show on the front panel, give it a widget in
-`crates/tartelette/src/panel.rs`.
+`crates/app/tartelette/src/panel.rs`.
 
 ## Tests
 
@@ -65,7 +70,7 @@ cargo test --workspace
 ```
 
 `cpu-difftest` is the slow one, at around a minute. The end-to-end tests in
-`crates/tartelette/tests` build the firmware in `firmware/tests` and
+`crates/app/tartelette/tests` build the firmware in `firmware/tests` and
 `firmware/examples` and run it headless; `firmware/README.md` lists what each
 one checks. The Wi-Fi and Bluetooth tests need the CYW43439 firmware blobs,
 from `CYW43_FIRMWARE_DIR` or the newest Embassy checkout in Cargo's git cache.
@@ -83,7 +88,7 @@ requests.
 
 The web build is checked in a headless Chromium-family browser
 (`thorium-browser`, `chromium` or `google-chrome`, or set `CHROME`), driven
-over the DevTools protocol by `bench/web/cdp.mjs` (Node 22+, no packages):
+over the DevTools protocol by `tools/web-bench/cdp.mjs` (Node 22+, no packages):
 
 ```sh
 scripts/web-check.sh [FIRMWARE] [SCREENSHOT]   # build with trunk, drop a firmware on the page, fail on exceptions, screenshot
@@ -109,8 +114,8 @@ official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
 one. Look at it with `python3 -m http.server -d target/site`.
 
 The landing page's text is `site/index.md`, and the documentation is the
-Markdown in `docs/`. `crates/sitedocs` (pulldown-cmark) turns both into HTML,
-with the layouts in `crates/sitedocs/src/landing.html` and `page.html`. The
+Markdown in `docs/`. `tools/sitedocs` (pulldown-cmark) turns both into HTML,
+with the layouts in `tools/sitedocs/src/landing.html` and `page.html`. The
 comment at the top of `site/index.md` explains how its Markdown maps onto
 the page: a `###` entry is a demo, its image the screenshot, a list of
 `Label: value` items its details, its last paragraph of links the buttons.
@@ -120,7 +125,7 @@ Links between `.md` files become links between pages, links into `site/`
 (the screenshots, `emu/`) stay relative, and anything else in the
 repository goes to GitHub. Heading ids follow GitHub's, so
 `page.md#heading` links work in both places. Code blocks in `toml` and `sh`
-are highlighted (`crates/sitedocs/src/highlight.rs`).
+are highlighted (`tools/sitedocs/src/highlight.rs`).
 
 The page links each demo as `emu/?firmware=../demos/NAME.elf&board=...`.
 Its screenshots (`site/img/`) are checked in: retake them when a demo's

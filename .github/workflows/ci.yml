@@ -45,7 +45,7 @@ jobs:
           restore-keys: ci-${{ runner.os }}-
 
       # The Wi-Fi and Bluetooth tests look for the CYW43439 blobs in Cargo's
-      # git checkouts of Embassy (crates/tartelette/tests/common). Fetching
+      # git checkouts of Embassy (crates/app/tartelette/tests/common). Fetching
       # pico-w-ble's dependencies checks out the Embassy revision it pins,
       # cyw43-firmware/ included, so those tests run instead of skipping.
       - name: CYW43439 firmware

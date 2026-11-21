@@ -5,7 +5,7 @@ edition = "2021"
 
 # Standalone (not part of the emulator workspace). Pico W Wi-Fi examples on
 # Embassy's cyw43 driver; see ../README.md. The emulator's tests run them
-# against the emulated CYW43439 (crates/tartelette/tests/wifi_firmware.rs).
+# against the emulated CYW43439 (crates/app/tartelette/tests/wifi_firmware.rs).
 # The versions are the ones Embassy shipped together in August 2024.
 
 [workspace]

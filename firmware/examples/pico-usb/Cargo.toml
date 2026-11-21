@@ -7,7 +7,7 @@ edition = "2021"
 # Embassy's embassy-usb: a CDC-ACM serial port, a HID keyboard and a USB-MIDI
 # interface; see ../README.md. `../pico-usb-hal` is the same device on
 # rp2040-hal + usb-device. The emulator's tests run both
-# (crates/tartelette/tests/usb_firmware.rs).
+# (crates/app/tartelette/tests/usb_firmware.rs).
 
 [workspace]
 

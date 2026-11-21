@@ -6,7 +6,7 @@ edition = "2021"
 # Standalone (not part of the emulator workspace). trouble's example apps
 # (trouble `main`) on the Pico W over Embassy's cyw43 Bluetooth; see
 # ../README.md. The emulator's tests run them against the emulated CYW43439
-# (crates/tartelette/tests/ble_firmware.rs). The Embassy revision is the one
+# (crates/app/tartelette/tests/ble_firmware.rs). The Embassy revision is the one
 # trouble's own rp-pico-w examples pin.
 
 [workspace]
