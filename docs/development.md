@@ -60,8 +60,9 @@ schema and the error messages all pick it up. Regenerate the schema with:
 cargo run -p tartelette -- schema > boards/board.schema.json
 ```
 
-For it to show on the front panel, give it a widget in
-`crates/app/tartelette/src/panel.rs`.
+For it to show on the front panel, give it a widget: a `Widget` variant,
+picked for its kind in `crates/app/tartelette/src/panel/layout.rs`, and a
+file in `panel/widgets/` that draws it.
 
 ## Tests
 
