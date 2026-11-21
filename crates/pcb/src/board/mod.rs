@@ -634,10 +634,11 @@ impl Board {
         }
         self.panel
             .retain(|old| !new.iter().any(|(n, _)| n.part == old.part));
-        let mut earlier = core::mem::take(&mut self.panel);
-        if !shield {
-            self.panel = earlier.drain(..).collect();
-        }
+        let earlier = if shield {
+            core::mem::take(&mut self.panel)
+        } else {
+            Vec::new()
+        };
         for (item, span) in new {
             if let Some(o) = self.panel.iter().find(|o| o.overlaps(&item)) {
                 return Err(doc::err(
