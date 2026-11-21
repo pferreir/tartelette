@@ -13,7 +13,7 @@
 //! factory, and register it under a `kind` name (see
 //! [`Registry::register`](crate::board::Registry::register)). The board file
 //! then picks it by name; nothing else changes.
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::any::Any;
 
 use crate::board::BoardEvent;
@@ -37,7 +37,7 @@ pub struct Io<'a> {
     events: &'a mut Vec<BoardEvent>,
     part: usize,
     quiet: bool,
-    timers: Option<&'a mut Vec<(u64, usize)>>,
+    pending: Option<&'a mut Pending>,
 }
 
 impl<'a> Io<'a> {
@@ -54,13 +54,14 @@ impl<'a> Io<'a> {
             events,
             part,
             quiet,
-            timers: None,
+            pending: None,
         }
     }
 
-    /// Let the device schedule wake-ups ([`wake_at`](Self::wake_at)) into `timers`.
-    pub(crate) fn with_timers(mut self, timers: &'a mut Vec<(u64, usize)>) -> Self {
-        self.timers = Some(timers);
+    /// Let the device schedule wake-ups ([`wake_at`](Self::wake_at)) and
+    /// raise warnings ([`warn`](Self::warn)) into `pending`.
+    pub fn with_pending(mut self, pending: &'a mut Pending) -> Self {
+        self.pending = Some(pending);
         self
     }
 
@@ -83,8 +84,17 @@ impl<'a> Io<'a> {
     /// the future: a request for now or the past fires on the next cycle.
     pub fn wake_at(&mut self, cycle: u64) {
         let at = cycle.max(self.cycles + 1);
-        if let Some(timers) = self.timers.as_deref_mut() {
-            timers.push((at, self.part));
+        if let Some(p) = self.pending.as_deref_mut() {
+            p.timers.push((at, self.part));
+        }
+    }
+
+    /// Tell the user about something suspicious in how the firmware uses
+    /// the device (a misconfigured pin, say). The host shows it as a
+    /// warning, prefixed with the part's name; say each thing once.
+    pub fn warn(&mut self, msg: String) {
+        if let Some(p) = self.pending.as_deref_mut() {
+            p.warnings.push((self.part, msg));
         }
     }
 
@@ -100,6 +110,15 @@ impl<'a> Io<'a> {
             });
         }
     }
+}
+
+/// What devices left for the board to handle after a call: wake-ups as
+/// (cycle, part index), and warnings as (part index, text). Hosts and
+/// tests that call devices directly give one to [`Io::with_pending`].
+#[derive(Default)]
+pub struct Pending {
+    pub timers: Vec<(u64, usize)>,
+    pub warnings: Vec<(usize, String)>,
 }
 
 /// Something on the board. Every method has a do-nothing default so a device

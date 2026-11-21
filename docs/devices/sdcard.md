@@ -10,7 +10,7 @@ commands below should work too.
 |-----|------|---------|---|
 | `bus` | `spi0` \| `spi1` | | the bus it sits on |
 | `cs` | GPIO | | chip select, active low; left out, always selected |
-| `size_mb` | 1..2048 | 16 | size of the blank card, in MiB |
+| `size_mb` | 1..2048 | | start with a blank card this size, in MiB; left out, the slot is empty |
 
 ```toml
 [buses]
@@ -22,12 +22,16 @@ bus = "spi1"
 cs = 8
 ```
 
-Without an image, the card is blank: all zeros, no partition table, no file
-system. A firmware that formats its own card will be happy with that; most
-won't be. Make an image with `tartelette mkdisk` or any other tool:
+Without an image, the slot is empty: the card never answers and the data
+line reads high, as with nothing in a real slot, so the firmware's card init
+times out. Loading an image (`--sd`, **Load…** or dropping one on the window)
+puts a card in, fresh from power-up. With `size_mb`, the board starts with a
+blank card instead: all zeros, no partition table, no file system. A firmware
+that formats its own card will be happy with that; most won't be. Make an
+image with `tartelette mkdisk` or any other tool:
 
 ```sh
-tartelette mkdisk card.img --size-mb 64 --dir data
+tartelette mkdisk card.img --dir data      # 64 MiB, FAT32
 tartelette fw.elf --board btl-01 --sd sd=card.img
 ```
 
@@ -66,7 +70,8 @@ data line low (busy) for a few bytes after each block written.
 ## Panel
 
 The card's size and whether the firmware has written to it, with **Load…**,
-**Save…** and **Browse…** buttons. Browse shows the files on a snapshot of
+**Save…** and **Browse…** buttons; for an empty slot, "no card" and just
+**Load…**. Browse shows the files on a snapshot of
 the card (FAT12/16/32, whole disk or partitioned), with text and hex preview.
 
 ## Not modelled

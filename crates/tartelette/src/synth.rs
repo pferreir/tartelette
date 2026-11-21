@@ -20,7 +20,7 @@ use pcb::{Board, BoardEvent};
 use pcb_devices::{
     dac8165::{CvScale, Dac8165},
     led::Led,
-    mcp23008::Mcp23008,
+    mcp23008::{Mcp23008, Wire},
 };
 use rp2040_core::system::CYCLES_PER_US;
 
@@ -119,7 +119,7 @@ fn blep(t: f32, dt: f32) -> f32 {
 }
 
 /// One voice's wiring, by names: `cv` is `PART.CHANNEL` (`dac.A`; none for
-/// a drum), `gate` is `PART.PIN` for an expander pin, `PART` for an LED, or
+/// a drum), `gate` is `PART.PIN` for an expander pin (its number or name), `PART` for an LED, or
 /// `open`. Empty means the board's default.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Patch {
@@ -219,15 +219,26 @@ pub fn gate_outputs(board: &Board) -> Vec<String> {
 }
 
 /// The expander pins the panel shows as outputs, in panel order (the
-/// BTL-01's gates A..D).
+/// BTL-01's gates A..D): those of `mode = "view"` items, and those wired to
+/// LEDs on items without a mode.
 fn panel_gates(board: &Board) -> Vec<String> {
     let mut v = Vec::new();
     for i in &board.panel {
         let part = &board.parts[i.part];
-        if part.kind == "mcp23008" && i.option("mode") == Some("view") {
-            let pins = i.option("pins").unwrap_or("0,1,2,3,4,5,6,7");
-            v.extend(pins.split(',').map(|n| format!("{}.{n}", part.name)));
-        }
+        let Some(dev) = board.device::<Mcp23008>(&part.name) else {
+            continue;
+        };
+        let shown = |pin: u8| match i.option("mode") {
+            Some(mode) => mode == "view",
+            None => matches!(dev.wiring(pin).wire, Wire::Led { .. }),
+        };
+        let pins = i.option("pins").unwrap_or("0,1,2,3,4,5,6,7");
+        v.extend(
+            pins.split(',')
+                .filter_map(|n| n.parse::<u8>().ok())
+                .filter(|&n| n < 8 && shown(n))
+                .map(|n| format!("{}.{n}", part.name)),
+        );
     }
     v
 }
@@ -293,14 +304,17 @@ fn resolve_gate(board: &Board, name: &str) -> Result<Gate, String> {
         return Ok(Gate::Open);
     }
     if let Some((part, pin)) = name.rsplit_once('.')
-        && board.device::<Mcp23008>(part).is_some()
+        && let Some(dev) = board.device::<Mcp23008>(part)
     {
-        return match pin.parse::<u8>() {
+        let named = (0..8).find(|&n| dev.wiring(n).name == Some(pin));
+        return match named.map_or_else(|| pin.parse::<u8>(), Ok) {
             Ok(pin @ 0..8) => Ok(Gate::Pin {
                 part: board.part_index(part).unwrap(),
                 pin,
             }),
-            _ => Err(format!("gate {name:?}: expander pins are 0..7")),
+            _ => Err(format!(
+                "gate {name:?}: expander pins are 0..7 or a pin's name"
+            )),
         };
     }
     if board.device::<Led>(name).is_some() {

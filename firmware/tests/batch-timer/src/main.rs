@@ -36,7 +36,6 @@ const SYST_CSR: u32 = 0xE000_E010;
 const SYST_RVR: u32 = 0xE000_E014;
 const SYST_CVR: u32 = 0xE000_E018;
 const NVIC_ISER: u32 = 0xE000_E100;
-const ICSR: u32 = 0xE000_ED04;
 
 const SAMPLES: usize = 16;
 static mut ALARM_AT: [u32; SAMPLES] = [0; SAMPLES];

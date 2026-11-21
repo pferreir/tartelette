@@ -29,7 +29,7 @@ are not modelled.
 
 ## Without a bridge
 
-With nothing else set, the serial port shows up in the console's **USB
+With nothing else set, the serial port shows up in the **USB
 serial** tab, and the **USB** tab logs the traffic: enumeration, every control
 transfer decoded, every packet on the other endpoints. Both work in the
 browser too.

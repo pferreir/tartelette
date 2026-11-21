@@ -1,4 +1,7 @@
-//! The window: a toolbar, the front panel, and a UART console.
+//! The window: a top bar (logo, controls, status), the front panel in the
+//! middle, and a dock of tabs at the bottom or on the right: the serial
+//! consoles, the firmware's log, USB, the synth, SD card browsers and the
+//! problems found.
 use egui::{Color32, RichText};
 
 use crate::{
@@ -21,14 +24,32 @@ const SPEEDS: &[(f64, &str)] = &[
     (4.0, "4×"),
     (f64::INFINITY, "max"),
 ];
+/// Tall enough to read the lettering, as tall as the top bar's two rows.
+const LOGO_HEIGHT: f32 = 64.0;
 /// The UART whose receiver is the firmware's MIDI in (GPIO1 on the BTL-01).
-/// Tall enough to read the lettering.
-const LOGO_HEIGHT: f32 = 96.0;
 const MIDI_UART: usize = 0;
-const LOG_TAB: usize = 2;
-const USB_SERIAL_TAB: usize = 3;
-const USB_LOG_TAB: usize = 4;
 const LINE_ENDINGS: &[(&str, &str)] = &[("\n", "LF"), ("\r", "CR"), ("\r\n", "CRLF"), ("", "none")];
+
+/// A tab of the dock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Tab {
+    Uart(usize),
+    UsbSerial,
+    /// USB devices and traffic.
+    Usb,
+    Log,
+    Synth,
+    /// The browser of the SD card part with this name.
+    Sd(String),
+    Problems,
+}
+
+/// Where the dock sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DockSide {
+    Bottom,
+    Right,
+}
 
 pub struct App {
     logo: Option<Logo>,
@@ -40,19 +61,21 @@ pub struct App {
     run: Option<Shared>,
     layout: Option<Layout>,
     panel: PanelState,
-    /// Problems to show: a run that could not start, ignored panel options.
+    /// Problems to show: a run that could not start, ignored panel options,
+    /// warnings from the run.
     errors: Vec<String>,
+    /// How many of `errors` the Problems tab has shown.
+    errors_seen: usize,
     inbox: Inbox,
     midi: Midi,
-    /// 0 and 1: a UART; `LOG_TAB`: the firmware's log; then the USB
-    /// serial port and the USB traffic log.
-    console_tab: usize,
+    tab: Tab,
+    dock: DockSide,
     log_min: rtt::Level,
     uart_line: String,
     line_ending: usize,
     #[cfg(not(target_arch = "wasm32"))]
     watch: crate::watch::Watch,
-    /// The open SD card browser windows.
+    /// The open SD card browsers, a tab each.
     sd_browsers: Vec<SdBrowser>,
     /// Test oscillators on the board's outputs.
     sound: Sound,
@@ -88,9 +111,11 @@ impl App {
             layout: None,
             panel: PanelState::default(),
             errors: Vec::new(),
+            errors_seen: 0,
             inbox: Inbox::default(),
             midi: Midi::new(),
-            console_tab: 0,
+            tab: Tab::Uart(0),
+            dock: DockSide::Bottom,
             log_min: rtt::Level::Trace,
             uart_line: String::new(),
             line_ending: 0,
@@ -123,6 +148,7 @@ impl App {
         self.layout = None;
         self.panel = PanelState::default();
         self.errors.clear();
+        self.errors_seen = 0;
         #[cfg(not(target_arch = "wasm32"))]
         self.watch
             .track(self.firmware.iter().chain(&self.board).chain(&self.shields));
@@ -151,13 +177,14 @@ impl App {
         }
     }
 
-    /// Start with the voices `--osc` and `--drums` ask for, the Synth window
-    /// open (without either, the board's default voice, window closed).
+    /// Start with the voices `--osc` and `--drums` ask for, on the Synth
+    /// tab (without either, the board's default voice).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_voices(&mut self, args: &crate::cli::RunArgs) {
         if args.osc.is_empty() && !args.drums {
             return;
         }
+        self.tab = Tab::Synth;
         let Some(r) = &self.run else {
             self.sound = Sound::new(args.osc.clone());
             return;
@@ -240,7 +267,8 @@ impl App {
         }
     }
 
-    /// Returns whether Reset was pressed.
+    /// The controls and the status line beside the logo. Returns whether
+    /// Reset was pressed.
     fn toolbar(&mut self, ui: &mut egui::Ui, mut run: Option<&mut Run>) -> bool {
         let mut reset = false;
         ui.horizontal_wrapped(|ui| {
@@ -251,20 +279,19 @@ impl App {
                 files::pick(Slot::Board, &self.inbox, ui.ctx());
             }
             ui.separator();
-            let label = if run.as_deref().is_some_and(|r| r.clock.running) {
-                "Pause"
-            } else {
-                "Run"
-            };
+            let running = run.as_deref().is_some_and(|r| r.clock.running);
+            let label = if running { "⏸ Pause" } else { "▶ Run" };
             if ui
                 .add_enabled(run.is_some(), egui::Button::new(label))
+                .on_hover_text("Pause or resume the emulation")
                 .clicked()
                 && let Some(r) = run.as_deref_mut()
             {
                 r.clock.running = !r.clock.running;
             }
             if ui
-                .add_enabled(self.firmware.is_some(), egui::Button::new("Reset"))
+                .add_enabled(self.firmware.is_some(), egui::Button::new("↻ Reset"))
+                .on_hover_text("Power-cycle the board (SD cards keep their contents)")
                 .clicked()
             {
                 reset = true;
@@ -281,12 +308,14 @@ impl App {
                         for &(v, name) in SPEEDS {
                             ui.selectable_value(&mut r.clock.speed, v, name);
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text("Emulation speed");
             }
             ui.separator();
-            ui.toggle_value(&mut self.sound.shown, "Synth");
             self.midi.ui(ui);
-            ui.separator();
+        });
+        ui.horizontal_wrapped(|ui| {
             let names: Vec<&str> = self
                 .firmware
                 .iter()
@@ -294,7 +323,11 @@ impl App {
                 .chain(&self.shields)
                 .map(|s| s.name.as_str())
                 .collect();
-            ui.label(RichText::new(names.join(" + ")).weak());
+            if names.is_empty() {
+                ui.label(RichText::new("no firmware loaded").weak());
+            } else {
+                ui.label(RichText::new(names.join(" + ")).weak());
+            }
             if let Some(Run { session: s, clock }) = run.as_deref() {
                 ui.separator();
                 ui.monospace(format!("{:.6} s", s.seconds()));
@@ -308,53 +341,151 @@ impl App {
                     ui.label("paused");
                 }
             }
+            let fresh = self.errors.len() - self.errors_seen;
+            if fresh > 0 {
+                ui.separator();
+                let badge = RichText::new(format!("⚠ {fresh} new problem{}", plural(fresh)))
+                    .color(ui.visuals().warn_fg_color);
+                if ui
+                    .add(egui::Button::new(badge).frame(false))
+                    .on_hover_text("Show them")
+                    .clicked()
+                {
+                    self.tab = Tab::Problems;
+                }
+            }
         });
         reset
     }
 
-    fn console(&mut self, ui: &mut egui::Ui, s: &mut Session) {
-        ui.horizontal(|ui| {
-            for n in 0..2 {
-                ui.selectable_value(&mut self.console_tab, n, format!("UART{n}"));
-            }
-            ui.selectable_value(&mut self.console_tab, USB_SERIAL_TAB, "USB serial");
-            ui.selectable_value(&mut self.console_tab, USB_LOG_TAB, "USB");
-            ui.selectable_value(&mut self.console_tab, LOG_TAB, "Log");
-            if ui.small_button("Clear").clicked() {
-                match self.console_tab {
-                    LOG_TAB => s.log.clear(),
-                    USB_SERIAL_TAB => s.usb.console.clear(),
-                    USB_LOG_TAB => s.usb.log.clear(),
-                    n => s.uart[n].clear(),
+    /// The dock: a strip of tabs, then the chosen one.
+    fn dock(&mut self, ui: &mut egui::Ui, s: Option<&mut Session>) {
+        let mut tabs = vec![
+            (Tab::Uart(0), "UART0".to_string()),
+            (Tab::Uart(1), "UART1".to_string()),
+            (Tab::UsbSerial, "USB serial".to_string()),
+            (Tab::Usb, "USB".to_string()),
+            (Tab::Log, "Log".to_string()),
+            (Tab::Synth, "Synth".to_string()),
+        ];
+        tabs.extend(
+            self.sd_browsers
+                .iter()
+                .map(|b| (Tab::Sd(b.part.clone()), format!("SD {}", b.part))),
+        );
+        let problems = match self.errors.len() {
+            0 => "Problems".to_string(),
+            n => format!("Problems ({n})"),
+        };
+        tabs.push((Tab::Problems, problems));
+        if !tabs.iter().any(|t| t.0 == self.tab) {
+            self.tab = Tab::Uart(0);
+        }
+        let mut close = None;
+        ui.horizontal_wrapped(|ui| {
+            for (tab, name) in tabs {
+                let selected = self.tab == tab;
+                let mut text = RichText::new(name);
+                if tab == Tab::Problems && self.errors.len() > self.errors_seen {
+                    text = text.color(ui.visuals().warn_fg_color);
+                }
+                if ui.selectable_label(selected, text).clicked() {
+                    self.tab = tab.clone();
+                }
+                if let Tab::Sd(part) = &tab
+                    && ui
+                        .small_button("×")
+                        .on_hover_text("Close this browser")
+                        .clicked()
+                {
+                    close = Some(part.clone());
                 }
             }
-            if self.console_tab == LOG_TAB {
-                egui::ComboBox::from_id_salt("log-level")
-                    .selected_text(format!("≥ {}", self.log_min.name()))
-                    .width(80.0)
-                    .show_ui(ui, |ui| {
-                        for l in [
-                            rtt::Level::Trace,
-                            rtt::Level::Debug,
-                            rtt::Level::Info,
-                            rtt::Level::Warn,
-                            rtt::Level::Error,
-                        ] {
-                            ui.selectable_value(&mut self.log_min, l, l.name());
-                        }
-                    });
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (icon, tip) = match self.dock {
+                    DockSide::Bottom => ("→ Dock right", "Move the tabs to the right"),
+                    DockSide::Right => ("↓ Dock below", "Move the tabs to the bottom"),
+                };
+                if ui.small_button(icon).on_hover_text(tip).clicked() {
+                    self.dock = match self.dock {
+                        DockSide::Bottom => DockSide::Right,
+                        DockSide::Right => DockSide::Bottom,
+                    };
+                }
+            });
         });
-        if self.console_tab == LOG_TAB {
-            self.log_view(ui, s);
+        if let Some(part) = close {
+            self.sd_browsers.retain(|b| b.part != part);
+        }
+        ui.separator();
+        match (self.tab.clone(), s) {
+            (Tab::Problems, _) => self.problems(ui),
+            (_, None) => {
+                ui.label(RichText::new("No firmware running.").weak());
+            }
+            (Tab::Synth, Some(s)) => {
+                egui::ScrollArea::both()
+                    .auto_shrink(false)
+                    .show(ui, |ui| self.sound.ui(ui, s));
+            }
+            (Tab::Sd(part), Some(s)) => {
+                let now = s.sd_card_writes(&part);
+                let Some(b) = self.sd_browsers.iter_mut().find(|b| b.part == part) else {
+                    return;
+                };
+                if let Want::Refresh = b.ui(ui, now)
+                    && let Some((image, written)) = s.sd_card_copy(&part)
+                {
+                    b.refresh(image, s.seconds(), written);
+                }
+            }
+            (Tab::Log, Some(s)) => self.log_view(ui, s),
+            (Tab::Usb, Some(s)) => usb_log_view(ui, s),
+            (Tab::Uart(n), Some(s)) => self.console(ui, s, Some(n)),
+            (Tab::UsbSerial, Some(s)) => self.console(ui, s, None),
+        }
+    }
+
+    /// Everything that went wrong or looks suspicious, newest last.
+    fn problems(&mut self, ui: &mut egui::Ui) {
+        self.errors_seen = self.errors.len();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!self.errors.is_empty(), egui::Button::new("Clear"))
+                .clicked()
+            {
+                self.errors.clear();
+                self.errors_seen = 0;
+            }
+            ui.label(
+                RichText::new(
+                    "Errors starting the run, ignored panel options and warnings from the board",
+                )
+                .weak(),
+            );
+        });
+        if self.errors.is_empty() {
+            ui.label(RichText::new("No problems.").weak());
             return;
         }
-        if self.console_tab == USB_LOG_TAB {
-            usb_log_view(ui, s);
-            return;
-        }
-        let n = self.console_tab;
-        if n == USB_SERIAL_TAB
+        egui::ScrollArea::vertical()
+            .stick_to_bottom(true)
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                for e in &self.errors {
+                    let color = if e.starts_with("warning:") {
+                        ui.visuals().warn_fg_color
+                    } else {
+                        ui.visuals().error_fg_color
+                    };
+                    ui.add(egui::Label::new(RichText::new(e).color(color)).wrap());
+                }
+            });
+    }
+
+    /// A serial console: UART `n`, or the USB serial port for `None`.
+    fn console(&mut self, ui: &mut egui::Ui, s: &mut Session, uart: Option<usize>) {
+        if uart.is_none()
             && let Some(name) = s.usb.serial_bridge()
         {
             ui.label(
@@ -368,7 +499,7 @@ impl App {
             let send = ui.add(
                 egui::TextEdit::singleline(&mut self.uart_line)
                     .hint_text("send to the firmware…")
-                    .desired_width(ui.available_width() - 90.0),
+                    .desired_width(ui.available_width() - 140.0),
             );
             egui::ComboBox::from_id_salt("eol")
                 .selected_text(LINE_ENDINGS[self.line_ending].1)
@@ -378,18 +509,24 @@ impl App {
                         ui.selectable_value(&mut self.line_ending, i, e.1);
                     }
                 });
+            if ui.small_button("Clear").clicked() {
+                match uart {
+                    None => s.usb.console.clear(),
+                    Some(n) => s.uart[n].clear(),
+                }
+            }
             if send.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let line = std::mem::take(&mut self.uart_line) + LINE_ENDINGS[self.line_ending].0;
-                match n {
-                    USB_SERIAL_TAB => s.usb.input.extend(line.as_bytes()),
-                    n => s.send(n, line.as_bytes()),
+                match uart {
+                    None => s.usb.input.extend(line.as_bytes()),
+                    Some(n) => s.send(n, line.as_bytes()),
                 }
                 send.request_focus();
             }
         });
-        let text = match n {
-            USB_SERIAL_TAB => &s.usb.console,
-            n => &s.uart[n],
+        let text = match uart {
+            None => &s.usb.console,
+            Some(n) => &s.uart[n],
         };
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
@@ -401,7 +538,26 @@ impl App {
 
     /// The firmware's defmt log: one truncated line per message (the whole
     /// message on hover), at least as severe as `log_min`.
-    fn log_view(&self, ui: &mut egui::Ui, s: &Session) {
+    fn log_view(&mut self, ui: &mut egui::Ui, s: &mut Session) {
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("log-level")
+                .selected_text(format!("≥ {}", self.log_min.name()))
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for l in [
+                        rtt::Level::Trace,
+                        rtt::Level::Debug,
+                        rtt::Level::Info,
+                        rtt::Level::Warn,
+                        rtt::Level::Error,
+                    ] {
+                        ui.selectable_value(&mut self.log_min, l, l.name());
+                    }
+                });
+            if ui.small_button("Clear").clicked() {
+                s.log.clear();
+            }
+        });
         let shown: Vec<&session::LogEntry> = s
             .log
             .iter()
@@ -439,6 +595,7 @@ impl App {
                     }
                 }
                 Request::BrowseSd(name) => {
+                    self.tab = Tab::Sd(name.clone());
                     if self.sd_browsers.iter().any(|b| b.part == name) {
                         continue;
                     }
@@ -494,58 +651,58 @@ impl eframe::App for App {
         }
 
         let mut reset = false;
-        let logo = self.logo.get_or_insert_with(|| Logo::new(&ctx));
-        egui::Panel::left("logo")
-            .resizable(false)
-            .show_separator_line(false)
-            .show(ui, |ui| {
-                ui.add(logo.image(LOGO_HEIGHT));
-            });
+        let logo = self.logo.get_or_insert_with(|| Logo::new(&ctx)).clone();
         egui::Panel::top("toolbar").show(ui, |ui| {
             ui.add_space(4.0);
-            reset = self.toolbar(ui, guard.as_deref_mut());
-            for e in &self.errors {
-                ui.colored_label(ui.visuals().error_fg_color, e);
-            }
+            ui.horizontal(|ui| {
+                ui.add(logo.image(LOGO_HEIGHT));
+                ui.vertical(|ui| {
+                    ui.add_space(6.0);
+                    reset = self.toolbar(ui, guard.as_deref_mut());
+                });
+            });
             ui.add_space(2.0);
         });
-        if let Some(r) = guard.as_deref_mut() {
-            egui::Panel::bottom("console")
+        let session = guard.as_deref_mut().map(|r| &mut r.session);
+        // The board comes first: the dock may only grow into what the board
+        // doesn't need at its smallest cells. In a window too small for both,
+        // the dock keeps its minimum and the board scrolls.
+        let room = ui.available_size();
+        let board_min = self
+            .layout
+            .as_ref()
+            .map_or(egui::Vec2::splat(3.0 * panel::MIN_CELL), |l| l.min_size());
+        match self.dock {
+            DockSide::Bottom => egui::Panel::bottom("dock")
                 .resizable(true)
-                .default_size(160.0)
-                .show(ui, |ui| self.console(ui, &mut r.session));
-        }
+                .default_size(220.0)
+                .min_size(80.0)
+                .max_size((room.y - board_min.y).max(80.0))
+                .show(ui, |ui| self.dock(ui, session)),
+            DockSide::Right => egui::Panel::right("dock")
+                .resizable(true)
+                .default_size(360.0)
+                .min_size(240.0)
+                .max_size((room.x - board_min.x).max(240.0))
+                .show(ui, |ui| self.dock(ui, session)),
+        };
         let requests = egui::CentralPanel::default()
             .show(ui, |ui| match (guard.as_deref(), &self.layout) {
                 (Some(r), Some(layout)) => panel::show(ui, layout, &mut self.panel, &r.session),
                 _ => {
                     ui.centered_and_justified(|ui| {
-                        ui.label(RichText::new("Drop a firmware ELF or UF2 and a board .toml file here,\nor use the Open buttons above.").size(18.0).color(Color32::GRAY));
+                        let (text, color) = if self.firmware.is_some() && !self.errors.is_empty() {
+                            (format!("The board could not start:\n\n{}", self.errors.join("\n")), ui.visuals().error_fg_color)
+                        } else {
+                            ("Drop a firmware ELF or UF2 and a board .toml file here,\nor use the Open buttons above.".to_string(), Color32::GRAY)
+                        };
+                        ui.label(RichText::new(text).size(18.0).color(color));
                     });
                     Vec::new()
                 }
             })
             .inner;
         self.apply(requests, &ctx, guard.as_deref_mut().map(|r| &mut r.session));
-        let mut session = guard.as_deref_mut().map(|r| &mut r.session);
-        self.sd_browsers.retain_mut(|b| {
-            let now = session.as_ref().and_then(|s| s.sd_card_writes(&b.part));
-            match b.show(&ctx, now) {
-                Want::Nothing => true,
-                Want::Close => false,
-                Want::Refresh => {
-                    if let Some(s) = session.as_deref_mut()
-                        && let Some((image, written)) = s.sd_card_copy(&b.part)
-                    {
-                        b.refresh(image, s.seconds(), written);
-                    }
-                    true
-                }
-            }
-        });
-
-        self.sound
-            .window(&ctx, guard.as_deref_mut().map(|r| &mut r.session));
 
         let busy = guard
             .as_deref()
@@ -561,6 +718,10 @@ impl eframe::App for App {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 /// What is on the USB port, the MIDI bridge's ports, then the traffic: one

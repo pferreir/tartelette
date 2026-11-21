@@ -75,7 +75,7 @@ scripts/web-bench.sh [ROUNDS]                  # time the core in the browser, w
 
 `web-check.sh` runs `firmware/tests/cpu-bench` by default. `WAIT_MS` sets how
 long it runs, and `CLICK="X,Y"` clicks somewhere first (e.g. `283,632`, the
-console's USB serial tab). `web-bench.sh` takes `MICROPYTHON_UF2=...` to time
+USB serial tab). `web-bench.sh` takes `MICROPYTHON_UF2=...` to time
 MicroPython too.
 
 The web build uses WebAssembly tail calls (set in `.cargo/config.toml`) so the

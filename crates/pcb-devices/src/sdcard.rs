@@ -17,6 +17,10 @@
 //! SD (non-HC) byte addressing and CSD v1, erase commands, write protect,
 //! and the card's native-mode behaviour.
 //!
+//! The slot can be empty ([`SdCard::empty`]): then nothing answers and the
+//! data line stays high, as with no card in a real slot. Loading an image
+//! inserts a card, fresh from power-up; [`SdCard::eject`] takes it out.
+//!
 //! The host loads or inspects the disk with [`SdCard::load_image`] and
 //! [`SdCard::image`]; [`SdCard::dirty`] says whether the firmware wrote to it,
 //! and [`SdCard::take_written`] which blocks, to keep a copy up to date.
@@ -124,20 +128,28 @@ pub const KIND: Kind = Kind {
         "size_mb",
         1,
         2048,
-        "size of the blank card in MiB (a loaded image sets its own)",
+        "start with a blank card of this many MiB (none: an empty slot until an image is loaded)",
     )
-    .default_int(16)],
+    .optional()],
     build: |p| {
-        Ok(Box::new(SdCard::new(
-            p.int("size_mb") as usize * 1024 * 1024 / BLOCK,
-        )))
+        Ok(Box::new(match p.opt_int("size_mb") {
+            Some(mb) => SdCard::new(mb as usize * 1024 * 1024 / BLOCK),
+            None => SdCard::empty(),
+        }))
     },
 };
 
 impl SdCard {
     /// A blank card of `blocks` 512-byte blocks.
     pub fn new(blocks: usize) -> Self {
-        let mut card = Self {
+        let mut card = Self::empty();
+        card.load_image(vec![0; blocks * BLOCK]);
+        card
+    }
+
+    /// An empty slot: no card until [`load_image`](Self::load_image).
+    pub fn empty() -> Self {
+        Self {
             image: Vec::new(),
             spi_mode: false,
             idle: true,
@@ -156,15 +168,27 @@ impl SdCard {
             dirty: false,
             written: Vec::new(),
             any_written: false,
-        };
-        card.load_image(vec![0; blocks * BLOCK]);
-        card.dirty = false;
-        card
+        }
+    }
+
+    /// Whether there is a card in the slot.
+    pub fn inserted(&self) -> bool {
+        !self.image.is_empty()
+    }
+
+    /// Take the card out, leaving the slot empty.
+    pub fn eject(&mut self) {
+        *self = Self::empty();
     }
 
     /// Replace the disk contents. The image is padded to whole blocks and to
-    /// the 512 KiB minimum a CSD can describe. Does not reset the card.
+    /// the 512 KiB minimum a CSD can describe. Into an empty slot, this
+    /// inserts a card fresh from power-up; otherwise it swaps the disk
+    /// without resetting the card.
     pub fn load_image(&mut self, mut bytes: Vec<u8>) {
+        if !self.inserted() {
+            *self = Self::empty();
+        }
         let len = bytes.len().div_ceil(BLOCK).max(MIN_BLOCKS) * BLOCK;
         bytes.resize(len, 0);
         self.image = bytes;
@@ -178,7 +202,7 @@ impl SdCard {
         &self.image
     }
 
-    /// Capacity in 512-byte blocks.
+    /// Capacity in 512-byte blocks (0 for an empty slot).
     pub fn blocks(&self) -> u32 {
         (self.image.len() / BLOCK) as u32
     }
@@ -451,7 +475,7 @@ impl Device for SdCard {
 
 impl SpiDevice for SdCard {
     fn select(&mut self, _io: &mut Io, active: bool) {
-        if !active && matches!(self.rx, Rx::Command) {
+        if !active && self.inserted() && matches!(self.rx, Rx::Command) {
             // Releasing CS drops a half-received command. Everything else
             // just waits for CS to come back: the response, a data block
             // being read or written, the busy time. Hosts like
@@ -462,6 +486,10 @@ impl SpiDevice for SdCard {
     }
 
     fn transfer(&mut self, _io: &mut Io, mosi: u16, _bits: u8) -> u16 {
+        if !self.inserted() {
+            // Nothing in the slot: the pulled-up data line reads high.
+            return 0xFF;
+        }
         if self.streaming && self.out.is_empty() {
             self.queue_next_read_block();
         }
@@ -920,5 +948,27 @@ mod tests {
             "a chip select only means something on a bus"
         );
         assert!(Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1, size_mb = 0 }", &reg).is_err());
+        let b = Board::parse_with("buses.spi0 = { sck = 18, mosi = 19 }\nparts.s = { kind = \"sdcard\", bus = \"spi0\", cs = 1 }", &reg).unwrap();
+        assert!(!b.device::<SdCard>("s").unwrap().inserted(), "no size: an empty slot");
+    }
+
+    #[test]
+    fn an_empty_slot_never_answers_until_a_card_is_loaded() {
+        let mut h = Host::new();
+        h.card_mut().eject();
+        assert_eq!(h.card().blocks(), 0);
+        h.cs(false);
+        for b in [0x40, 0, 0, 0, 0, 0x95] {
+            h.byte(b);
+        }
+        assert_eq!(h.bytes(16), [0xFF; 16], "no card: no R1");
+        // A half-sent command into the empty slot doesn't leak into the card.
+        h.byte(0x40);
+        h.card_mut().load_image(vec![0; 1024 * BLOCK]);
+        assert!(h.card().inserted() && !h.card().dirty());
+        h.init();
+        h.write_block(2, &[9; BLOCK]);
+        h.card_mut().eject();
+        assert!(!h.card().inserted() && h.card().blocks_written == 0);
     }
 }

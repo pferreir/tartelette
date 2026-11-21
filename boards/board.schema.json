@@ -202,6 +202,63 @@
                   "minimum": 0,
                   "maximum": 29,
                   "description": "the GPIO its INT output drives (open drain can be shared) (other parts may use this GPIO too)"
+                },
+                "pins": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "pin": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 7,
+                        "description": "which pin, GP0..GP7"
+                      },
+                      "as": {
+                        "enum": ["switch", "toggle", "led"],
+                        "description": "what is wired to it: a momentary switch, a latching one, or an LED"
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "a name for it: an action for its switch, an event for its LED or switch"
+                      },
+                      "contact": {
+                        "enum": ["no", "nc"],
+                        "description": "switch: normally open (closes when actuated) or normally closed (default no)"
+                      },
+                      "to": {
+                        "enum": ["gnd", "vcc"],
+                        "description": "switch: what the closed contact connects the pin to (default gnd)"
+                      },
+                      "bounce_us": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100000,
+                        "description": "switch: how long the contact chatters after it moves (default 0)"
+                      },
+                      "initial": {
+                        "enum": ["off", "on"],
+                        "description": "toggle: its position at power-on (default off)"
+                      },
+                      "lit": {
+                        "enum": ["high", "low"],
+                        "description": "led: the level that lights it; low for an LED from VCC sunk by the pin (default high)"
+                      },
+                      "pull": {
+                        "enum": ["up", "down"],
+                        "description": "an external pull resistor on the pin"
+                      }
+                    },
+                    "required": ["pin"],
+                    "additionalProperties": false
+                  },
+                  "description": "what is wired to each pin"
+                },
+                "mhz": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "description": "core clock, to turn bounce_us into cycles (default 125)"
                 }
               },
               "additionalProperties": false
@@ -454,7 +511,7 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 2048,
-                  "description": "size of the blank card in MiB (a loaded image sets its own) (default 16)"
+                  "description": "start with a blank card of this many MiB (none: an empty slot until an image is loaded)"
                 }
               },
               "additionalProperties": false

@@ -259,9 +259,14 @@ fn a_volume_label_shows_up_as_an_empty_directory_entry() {
 
 #[test]
 fn a_formatted_directory_can_be_entered_and_written_to() {
-    let bench = bench_with_image(
-        pcb_devices::fat::blank_fat16_image(IMAGE_MB, "", &["data", "songs"]).unwrap(),
-    );
+    use pcb_devices::fat::{Fat, MIN_MB32, blank_image};
+    for (fat, mb) in [(Fat::Fat16, IMAGE_MB), (Fat::Fat32, MIN_MB32)] {
+        directory_round_trip(blank_image(fat, mb, "", &["data", "songs"]).unwrap());
+    }
+}
+
+fn directory_round_trip(image: Vec<u8>) {
+    let bench = bench_with_image(image);
     let payload = pattern(3000, 3);
     {
         let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
@@ -299,8 +304,15 @@ fn a_formatted_directory_can_be_entered_and_written_to() {
 #[test]
 fn every_formatted_size_mounts_and_keeps_a_file() {
     // Different sizes get different cluster and FAT sizes.
-    for mb in [pcb_devices::fat::MIN_MB, 33, 100] {
-        let bench = bench_with_image(formatted_image(mb));
+    use pcb_devices::fat::{Fat, MIN_MB, MIN_MB32, blank_image};
+    for (fat, mb) in [
+        (Fat::Fat16, MIN_MB),
+        (Fat::Fat16, 33),
+        (Fat::Fat16, 100),
+        (Fat::Fat32, MIN_MB32),
+        (Fat::Fat32, 300),
+    ] {
+        let bench = bench_with_image(blank_image(fat, mb, "", &[]).unwrap());
         let data = pattern(70_000, mb as u8);
         {
             let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);

@@ -119,8 +119,9 @@ change on disk, so you can leave tartelette open next to `cargo watch`.
 
 The front panel shows each part of the board as a widget: click buttons, drag
 or scroll knobs, load and browse SD cards. Many have keyboard shortcuts set in
-the board file. The console at the bottom has the two UARTs, the USB serial
-port, the USB traffic log and the firmware's defmt log.
+the board file. The tabs at the bottom (or on the right) hold the two UARTs,
+the USB serial port, the USB traffic log, the firmware's defmt log, the test
+synth, SD card browsers and the problems found.
 
 ### Headless
 
@@ -146,7 +147,7 @@ images, the flash file, faults, the test synth, and so on.
 ### Some things to try
 
 ```sh
-# A blank FAT16 SD card image, and the BTL-01 OS with it
+# A blank FAT32 SD card image, and the BTL-01 OS with it
 tartelette mkdisk card.img --dir data
 tartelette os.elf --board btl-01 --sd sd=card.img
 

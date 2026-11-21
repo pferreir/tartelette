@@ -14,7 +14,7 @@ pub use board::{
     Board, BoardEvent, BoardI2c, BoardSpi, BusDecl, BusType, InputResult, Kind, Need, Param,
     Params, ParseError, Part, PinCheck, PinUse, Registry, Ty,
 };
-pub use device::{Device, I2cDevice, I2cTarget, Io, Pins, SpiDevice, SpiTarget};
+pub use device::{Device, I2cDevice, I2cTarget, Io, Pending, Pins, SpiDevice, SpiTarget};
 
 /// Number of pins a board file may refer to (`gpio=0..NUM_PINS-1`); pin sets
 /// are `u32` masks.

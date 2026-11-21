@@ -9,6 +9,7 @@ fn decode() -> image::RgbaImage {
         .to_rgba8()
 }
 
+#[derive(Clone)]
 pub struct Logo {
     texture: TextureHandle,
 }

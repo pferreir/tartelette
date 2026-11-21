@@ -18,12 +18,24 @@ dc = 13
 rst = 17
 
 # Port expander; INT is active low (open drain) into GPIO16. GP0..3 are the
-# gate outputs A..D, GP4..7 the four soft-key buttons (pull-ups, active low).
+# gate outputs A..D (on while high, like an LED), GP4..7 the four soft-key
+# buttons: switches to GND, read through the expander's own pull-ups (the OS
+# enables them in GPPU).
 [parts.expander]
 kind = "mcp23008"
 bus = "i2c1"
 addr = 0x20
 int = 16
+pins = [
+  { pin = 0, as = "led", name = "gate_a" },
+  { pin = 1, as = "led", name = "gate_b" },
+  { pin = 2, as = "led", name = "gate_c" },
+  { pin = 3, as = "led", name = "gate_d" },
+  { pin = 4, as = "switch", name = "key1" },
+  { pin = 5, as = "switch", name = "key2" },
+  { pin = 6, as = "switch", name = "key3" },
+  { pin = 7, as = "switch", name = "key4" },
+]
 
 # Encoder push switch, and the clock output (observed as an LED).
 [parts.enc_sw]
@@ -64,8 +76,9 @@ clk = 22
 dt = 21
 cw = "dt"
 
-# Micro SD card, SPI mode on SPI1 (chip select is a plain GPIO). Load a disk
-# image with `--sd sd=card.img` (the default blank card is 16 MiB).
+# Micro SD card, SPI mode on SPI1 (chip select is a plain GPIO). The slot is
+# empty until a disk image is loaded with `--sd sd=card.img` (or the panel's
+# Load…); `size_mb = N` starts with a blank N MiB card instead.
 [parts.sd]
 kind = "sdcard"
 bus = "spi1"
@@ -80,8 +93,8 @@ knob = { at = [4, 0], span = [2, 2], keys = ["Left", "Right"] }
 enc_sw = { at = [4, 2], label = "Push", key = "Space" }
 clk_out = { at = [5, 2], label = "Clock", color = "yellow" }
 expander = [
-  { at = [0, 3], span = [2, 1], label = "Soft keys", pins = [4, 5, 6, 7], keys = ["1", "2", "3", "4"] },
-  { at = [2, 3], span = [2, 1], label = "Gates", pins = [0, 1, 2, 3], mode = "view", labels = ["A", "B", "C", "D"] },
+  { at = [0, 3], span = [2, 1], label = "Soft keys", pins = [4, 5, 6, 7], keys = ["1", "2", "3", "4"], labels = ["1", "2", "3", "4"] },
+  { at = [2, 3], span = [2, 1], label = "Gates", pins = [0, 1, 2, 3], labels = ["A", "B", "C", "D"] },
 ]
 dac = { at = [6, 0], span = [2, 2], label = "CV out" }
 sd = { at = [6, 2], span = [2, 1], label = "SD card" }

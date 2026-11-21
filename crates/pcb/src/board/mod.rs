@@ -70,7 +70,7 @@ pub use params::Params;
 pub use registry::{PinCheck, Registry};
 pub use spec::{BusType, Kind, Need, Param, Ty};
 
-use crate::device::{Device, I2cDevice, I2cTarget, Io, Pins, SpiTarget};
+use crate::device::{Device, I2cDevice, I2cTarget, Io, Pending, Pins, SpiTarget};
 
 /// Something observable happened on the board.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,8 +136,8 @@ pub struct Board {
     i2c_current: [Option<usize>; 2],
     /// Part indices wired to each SPI controller.
     spi: [Vec<usize>; 2],
-    /// Pending device wake-ups: (cycle, part index).
-    timers: Vec<(u64, usize)>,
+    /// Device wake-ups and warnings not yet handled.
+    pending: Pending,
 }
 
 impl core::fmt::Debug for Board {
@@ -698,20 +698,22 @@ impl Board {
         for (i, p) in self.parts.iter_mut().enumerate() {
             p.watch = p.device.watched_pins();
             p.device.attach(
-                &mut Io::new(pins, 0, &mut self.events, i, true).with_timers(&mut self.timers),
+                &mut Io::new(pins, 0, &mut self.events, i, true).with_pending(&mut self.pending),
             );
         }
         for (i, p) in self.parts.iter_mut().enumerate() {
             if p.watch != 0 {
                 p.device.pin_changed(
-                    &mut Io::new(pins, 0, &mut self.events, i, true).with_timers(&mut self.timers),
+                    &mut Io::new(pins, 0, &mut self.events, i, true)
+                        .with_pending(&mut self.pending),
                     p.watch,
                 );
             }
             let active = asserted(pins, p.cs);
             if let Some(spi) = p.device.spi() {
                 spi.select(
-                    &mut Io::new(pins, 0, &mut self.events, i, true).with_timers(&mut self.timers),
+                    &mut Io::new(pins, 0, &mut self.events, i, true)
+                        .with_pending(&mut self.pending),
                     active,
                 );
             }
@@ -725,7 +727,7 @@ impl Board {
             if hit != 0 {
                 p.device.pin_changed(
                     &mut Io::new(pins, cycles, &mut self.events, i, false)
-                        .with_timers(&mut self.timers),
+                        .with_pending(&mut self.pending),
                     hit,
                 );
             }
@@ -734,7 +736,7 @@ impl Board {
                 if let Some(spi) = p.device.spi() {
                     spi.select(
                         &mut Io::new(pins, cycles, &mut self.events, i, false)
-                            .with_timers(&mut self.timers),
+                            .with_pending(&mut self.pending),
                         active,
                     );
                 }
@@ -755,7 +757,7 @@ impl Board {
             return InputResult::NoSuchPart;
         };
         let mut io =
-            Io::new(pins, cycles, &mut self.events, i, false).with_timers(&mut self.timers);
+            Io::new(pins, cycles, &mut self.events, i, false).with_pending(&mut self.pending);
         if self.parts[i].device.input(&mut io, action, value) {
             InputResult::Done
         } else {
@@ -763,9 +765,18 @@ impl Board {
         }
     }
 
+    /// Warnings devices raised since the last call ([`Io::warn`]), each
+    /// prefixed with its part's name.
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.pending.warnings)
+            .into_iter()
+            .map(|(part, w)| format!("{}: {w}", self.parts[part].name))
+            .collect()
+    }
+
     /// The cycle of the earliest pending device wake-up.
     pub fn next_timer(&self) -> Option<u64> {
-        self.timers.iter().map(|t| t.0).min()
+        self.pending.timers.iter().map(|t| t.0).min()
     }
 
     /// Call [`Device::timer`] for every wake-up due at or before `now`, in
@@ -773,6 +784,7 @@ impl Board {
     /// for. (Wake-ups are always scheduled in the future, so this ends.)
     pub fn fire_timers(&mut self, pins: &mut dyn Pins, now: u64) {
         while let Some(pos) = self
+            .pending
             .timers
             .iter()
             .enumerate()
@@ -780,9 +792,9 @@ impl Board {
             .min_by_key(|(_, t)| t.0)
             .map(|(i, _)| i)
         {
-            let (at, part) = self.timers.swap_remove(pos);
+            let (at, part) = self.pending.timers.swap_remove(pos);
             let mut io =
-                Io::new(pins, at, &mut self.events, part, false).with_timers(&mut self.timers);
+                Io::new(pins, at, &mut self.events, part, false).with_pending(&mut self.pending);
             self.parts[part].device.timer(&mut io);
         }
     }
@@ -803,7 +815,7 @@ impl Board {
         BoardI2c {
             parts: &mut self.parts,
             events: &mut self.events,
-            timers: &mut self.timers,
+            pending: &mut self.pending,
             map: &self.i2c[n],
             pins,
             cycles,
@@ -823,7 +835,7 @@ impl Board {
         BoardSpi {
             parts: &mut self.parts,
             events: &mut self.events,
-            timers: &mut self.timers,
+            pending: &mut self.pending,
             members: &self.spi[n],
             pins,
             cycles,
@@ -836,7 +848,7 @@ impl Board {
 pub struct BoardSpi<'a> {
     parts: &'a mut Vec<Part>,
     events: &'a mut Vec<BoardEvent>,
-    timers: &'a mut Vec<(u64, usize)>,
+    pending: &'a mut Pending,
     members: &'a [usize],
     pins: &'a mut dyn Pins,
     cycles: u64,
@@ -855,7 +867,7 @@ impl SpiTarget for BoardSpi<'_> {
             if let Some(spi) = part.device.spi() {
                 miso &= spi.transfer(
                     &mut Io::new(self.pins, self.cycles, self.events, i, false)
-                        .with_timers(self.timers),
+                        .with_pending(self.pending),
                     mosi,
                     bits,
                 );
@@ -873,7 +885,7 @@ impl SpiTarget for BoardSpi<'_> {
 pub struct BoardI2c<'a> {
     parts: &'a mut Vec<Part>,
     events: &'a mut Vec<BoardEvent>,
-    timers: &'a mut Vec<(u64, usize)>,
+    pending: &'a mut Pending,
     map: &'a [(u8, usize)],
     pins: &'a mut dyn Pins,
     cycles: u64,
@@ -884,7 +896,7 @@ impl BoardI2c<'_> {
     fn with_current<R>(&mut self, f: impl FnOnce(&mut dyn I2cDevice, &mut Io) -> R) -> Option<R> {
         let i = (*self.current)?;
         let mut io =
-            Io::new(self.pins, self.cycles, self.events, i, false).with_timers(self.timers);
+            Io::new(self.pins, self.cycles, self.events, i, false).with_pending(self.pending);
         Some(f(self.parts[i].device.i2c()?, &mut io))
     }
 }

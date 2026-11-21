@@ -35,15 +35,23 @@ writing your own.
 
 ## The window
 
-The top bar opens a firmware or board, pauses, resets and sets the speed. The
-panel under it is laid out by the board file's `[panel]` section. At the
-bottom, the console has tabs for:
+The top bar opens a firmware or board, pauses, resets and sets the speed,
+and under that shows the files, the emulated time and the speed reached. When
+something goes wrong it shows **⚠ N new problems**, which opens the Problems
+tab. The front panel in the middle is laid out by the board file's `[panel]`
+section. The tabs at the bottom (**→ Dock right** moves them to the right,
+and the edge between them and the panel resizes them) are:
 
 - **UART0** and **UART1**, with a line to send text back (and a choice of line
   ending);
 - **USB serial**, the emulated device's CDC-ACM port, if it has one;
 - **USB**, the traffic log: enumeration, decoded control transfers, packets;
-- **Log**, the firmware's defmt output.
+- **Log**, the firmware's defmt output;
+- **Synth**, the test synth's patch bay (see [below](#test-synth));
+- **SD *name***, a card's browser, opened by **Browse…** on its widget and
+  closed with its **×**;
+- **Problems**: errors starting the run, ignored panel options, and warnings
+  from the run (faults, bus wiring, an expander's pins).
 
 Firmware, board and shield files are watched; save one and tartelette reloads
 it and starts over.
@@ -119,15 +127,19 @@ doesn't exist.
 ## SD cards
 
 ```sh
-tartelette mkdisk card.img --size-mb 64 --dir data
+tartelette mkdisk card.img --dir data
 tartelette os.elf --board btl-01 --sd sd=card.img
 ```
 
-`mkdisk` makes a sparse image with an MBR and one empty FAT16 partition
-starting at 1 MiB, the way `embedded-sdmmc` likes it. `--dir` adds empty
-top-level directories; `--label` sets the volume label.
+`mkdisk` makes a sparse image with an MBR and one empty FAT32 partition
+starting at 1 MiB, the way `embedded-sdmmc` likes it. `--size-mb` sets the
+size (default 64 MiB). FAT32 needs at least 34 MiB, because readers tell it
+from FAT16 by the cluster count alone; `--fat 16` makes FAT16 instead, from
+4 MiB up to 2000. `--dir` adds empty top-level directories; `--label` sets
+the volume label.
 
-`--sd NAME=FILE` loads an image into the `sdcard` part called NAME. The image
+`--sd NAME=FILE` loads an image into the `sdcard` part called NAME; without
+it, the slot is empty (unless the board gives the part a `size_mb`). The image
 lives in memory while the firmware runs. Headless, it is written back at the
 end if the firmware changed it; with a window, use the card's **Save…**
 button.
@@ -135,7 +147,7 @@ button.
 To look inside a card while the firmware runs:
 
 - **Browse…** on the card's widget (native and web) opens a copy of the card
-  and shows its files, with a text or hex preview and **Save file…**. It reads
+  in a tab and shows its files, with a text or hex preview and **Save file…**. It reads
   FAT12, FAT16 and FAT32, whole-disk or in an MBR partition. **Refresh** takes
   a new copy.
 - `--sd-live` (native) writes every block to the `--sd` file as the firmware
@@ -197,7 +209,7 @@ what a sequencer is doing:
 - drums (`kick`, `snare`, `hat`, `openhat`, `clap`, all synthesized) play a hit
   on each rising edge of their gate, however short the trigger.
 
-In the window, the **Synth** button opens the patch bay. Tick **Sound** to
+In the window, the **Synth** tab is the patch bay. Tick **Sound** to
 play through the sound card (native and web) and **Drum kit** to put kick,
 snare and hats on the first four gates. Each voice shows its gate, note and
 pitch.
@@ -211,8 +223,8 @@ On the command line:
 --wav out.wav            # headless: record the voices, 48 kHz mono
 ```
 
-CV is a DAC channel (`dac.A` .. `dac.D`). GATE is an expander pin
-(`expander.0`), an LED part (`clk_out`), or `open` for always on. Left out,
+CV is a DAC channel (`dac.A` .. `dac.D`). GATE is an expander pin, by
+number or name (`expander.0`, `expander.gate_a`), an LED part (`clk_out`), or `open` for always on. Left out,
 they are the board's first DAC channel and first gate. Headless, the WAV is
 rendered in emulated time and is sample-exact, however fast or slow the run
 was:

@@ -152,7 +152,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                 _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
             };
         }
-        for w in std::mem::take(&mut sys.warnings) {
+        let board_warnings = sys.board.take_warnings();
+        for w in std::mem::take(&mut sys.warnings)
+            .into_iter()
+            .chain(board_warnings)
+        {
             let _ = writeln!(err, "[{:>10.1} us] warning: {w}", us(sys.cycles()));
         }
         loop {

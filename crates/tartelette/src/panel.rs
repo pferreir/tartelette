@@ -16,16 +16,24 @@
 //! | `sdcard`   | card status, load / save / browse image |                         |
 //! | `cyw43439` | Wi-Fi: LED, link, address, errors |                               |
 //!
-//! An `mcp23008` item shows a cell per pin, lit while the pin is high, and
-//! takes:
+//! An `mcp23008` item shows a cell per pin. By default each cell follows what
+//! the board file wires to its pin: an LED is shown lit or dark, a switch is
+//! pressed while the cell is held (a latching one flips on each click) and
+//! shown lit while actuated, and a bare pin is pulled low while held and
+//! shown lit while high. Options:
 //!
 //! - `pins = [4, 5, 6, 7]`: which pins, in that order (default all eight);
-//! - `mode = "hold"|"toggle"|"view"`: a cell drives its pin while held, flips
+//! - `mode = "hold"|"toggle"|"view"`: treat every pin as a bare one that a
+//!   cell drives while held, flips on each click, or only shows, whatever is
+//!   wired to it;
+//! - `active = "low"|"high"`: the level a cell drives a bare pin to (default
+//!   low: a switch to ground); a released pin floats;|"toggle"|"view"`: a cell drives its pin while held, flips
 //!   it on each click, or only shows it (for outputs);
 //! - `active = "low"|"high"`: the level a driven pin is pulled to (default
 //!   low: a switch to ground); a released pin floats;
 //! - `keys = ["1", "2", ...]`: a keyboard key per pin, working like a click;
-//! - `labels = ["A", "B", ...]`: text per cell instead of the pin number.
+//! - `labels = ["A", "B", ...]`: text per cell instead of the pin's name or
+//!   number.
 //!
 //! A part can have several items, so inputs and outputs of one expander can
 //! sit apart with their own settings.
@@ -41,7 +49,7 @@ use pcb_devices::{
     cyw43439::{Cyw43439, Link},
     dac8165::Dac8165,
     led::Led,
-    mcp23008::Mcp23008,
+    mcp23008::{Mcp23008, Wire},
     sdcard::SdCard,
     st7789::St7789,
     ws2812::Ws2812,
@@ -99,7 +107,8 @@ pub enum Widget {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expander {
     pub pins: Vec<u8>,
-    pub mode: PinMode,
+    /// `None`: each pin as its wiring says.
+    pub mode: Option<PinMode>,
     pub active_high: bool,
     /// Empty, or one per entry of `pins`.
     pub keys: Vec<Key>,
@@ -117,7 +126,7 @@ impl Default for Expander {
     fn default() -> Self {
         Expander {
             pins: (0..8).collect(),
-            mode: PinMode::Hold,
+            mode: None,
             active_high: false,
             keys: Vec::new(),
             labels: Vec::new(),
@@ -270,12 +279,12 @@ fn widget_for<'a>(
                 x.pins = pins;
             }
             (Widget::Expander(x), "mode") => {
-                x.mode = match v {
+                x.mode = Some(match v {
                     "hold" => PinMode::Hold,
                     "toggle" => PinMode::Toggle,
                     "view" => PinMode::View,
                     _ => return Err("mode must be hold, toggle or view".into()),
-                }
+                })
             }
             (Widget::Expander(x), "keys") => {
                 x.keys = v.split(',').map(key).collect::<Result<_, _>>()?
@@ -367,6 +376,20 @@ impl PanelState {
     }
 }
 
+/// The smallest a grid cell gets: below this the widgets' text and buttons
+/// stop fitting, so the panel scrolls instead of shrinking further.
+pub const MIN_CELL: f32 = 84.0;
+/// Margins around the grid inside the central panel.
+const PAD: f32 = 16.0;
+
+impl Layout {
+    /// The space the board needs to show every cell at [`MIN_CELL`].
+    pub fn min_size(&self) -> Vec2 {
+        vec2(self.cols as f32, self.rows as f32) * MIN_CELL + Vec2::splat(PAD)
+    }
+}
+const MAX_CELL: f32 = 220.0;
+
 /// Draw the panel filling `ui`'s available space; returns what the user did.
 pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> Vec<Request> {
     let mut out = Vec::new();
@@ -374,11 +397,12 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
     let avail = ui.available_size();
     let cell = ((avail.x + gap) / layout.cols as f32)
         .min((avail.y + gap) / layout.rows as f32)
-        .clamp(40.0, 220.0);
+        .clamp(MIN_CELL, MAX_CELL);
     let size = vec2(
         cell * layout.cols as f32 - gap,
         cell * layout.rows as f32 - gap,
     );
+    ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
         let (area, _) = ui.allocate_exact_size(size.max(vec2(avail.x, size.y)), Sense::hover());
         let origin = pos2(area.center().x - size.x / 2.0, area.top());
@@ -741,11 +765,39 @@ fn turn_arrow(p: &egui::Painter, center: Pos2, radius: f32, dir: f32, color: Col
     ));
 }
 
+/// How a panel cell treats its expander pin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CellRole {
+    /// A bare pin the cell drives (through `gpN`) or only shows.
+    Bare(PinMode),
+    /// A wired switch the cell actuates (through `swN`).
+    Switch {
+        latching: bool,
+    },
+    Led,
+}
+
+/// What a cell does for `pin`: the item's `mode` if it has one, else what
+/// the board wires to the pin.
+fn cell_role(x: &Expander, dev: &Mcp23008, pin: u8) -> CellRole {
+    if let Some(mode) = x.mode {
+        return CellRole::Bare(mode);
+    }
+    match dev.wiring(pin).wire {
+        Wire::Bare => CellRole::Bare(PinMode::Hold),
+        Wire::Switch(s) => CellRole::Switch {
+            latching: s.latching,
+        },
+        Wire::Led { .. } => CellRole::Led,
+    }
+}
+
 fn expander(c: Ctx, st: &mut PanelState, x: &Expander, out: &mut Vec<Request>) {
     let Some(dev) = c.device::<Mcp23008>() else {
         return;
     };
-    let levels = dev.pin_levels();
+    let (levels, actuated, lit) = (dev.pin_levels(), dev.actuated(), dev.lit());
+    // Pins (bare) and switches (wired) the panel holds down.
     let driven = st.driven.entry(c.it.part).or_default();
     let n = x.pins.len();
     let (cols, _, d) = circle_grid(n, c.body.size());
@@ -757,53 +809,91 @@ fn expander(c: Ctx, st: &mut PanelState, x: &Expander, out: &mut Vec<Request>) {
             Vec2::splat(d),
         )
         .shrink(d * 0.08);
-        let key = x.keys.get(i).copied().filter(|_| c.keys_free);
-        let sense = if x.mode == PinMode::View {
-            Sense::hover()
-        } else {
+        let role = cell_role(x, dev, pin);
+        let wiring = dev.wiring(pin);
+        let bit = 1u8 << pin;
+        let interactive = !matches!(role, CellRole::Led | CellRole::Bare(PinMode::View));
+        let key = x
+            .keys
+            .get(i)
+            .copied()
+            .filter(|_| c.keys_free && interactive);
+        let sense = if interactive {
             Sense::click_and_drag()
+        } else {
+            Sense::hover()
         };
-        let hover = match x.keys.get(i) {
-            Some(k) if x.mode != PinMode::View => format!("GP{pin} ({})", k.name()),
-            _ => format!("GP{pin}"),
+        let mut hover = match wiring.name {
+            Some(name) => format!("GP{pin} {name}"),
+            None => format!("GP{pin}"),
         };
+        match role {
+            CellRole::Switch { latching } => {
+                hover += if latching { ": toggle" } else { ": switch" };
+                if wiring.bounce > 0 {
+                    hover += " (bouncy)";
+                }
+            }
+            CellRole::Led => hover += ": LED",
+            CellRole::Bare(_) => {}
+        }
+        hover += if levels & bit != 0 { ", high" } else { ", low" };
+        if let Some(k) = x.keys.get(i).filter(|_| interactive) {
+            hover += &format!(" [{}]", k.name());
+        }
         let resp =
             c.ui.interact(cell, c.id(("pin", c.it.cell, pin)), sense)
                 .on_hover_text(hover);
-        let bit = 1u8 << pin;
+        let clicked = resp.clicked() || key.is_some_and(|k| c.ui.input(|i| i.key_pressed(k)));
+        let held =
+            resp.is_pointer_button_down_on() || key.is_some_and(|k| c.ui.input(|i| i.key_down(k)));
         let is_driven = *driven & bit != 0;
-        let want = match x.mode {
-            PinMode::View => is_driven,
-            PinMode::Toggle => {
-                let flip = resp.clicked() || key.is_some_and(|k| c.ui.input(|i| i.key_pressed(k)));
-                is_driven ^ flip
+        match role {
+            CellRole::Led | CellRole::Bare(PinMode::View) => {}
+            CellRole::Switch { latching: true } => {
+                if clicked {
+                    c.input(out, &format!("sw{pin}"), (actuated & bit == 0) as i64);
+                }
             }
-            PinMode::Hold => {
-                resp.is_pointer_button_down_on()
-                    || key.is_some_and(|k| c.ui.input(|i| i.key_down(k)))
+            CellRole::Switch { latching: false } => {
+                if held != is_driven {
+                    *driven ^= bit;
+                    c.input(out, &format!("sw{pin}"), held as i64);
+                }
             }
-        };
-        if want != is_driven {
-            *driven ^= bit;
-            c.input(
-                out,
-                &format!("gp{pin}"),
-                if want { x.active_high as i64 } else { -1 },
-            );
+            CellRole::Bare(mode) => {
+                let want = match mode {
+                    PinMode::Toggle => is_driven ^ clicked,
+                    _ => held,
+                };
+                if want != is_driven {
+                    *driven ^= bit;
+                    c.input(
+                        out,
+                        &format!("gp{pin}"),
+                        if want { x.active_high as i64 } else { -1 },
+                    );
+                }
+            }
         }
+        let on = match role {
+            CellRole::Led => lit & bit != 0,
+            CellRole::Switch { .. } => actuated & bit != 0,
+            CellRole::Bare(_) => levels & bit != 0,
+        };
         let v = c.ui.visuals();
         let p = c.ui.painter();
-        let high = levels & bit != 0;
-        p.rect_filled(
-            cell,
-            4.0,
-            if high {
-                Color32::from_rgb(230, 170, 40)
-            } else {
-                Color32::from_gray(45)
-            },
-        );
-        if *driven & bit != 0 {
+        let fill = match role {
+            CellRole::Led if on => Color32::from_rgb(255, 48, 32),
+            _ if on => Color32::from_rgb(230, 170, 40),
+            _ => Color32::from_gray(45),
+        };
+        if role == CellRole::Led {
+            p.circle_filled(cell.center(), cell.width().min(cell.height()) / 2.0, fill);
+        } else {
+            p.rect_filled(cell, 4.0, fill);
+        }
+        if *driven & bit != 0 && matches!(role, CellRole::Bare(_)) {
             p.rect_stroke(
                 cell,
                 4.0,
@@ -811,12 +901,17 @@ fn expander(c: Ctx, st: &mut PanelState, x: &Expander, out: &mut Vec<Request>) {
                 StrokeKind::Inside,
             );
         }
-        let ink = if high {
+        let ink = if on {
             Color32::BLACK
         } else {
             Color32::from_gray(170)
         };
-        let text = x.labels.get(i).cloned().unwrap_or_else(|| pin.to_string());
+        let text = x
+            .labels
+            .get(i)
+            .cloned()
+            .or_else(|| wiring.name.map(String::from))
+            .unwrap_or_else(|| pin.to_string());
         // Shrink long labels to fit the cell (monospace glyphs are ~0.6 em wide).
         let chars = text.chars().count().max(1) as f32;
         let size = (d * 0.35).min(14.0).min(cell.width() * 0.9 / (chars * 0.6));
@@ -873,23 +968,101 @@ fn sdcard(c: Ctx, out: &mut Vec<Request>) {
     let Some(card) = c.device::<SdCard>() else {
         return;
     };
-    let mib = card.blocks() as f64 * 512.0 / (1024.0 * 1024.0);
-    let state = if card.dirty() { "written" } else { "unchanged" };
+    let inserted = card.inserted();
+    let status = if inserted {
+        let mib = card.blocks() as f64 * 512.0 / (1024.0 * 1024.0);
+        let state = if card.dirty() { "written" } else { "unchanged" };
+        format!("{mib:.0} MiB \u{2022} {state}")
+    } else {
+        "No card".to_string()
+    };
     let name = c.it.name.clone();
-    c.ui.scope_builder(egui::UiBuilder::new().max_rect(c.body), |ui| {
-        ui.label(format!("{mib:.0} MiB, {state}"));
-        ui.horizontal(|ui| {
-            if ui.button("Load…").clicked() {
-                out.push(Request::LoadSd(name.clone()));
-            }
-            if ui.button("Save…").clicked() {
-                out.push(Request::SaveSd(name.clone()));
-            }
-            if ui.button("Browse…").clicked() {
-                out.push(Request::BrowseSd(name));
-            }
-        });
-    });
+    // Two rows: the card glyph and its status, then the buttons across the
+    // whole width, so they fit in one line of a 2x1 cell.
+    c.ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(c.body)
+            .layout(egui::Layout::top_down(egui::Align::Min).with_main_align(egui::Align::Center)),
+        |ui| {
+            ui.spacing_mut().item_spacing = vec2(4.0, 6.0);
+            ui.horizontal(|ui| {
+                let h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+                let (glyph, _) = ui.allocate_exact_size(vec2(h * 0.75, h), Sense::hover());
+                sd_glyph(ui, glyph, inserted);
+                ui.add_space(2.0);
+                let text = egui::RichText::new(status);
+                ui.add(egui::Label::new(if inserted { text } else { text.weak() }).truncate());
+            });
+            ui.horizontal(|ui| {
+                let load = if inserted { "Load" } else { "Insert" };
+                if ui
+                    .small_button(load)
+                    .on_hover_text("load a disk image")
+                    .clicked()
+                {
+                    out.push(Request::LoadSd(name.clone()));
+                }
+                if !inserted {
+                    return;
+                }
+                if ui
+                    .small_button("Save")
+                    .on_hover_text("save the card's image to a file")
+                    .clicked()
+                {
+                    out.push(Request::SaveSd(name.clone()));
+                }
+                if ui
+                    .small_button("Browse")
+                    .on_hover_text("look at the files on the card")
+                    .clicked()
+                {
+                    out.push(Request::BrowseSd(name));
+                }
+            });
+        },
+    );
+}
+
+/// An SD card outline (corner clipped top right), filled when one is in.
+fn sd_glyph(ui: &Ui, r: Rect, inserted: bool) {
+    let v = ui.visuals();
+    let cut = r.width() * 0.3;
+    let pts = vec![
+        r.left_top(),
+        pos2(r.right() - cut, r.top()),
+        pos2(r.right(), r.top() + cut),
+        r.right_bottom(),
+        r.left_bottom(),
+    ];
+    let stroke = egui::Stroke::new(1.5, v.widgets.inactive.fg_stroke.color);
+    let fill = if inserted {
+        v.selection.bg_fill
+    } else {
+        Color32::TRANSPARENT
+    };
+    let p = ui.painter();
+    if inserted {
+        p.add(egui::Shape::convex_polygon(pts, fill, stroke));
+        // Contacts along the top edge.
+        let n = 4;
+        let w = (r.width() - cut) / (n as f32 * 2.0);
+        for i in 0..n {
+            let x = r.left() + w * (0.5 + 2.0 * i as f32);
+            p.rect_filled(
+                Rect::from_min_size(pos2(x, r.top() + 2.0), vec2(w, r.height() * 0.22)),
+                1.0,
+                v.extreme_bg_color,
+            );
+        }
+    } else {
+        p.add(egui::Shape::dashed_line(
+            &[pts, vec![r.left_top()]].concat(),
+            stroke,
+            3.0,
+            2.0,
+        ));
+    }
 }
 
 /// The one-line story of a Wi-Fi chip, and whether it is an error.
@@ -1127,6 +1300,32 @@ mod tests {
     }
 
     #[test]
+    fn expander_cells_follow_the_wiring_unless_given_a_mode() {
+        let b = board(
+            "buses.i2c0 = { sda = 0, scl = 1 }\n\
+             parts.x = { kind = \"mcp23008\", bus = \"i2c0\", pins = [\
+               { pin = 0, as = \"led\" }, { pin = 1, as = \"switch\" }, { pin = 2, as = \"toggle\" }] }",
+        );
+        let dev = b.device::<Mcp23008>("x").unwrap();
+        let wired = Expander::default();
+        let roles: Vec<_> = (0..4).map(|p| cell_role(&wired, dev, p)).collect();
+        assert_eq!(
+            roles,
+            [
+                CellRole::Led,
+                CellRole::Switch { latching: false },
+                CellRole::Switch { latching: true },
+                CellRole::Bare(PinMode::Hold),
+            ]
+        );
+        let viewed = Expander {
+            mode: Some(PinMode::View),
+            ..Expander::default()
+        };
+        assert!((0..4).all(|p| cell_role(&viewed, dev, p) == CellRole::Bare(PinMode::View)));
+    }
+
+    #[test]
     fn widget_options() {
         let w = |k, o: &[(&'static str, &'static str)]| widget_for(k, &mut o.iter().copied());
         assert!(matches!(
@@ -1151,7 +1350,7 @@ mod tests {
             x,
             Expander {
                 pins: vec![7, 2],
-                mode: PinMode::Toggle,
+                mode: Some(PinMode::Toggle),
                 active_high: true,
                 keys: vec![Key::Q, Key::W],
                 labels: vec!["A".into(), "B".into()],

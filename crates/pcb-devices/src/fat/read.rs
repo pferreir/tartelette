@@ -525,6 +525,40 @@ mod tests {
     }
 
     #[test]
+    fn our_fat32_disks_read_here_and_in_fatfs() {
+        use std::io::{Read, Write};
+        let mut d = crate::fat::blank_image(crate::fat::Fat::Fat32, 40, "CARD", &["DATA"]).unwrap();
+        let v = open(&d).unwrap();
+        assert_eq!(
+            (v.fat_type, v.label.as_str(), v.offset),
+            (FatType::Fat32, "CARD", 1 << 20)
+        );
+        let root = v.root().unwrap();
+        assert_eq!(names(&root), ["DATA"]);
+        assert!(v.dir(&root[0]).unwrap().is_empty(), "just . and ..");
+        // fatfs agrees, and can write a file into the directory and read it back.
+        let mut part = Cursor::new(d.split_off(1 << 20));
+        {
+            let fs = fatfs::FileSystem::new(&mut part, fatfs::FsOptions::new()).unwrap();
+            assert_eq!(fs.fat_type(), fatfs::FatType::Fat32);
+            assert_eq!(fs.volume_label(), "CARD");
+            let stats = fs.stats().unwrap();
+            assert_eq!(stats.free_clusters(), stats.total_clusters() - 2);
+            let data = fs.root_dir().open_dir("DATA").unwrap();
+            data.create_file("A.TXT")
+                .unwrap()
+                .write_all(b"hello")
+                .unwrap();
+            let mut back = String::new();
+            data.open_file("A.TXT")
+                .unwrap()
+                .read_to_string(&mut back)
+                .unwrap();
+            assert_eq!(back, "hello");
+        }
+    }
+
+    #[test]
     fn entry_names_and_dates_decode() {
         let mut e = [b' '; 32];
         e[..8].copy_from_slice(b"\x05ABC    ");

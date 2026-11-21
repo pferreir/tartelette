@@ -274,6 +274,7 @@ impl Session {
         }
         self.events.append(&mut self.sys.board.events);
         self.warnings.append(&mut self.sys.warnings);
+        self.warnings.extend(self.sys.board.take_warnings());
         self.exchange_usb();
         #[cfg(not(target_arch = "wasm32"))]
         self.write_sd_files();
@@ -304,11 +305,13 @@ impl Session {
     }
 
     /// SD card contents by part name, to carry over into a fresh run (a reset
-    /// is a power cycle; the card keeps its data).
+    /// is a power cycle; the card keeps its data). Empty slots are left out:
+    /// they start empty anyway.
     pub fn take_sd_cards(&mut self) -> Vec<(String, Vec<u8>, bool)> {
         self.sys
             .board
             .devices_mut::<SdCard>()
+            .filter(|(_, card)| card.inserted())
             .map(|(n, card)| (n.to_string(), card.image().to_vec(), card.dirty()))
             .collect()
     }
@@ -317,8 +320,13 @@ impl Session {
     /// it was writing to: that file holds a different disk.
     /// A copy of the card `name`'s image, with how many blocks the firmware
     /// has written to it so far (to tell later whether the copy is stale).
+    /// None for an empty slot.
     pub fn sd_card_copy(&self, name: &str) -> Option<(Vec<u8>, u32)> {
-        let card = self.sys.board.device::<SdCard>(name)?;
+        let card = self
+            .sys
+            .board
+            .device::<SdCard>(name)
+            .filter(|c| c.inserted())?;
         Some((card.image().to_vec(), card.blocks_written))
     }
 

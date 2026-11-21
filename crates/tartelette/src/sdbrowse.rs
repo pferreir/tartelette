@@ -1,5 +1,5 @@
-//! A window onto what is on an SD card: its directories and files, from a
-//! copy of the card's image taken when the window opens or on Refresh. Read
+//! A view of what is on an SD card: its directories and files, from a copy
+//! of the card's image taken when the tab opens or on Refresh. Read
 //! only, so it can never fight with the firmware over the file system.
 use egui::{Color32, RichText};
 use pcb_devices::fat::read::{self, Entry, FatType};
@@ -31,10 +31,9 @@ struct Preview {
     hex: bool,
 }
 
-/// What the window wants from the run.
+/// What the browser wants from the run.
 pub enum Want {
     Nothing,
-    Close,
     /// A fresh copy of the card.
     Refresh,
 }
@@ -132,50 +131,45 @@ impl SdBrowser {
         self.preview = Some(Preview { file, lines, hex });
     }
 
-    /// Draw the window. `written_now` is the card's write count in the run
+    /// Draw the browser. `written_now` is the card's write count in the run
     /// (none: the card is gone).
-    pub fn show(&mut self, ctx: &egui::Context, written_now: Option<u32>) -> Want {
-        let mut open = true;
+    pub fn ui(&mut self, ui: &mut egui::Ui, written_now: Option<u32>) -> Want {
         let mut want = Want::Nothing;
-        egui::Window::new(format!("SD card {}", self.part))
-            .id(egui::Id::unique(("sd-browser", &self.part)))
-            .open(&mut open)
-            .default_size([720.0, 440.0])
-            .resizable(true)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(written_now.is_some(), egui::Button::new("Refresh"))
-                        .clicked()
-                    {
-                        want = Want::Refresh;
-                    }
-                    match &self.volume {
-                        Ok(v) => ui.label(v),
-                        Err(e) => ui.colored_label(ui.visuals().error_fg_color, e),
-                    };
-                    ui.label(RichText::new(format!("copy taken at {:.3} s", self.taken_at)).weak());
-                    match written_now {
-                        None => {
-                            ui.colored_label(ui.visuals().warn_fg_color, "the card is gone");
-                        }
-                        Some(n) if n != self.written_then => {
-                            ui.colored_label(ui.visuals().warn_fg_color, "written since");
-                        }
-                        _ => {}
-                    }
-                });
-                if self.volume.is_err() {
-                    return;
+        let id = egui::IdSalt::new(("sd-browser", self.part.clone()));
+        ui.push_id(id, |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(written_now.is_some(), egui::Button::new("Refresh"))
+                    .clicked()
+                {
+                    want = Want::Refresh;
                 }
-                self.breadcrumbs(ui);
-                ui.separator();
-                ui.columns(2, |cols| {
-                    self.listing_ui(&mut cols[0]);
-                    self.preview_ui(&mut cols[1]);
-                });
+                match &self.volume {
+                    Ok(v) => ui.label(v),
+                    Err(e) => ui.colored_label(ui.visuals().error_fg_color, e),
+                };
+                ui.label(RichText::new(format!("copy taken at {:.3} s", self.taken_at)).weak());
+                match written_now {
+                    None => {
+                        ui.colored_label(ui.visuals().warn_fg_color, "the card is gone");
+                    }
+                    Some(n) if n != self.written_then => {
+                        ui.colored_label(ui.visuals().warn_fg_color, "written since");
+                    }
+                    _ => {}
+                }
             });
-        if !open { Want::Close } else { want }
+            if self.volume.is_err() {
+                return;
+            }
+            self.breadcrumbs(ui);
+            ui.separator();
+            ui.columns(2, |cols| {
+                self.listing_ui(&mut cols[0]);
+                self.preview_ui(&mut cols[1]);
+            });
+        });
+        want
     }
 
     fn breadcrumbs(&mut self, ui: &mut egui::Ui) {

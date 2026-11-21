@@ -124,17 +124,23 @@ apart with different settings. Pass a list:
 ```toml
 expander = [
   { at = [0, 3], span = [2, 1], label = "Soft keys", pins = [4, 5, 6, 7], keys = ["1", "2", "3", "4"] },
-  { at = [2, 3], span = [2, 1], label = "Gates", pins = [0, 1, 2, 3], mode = "view", labels = ["A", "B", "C", "D"] },
+  { at = [2, 3], span = [2, 1], label = "Gates", pins = [0, 1, 2, 3], labels = ["A", "B", "C", "D"] },
 ]
 ```
 
+Each cell follows what the part's `pins` wire to its pin (see
+[the device page](devices/mcp23008.md#pins)): an LED is shown lit or dark, a
+switch is pressed while the cell is held (a toggle flips on each click), and
+a bare pin is pulled low while held.
+
 - `pins`: which pins, in that order (default all eight);
-- `mode = "hold" | "toggle" | "view"`: a cell drives its pin while held
-  (default), flips it on each click, or only shows its level;
-- `active = "low" | "high"`: the level a driven pin is pulled to (default
+- `mode = "hold" | "toggle" | "view"`: ignore the wiring and treat every pin
+  as a bare one that a cell drives while held, flips on each click, or only
+  shows;
+- `active = "low" | "high"`: the level a cell drives a bare pin to (default
   low, a switch to ground); released, the pin floats;
 - `keys`: a keyboard key per pin;
-- `labels`: text per cell instead of the pin number.
+- `labels`: text per cell instead of the pin's name or number.
 
 ## `[[flash]]`
 

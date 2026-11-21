@@ -312,14 +312,17 @@ pub fn schema() -> String {
     pcb::board::spec::json_schema(&pcb_devices::registry())
 }
 
-/// Make a blank SD card image: an MBR with one empty FAT16 partition, as the
-/// BTL-01 OS mounts it (the file is sparse).
+/// Make a blank SD card image: an MBR with one empty FAT32 (or FAT16)
+/// partition, as the BTL-01 OS mounts it (the file is sparse).
 #[derive(Args, Debug)]
 pub struct MkdiskArgs {
     pub file: PathBuf,
-    /// Size in MiB
-    #[arg(long, default_value_t = 16, value_parser = clap::value_parser!(u16).range(4..=2000))]
-    pub size_mb: u16,
+    /// Size in MiB: FAT32 34..32768, FAT16 4..2000
+    #[arg(long, default_value_t = 64)]
+    pub size_mb: u32,
+    /// File system: 32 (needs 34 MiB or more) or 16
+    #[arg(long, default_value = "32", value_parser = ["16", "32"])]
+    pub fat: String,
     /// Make an empty top-level directory (the OS lists `data`, so its Load menu needs `--dir data`)
     #[arg(long, value_name = "NAME")]
     pub dir: Vec<String>,

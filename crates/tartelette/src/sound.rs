@@ -1,4 +1,4 @@
-//! The Synth window: test oscillators and drums patched into the board's outputs,
+//! The Synth tab: test oscillators and drums patched into the board's outputs,
 //! played through the sound card (see [`crate::synth`]).
 use std::sync::{Arc, Mutex};
 
@@ -14,7 +14,6 @@ use crate::{
 };
 
 pub struct Sound {
-    pub shown: bool,
     /// The oscillators; `None` until there is a board to take defaults from.
     patches: Option<Vec<Patch>>,
     out: Option<Output>,
@@ -31,7 +30,6 @@ impl Sound {
     /// With the oscillators from the command line, if any.
     pub fn new(patches: Vec<Patch>) -> Self {
         Sound {
-            shown: !patches.is_empty(),
             patches: (!patches.is_empty()).then_some(patches),
             out: None,
             error: None,
@@ -87,21 +85,8 @@ impl Sound {
         self.out = None;
     }
 
-    pub fn window(&mut self, ctx: &egui::Context, s: Option<&mut Session>) {
-        let mut shown = self.shown;
-        egui::Window::new("Synth")
-            .open(&mut shown)
-            .resizable(false)
-            .show(ctx, |ui| match s {
-                Some(s) => self.ui(ui, s),
-                None => {
-                    ui.label("No board running.");
-                }
-            });
-        self.shown = shown;
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, s: &mut Session) {
+    /// The Synth tab's contents.
+    pub fn ui(&mut self, ui: &mut egui::Ui, s: &mut Session) {
         let mut patches = self.patches(s);
         let before = patches.clone();
         ui.horizontal(|ui| {
