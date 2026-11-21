@@ -22,7 +22,7 @@ cpal = "0.18"
 js-sys = "0.3.106"
 wasm-bindgen-futures = "0.4.79"
 cpal = { version = "0.18", features = ["wasm-bindgen"] }
-web-sys = { version = "0.3.106", features = ["Blob", "Url", "HtmlAnchorElement", "Document", "Window", "Element", "HtmlCanvasElement", "console"] }
+web-sys = { version = "0.3.106", features = ["Blob", "Url", "HtmlAnchorElement", "Document", "Window", "Element", "HtmlCanvasElement", "console", "Location", "Response", "UrlSearchParams"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "1.0.1"

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
 
-use crate::session::{BtMode, NetMode, Network, Source};
+use crate::session::{BtMode, NetMode, Network, Source, BOARDS, SHIELDS};
 
 /// Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on an emulated board, with a front
 /// panel window or headless.
@@ -127,20 +127,6 @@ pub struct RunArgs {
     pub headless_opts: Headless,
 }
 
-/// The boards in the repository's `boards/`, built in so that an installed
-/// `tartelette` has them too.
-const BOARDS: &[(&str, &str)] = &[
-    ("pico", crate::session::PICO_BOARD),
-    ("btl-01", include_str!("../../../boards/btl-01.toml")),
-    ("pico-w", include_str!("../../../boards/pico-w.toml")),
-];
-
-/// The shields in `boards/shields/`.
-const SHIELDS: &[(&str, &str)] = &[(
-    "pico-display-2",
-    include_str!("../../../boards/shields/pico-display-2.toml"),
-)];
-
 /// A file, or else the built-in one of that name.
 fn file_or_builtin(
     path: &std::path::Path,
@@ -151,8 +137,8 @@ fn file_or_builtin(
         return Source::from_file(path);
     }
     let name = path.to_string_lossy();
-    match builtin.iter().find(|(n, _)| *n == name) {
-        Some((n, text)) => Ok(Source::new(format!("{n}.toml"), text.as_bytes().to_vec())),
+    match crate::session::builtin(builtin, &name) {
+        Some(src) => Ok(src),
         None => {
             let names: Vec<_> = builtin.iter().map(|(n, _)| *n).collect();
             Err(format!(

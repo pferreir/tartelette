@@ -17,6 +17,8 @@ mod midi_bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod mkdisk;
 mod panel;
+#[cfg(target_arch = "wasm32")]
+mod preload;
 mod sdbrowse;
 mod session;
 mod sound;
@@ -101,18 +103,14 @@ fn main() {
             .and_then(|d| d.get_element_by_id("app"))
             .and_then(|e| e.dyn_into::<eframe::web_sys::HtmlCanvasElement>().ok())
             .expect("no <canvas id=\"app\"> on the page");
+        let preload = preload::Preload::from_page().await;
         let start = eframe::WebRunner::new()
             .start(
                 canvas,
                 eframe::WebOptions::default(),
                 Box::new(|cc| {
                     app::install_fonts(&cc.egui_ctx);
-                    Ok(Box::new(app::App::new(
-                        None,
-                        None,
-                        Vec::new(),
-                        Default::default(),
-                    )))
+                    Ok(Box::new(preload.into_app()))
                 }),
             )
             .await;

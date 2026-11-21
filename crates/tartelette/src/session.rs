@@ -500,6 +500,27 @@ fn connect_bluetooth(board: &mut Board, bt: BtMode) -> Result<(), String> {
 /// The board used without one: a plain Raspberry Pi Pico.
 pub const PICO_BOARD: &str = include_str!("../../../boards/pico.toml");
 
+/// The boards in the repository's `boards/`, built in so that an installed
+/// `tartelette` has them too.
+pub const BOARDS: &[(&str, &str)] = &[
+    ("pico", PICO_BOARD),
+    ("btl-01", include_str!("../../../boards/btl-01.toml")),
+    ("pico-w", include_str!("../../../boards/pico-w.toml")),
+];
+
+/// The shields in `boards/shields/`.
+pub const SHIELDS: &[(&str, &str)] = &[(
+    "pico-display-2",
+    include_str!("../../../boards/shields/pico-display-2.toml"),
+)];
+
+/// The built-in board or shield called `name` in `list`.
+pub fn builtin(list: &[(&str, &str)], name: &str) -> Option<Source> {
+    list.iter()
+        .find(|(n, _)| *n == name)
+        .map(|(n, text)| Source::new(format!("{n}.toml"), text.as_bytes().to_vec()))
+}
+
 /// Build the board from its file (a plain Pico without one) and the shields on
 /// top, with the RP2040's pin rules for buses.
 pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Board, String> {

@@ -194,6 +194,18 @@ impl App {
         self.sound.attach(&mut g.session);
     }
 
+    /// Load `src` as if the user had opened it for `slot`, on the next frame.
+    #[cfg(target_arch = "wasm32")]
+    pub fn open(&self, slot: Slot, src: Source) {
+        self.inbox.push(slot, src);
+    }
+
+    /// Show `msg` among the problems found.
+    #[cfg(target_arch = "wasm32")]
+    pub fn report(&mut self, msg: String) {
+        self.errors.push(msg);
+    }
+
     /// Load a disk image into the SD card part `name` of the running board.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_sd_card(&mut self, name: &str, image: Vec<u8>) -> bool {

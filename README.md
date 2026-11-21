@@ -102,6 +102,20 @@ build needs WebAssembly tail calls: Chrome/Edge 112+, Firefox 121+ or Safari
 18.2+. There is no network in the browser, so the Pico W's Wi-Fi scans come
 back empty.
 
+A page can open straight onto a firmware: the query string names the files
+to fetch at startup, relative to the page.
+
+```text
+index.html?firmware=os.elf&board=btl-01&sd=card.img
+```
+
+`firmware` and `sd` are URLs (`sd` goes to the board's first SD card);
+`board` and `shield` (repeatable) are a built-in name or else a URL. Files
+that fail to load are listed under Problems. To publish a firmware this way,
+copy `trunk build --release`'s `dist/` to any static host and put the files
+next to it. `llvm-objcopy --strip-debug` makes the ELF much smaller and keeps
+what the defmt log needs.
+
 ## Running
 
 Open a window with a firmware on a board:
