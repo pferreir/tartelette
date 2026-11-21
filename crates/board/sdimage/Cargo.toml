@@ -3,6 +3,9 @@ name = "sdimage"
 description = "SD card disk images: formats blank FAT16/FAT32 images and reads FAT file systems out of them"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 

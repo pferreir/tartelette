@@ -3,5 +3,8 @@ name = "usbhost"
 description = "A small deterministic USB host: enumerates a device and drives its CDC-ACM, HID and USB-MIDI functions"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [dependencies]

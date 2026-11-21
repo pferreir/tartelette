@@ -3,6 +3,9 @@ name = "tartelette-runtime"
 description = "Runs firmware on an emulated RP2040 board, with no UI: sessions, pacing, board files, and the host's side of the USB, UART and radio links"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
 
 [features]
 # Lets a command line take `NetMode` as a `clap` value.

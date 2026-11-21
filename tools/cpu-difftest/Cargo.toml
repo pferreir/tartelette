@@ -2,6 +2,8 @@
 name = "cpu-difftest"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 publish = false
 
 # Differential tests of armv6m's CPU against Unicorn (QEMU's Cortex-M0).
