@@ -16,7 +16,8 @@ buttons and knobs, a port expander, a DAC, an SD card, LED strips, the Pico W's
 Wi-Fi/Bluetooth chip and the USB port. You get a front panel to poke at, or a
 headless runner for scripts and tests.
 
-Right now, there is support for a limited number of peripherals [TODO: add link to list].
+Right now, there is support for a limited number of peripherals (see
+[the list of supported devices](#supported-devices)).
 
 
 ## History
@@ -29,7 +30,9 @@ me also simulate the hardware I'm using, so I decided to use LLMs to create one.
 This project doesn't aim to be an exact replica of the actual hardware (although
 it seems to do a pretty decent job so far), but rather to allow you to develop your
 toy project without having to flash a device every time. Unmodified firmware built
-with Embassy, rp2040-hal, pico-sdk and MicroPython runs on it. [TODO: add links to all those projects]
+with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-hal),
+[pico-sdk](https://github.com/raspberrypi/pico-sdk) and
+[MicroPython](https://micropython.org) runs on it.
 
 <p align="center">
   <img src="assets/screenshots/btl-01.png" alt="The BTL-01 OS running in tartelette's front panel" width="49%">
