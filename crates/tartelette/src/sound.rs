@@ -16,6 +16,8 @@ use crate::{
 pub struct Sound {
     /// The oscillators; `None` until there is a board to take defaults from.
     patches: Option<Vec<Patch>>,
+    /// What was asked for, made into `patches` once there is a board.
+    asked: (Vec<Patch>, bool),
     out: Option<Output>,
     error: Option<String>,
     volume: f32,
@@ -27,10 +29,12 @@ struct Output {
 }
 
 impl Sound {
-    /// With the oscillators from the command line, if any.
-    pub fn new(patches: Vec<Patch>) -> Self {
+    /// With the oscillators (`--osc`) and drum kit (`--drums`) asked for, if
+    /// any; without either, the board's default voice.
+    pub fn new(osc: Vec<Patch>, drums: bool) -> Self {
         Sound {
-            patches: (!patches.is_empty()).then_some(patches),
+            patches: None,
+            asked: (osc, drums),
             out: None,
             error: None,
             volume: 0.8,
@@ -59,9 +63,10 @@ impl Sound {
     /// The patches, completed with `s`'s board defaults.
     fn patches(&mut self, s: &Session) -> Vec<Patch> {
         let board = &s.sys.board;
+        let (osc, drums) = &self.asked;
         let patches = self
             .patches
-            .get_or_insert_with(|| synth::default_patches(board));
+            .get_or_insert_with(|| synth::patches(osc, *drums, board));
         for p in patches.iter_mut() {
             p.complete(board);
         }

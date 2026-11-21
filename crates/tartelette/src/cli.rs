@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 use rp2040_core::system::CYCLES_PER_US;
 
-use crate::session::{BtMode, NetMode, Network, Source, BOARDS, SHIELDS};
+use crate::session::{BOARDS, BtMode, NetMode, Network, SHIELDS, Source};
 
 /// Tartelette, an RP2040 emulator: runs a firmware ELF or UF2 on an emulated board, with a front
 /// panel window or headless.
@@ -152,14 +152,7 @@ fn file_or_builtin(
 impl RunArgs {
     /// The voices `--osc` and `--drums` ask for, or else the board's default.
     pub fn patches(&self, board: &pcb::Board) -> Vec<crate::synth::Patch> {
-        let mut v = self.osc.clone();
-        if self.drums {
-            v.extend(crate::synth::drum_kit(board));
-        }
-        if v.is_empty() {
-            v = crate::synth::default_patches(board);
-        }
-        v
+        crate::synth::patches(&self.osc, self.drums, board)
     }
 
     /// The `--board` file, or else the built-in board of that name.

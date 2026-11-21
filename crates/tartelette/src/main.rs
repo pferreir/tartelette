@@ -66,7 +66,7 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
         .transpose()?;
     let board = args.board()?;
     let mut app = app::App::new(firmware, board, args.shields()?, args.network());
-    app.set_voices(args);
+    app.set_voices(&args.osc, args.drums);
     for (name, file) in &args.sd {
         if !app.load_sd_card(name, Source::from_file(file)?.bytes) {
             return Err(format!("--sd: no SD card named {name:?} on the board"));
@@ -115,7 +115,39 @@ fn main() {
             )
             .await;
         if let Err(e) = start {
-            files::log(&format!("failed to start: {e:?}"));
+            let msg = e.as_string().unwrap_or_else(|| format!("{e:?}"));
+            files::log(&format!("failed to start: {msg}"));
+            show_start_error(&msg);
         }
     });
+}
+
+/// Put why the app could not start on the page, in place of the canvas,
+/// which would otherwise just stay blank.
+#[cfg(target_arch = "wasm32")]
+fn show_start_error(msg: &str) {
+    let Some(body) = eframe::web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.body())
+    else {
+        return;
+    };
+    let escaped = msg.replace('&', "&amp;").replace('<', "&lt;");
+    let help = if msg.contains("WebGL") {
+        "tartelette draws its front panel with WebGL, and this browser didn't \
+         provide it. It is usually there but switched off: check that hardware \
+         acceleration is on in the browser's settings, and what <code>chrome://gpu</code> \
+         or Firefox's <code>about:support</code> say about WebGL (its \"WebGL 1 Driver \
+         Renderer\" line gives the reason). LibreWolf turns it off by default: set \
+         <code>webgl.disabled</code> to false in <code>about:config</code>. Remote \
+         desktops and virtual machines without a GPU often have none."
+    } else {
+        "Opening the browser's console may tell more."
+    };
+    body.set_inner_html(&format!(
+        "<div style=\"max-width:36em;margin:15vh auto;padding:0 16px;color:#ddd;\
+         font:16px/1.5 system-ui,sans-serif\"><h2 style=\"color:#fff\">tartelette \
+         could not start</h2><p><code>{escaped}</code></p><p>{help}</p></div>"
+    ));
+    let _ = body.set_attribute("style", "overflow:auto;height:auto");
 }

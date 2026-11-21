@@ -6,8 +6,12 @@ emulator's workspace.
 
 ```
 examples/   real firmware for real boards; runs in the emulator too
+showcase/   the demos on the web page: plain RP2040 boards, no blobs needed
 tests/      bare-metal firmware for the emulator's own tests, emulator only
 ```
+
+The showcase demos (a drum machine, a game, an LED matrix and a shell) have
+their own [README](showcase/README.md).
 
 ## Examples
 

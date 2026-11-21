@@ -122,7 +122,7 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             watch: Default::default(),
             sd_browsers: Vec::new(),
-            sound: Sound::new(Vec::new()),
+            sound: Sound::new(Vec::new(), false),
             #[cfg(not(target_arch = "wasm32"))]
             sd_files: Vec::new(),
         };
@@ -177,21 +177,18 @@ impl App {
         }
     }
 
-    /// Start with the voices `--osc` and `--drums` ask for, on the Synth
-    /// tab (without either, the board's default voice).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn set_voices(&mut self, args: &crate::cli::RunArgs) {
-        if args.osc.is_empty() && !args.drums {
+    /// Start with the voices `--osc` and `--drums` (or the page's `osc` and
+    /// `drums`) ask for, on the Synth tab (without either, the board's
+    /// default voice).
+    pub fn set_voices(&mut self, osc: &[crate::synth::Patch], drums: bool) {
+        if osc.is_empty() && !drums {
             return;
         }
         self.tab = Tab::Synth;
-        let Some(r) = &self.run else {
-            self.sound = Sound::new(args.osc.clone());
-            return;
-        };
-        let mut g = lock(r);
-        self.sound = Sound::new(args.patches(&g.session.sys.board));
-        self.sound.attach(&mut g.session);
+        self.sound = Sound::new(osc.to_vec(), drums);
+        if let Some(r) = &self.run {
+            self.sound.attach(&mut lock(r).session);
+        }
     }
 
     /// Load `src` as if the user had opened it for `slot`, on the next frame.

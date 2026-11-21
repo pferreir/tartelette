@@ -258,6 +258,19 @@ pub fn default_patches(board: &Board) -> Vec<Patch> {
     vec![p]
 }
 
+/// The voices asked for (`--osc`, `--drums`, or the page's `osc` and
+/// `drums`), or else the board's default.
+pub fn patches(osc: &[Patch], drums: bool, board: &Board) -> Vec<Patch> {
+    let mut v = osc.to_vec();
+    if drums {
+        v.extend(drum_kit(board));
+    }
+    if v.is_empty() {
+        v = default_patches(board);
+    }
+    v
+}
+
 /// A drum kit on the board's first four gates (as the panel shows them, or
 /// else every gate there is): kick, snare, closed and open hat.
 pub fn drum_kit(board: &Board) -> Vec<Patch> {

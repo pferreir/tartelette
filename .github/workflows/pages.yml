@@ -1,0 +1,68 @@
+# Builds the showcase site (scripts/build-site.sh: the landing page, the
+# web app and the demo firmware) and publishes it on GitHub Pages.
+#
+# In the repository's settings, Pages must have "GitHub Actions" as its
+# source.
+name: Pages
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml picks nightly; rustup installs it on first use.
+      - name: Rust targets
+        run: rustup target add wasm32-unknown-unknown thumbv6m-none-eabi
+
+      - name: llvm-objcopy
+        run: sudo apt-get update && sudo apt-get install -y llvm
+
+      - name: trunk
+        run: |
+          curl -fsSL https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin trunk
+          trunk --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            firmware/showcase/target
+          key: site-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'firmware/showcase/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: site-${{ runner.os }}-
+
+      - name: Build the site
+        env:
+          MICROPYTHON: fetch
+        run: scripts/build-site.sh _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

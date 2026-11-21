@@ -7,14 +7,21 @@
 //!
 //! `firmware` and `sd` are URLs, relative to the page. `board` and `shield`
 //! (which may be repeated) are a built-in name or else a URL. `sd` goes to
-//! the board's first SD card.
-use eframe::wasm_bindgen::{JsCast as _, JsValue};
-use eframe::web_sys;
+//! the board's first SD card. `osc` (repeatable) and `drums` patch the test
+//! synth as `--osc` and `--drums` do (`drums` takes no value), e.g.
+//! `&drums&osc=saw:dac.A:expander.4`.
+use eframe::{
+    wasm_bindgen::{JsCast as _, JsValue},
+    web_sys,
+};
 use wasm_bindgen_futures::JsFuture;
 
-use crate::app::App;
-use crate::files::Slot;
-use crate::session::{self, Source};
+use crate::{
+    app::App,
+    files::Slot,
+    session::{self, Source},
+    synth::Patch,
+};
 
 #[derive(Default)]
 pub struct Preload {
@@ -22,6 +29,8 @@ pub struct Preload {
     pub board: Option<Source>,
     pub shields: Vec<Source>,
     pub sd: Option<Source>,
+    pub osc: Vec<Patch>,
+    pub drums: bool,
     pub errors: Vec<String>,
 }
 
@@ -42,7 +51,11 @@ impl Preload {
         if let Some(name) = get("board") {
             p.board = p.take(named(session::BOARDS, &name).await);
         }
-        for name in params.get_all("shield").iter().filter_map(|v| v.as_string()) {
+        for name in params
+            .get_all("shield")
+            .iter()
+            .filter_map(|v| v.as_string())
+        {
             if let Some(s) = p.take(named(session::SHIELDS, &name).await) {
                 p.shields.push(s);
             }
@@ -50,6 +63,13 @@ impl Preload {
         if let Some(url) = get("sd") {
             p.sd = p.take(fetch(&url).await);
         }
+        for v in params.get_all("osc").iter().filter_map(|v| v.as_string()) {
+            match v.parse() {
+                Ok(patch) => p.osc.push(patch),
+                Err(e) => p.errors.push(format!("osc={v}: {e}")),
+            }
+        }
+        p.drums = params.has("drums");
         p
     }
 
@@ -59,6 +79,7 @@ impl Preload {
 
     pub fn into_app(self) -> App {
         let mut app = App::new(self.firmware, self.board, self.shields, Default::default());
+        app.set_voices(&self.osc, self.drums);
         if let Some(sd) = self.sd {
             app.open(Slot::Sd(String::new()), sd);
         }
@@ -86,7 +107,11 @@ async fn fetch(url: &str) -> Result<Source, String> {
         .map_err(fail)?
         .unchecked_into();
     if !resp.ok() {
-        return Err(format!("{url}: HTTP {} {}", resp.status(), resp.status_text()));
+        return Err(format!(
+            "{url}: HTTP {} {}",
+            resp.status(),
+            resp.status_text()
+        ));
     }
     let buf = JsFuture::from(resp.array_buffer().map_err(fail)?)
         .await
@@ -99,7 +124,11 @@ async fn fetch(url: &str) -> Result<Source, String> {
 fn file_name(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let name = path.rsplit('/').next().unwrap_or(path);
-    if name.is_empty() { url.into() } else { name.into() }
+    if name.is_empty() {
+        url.into()
+    } else {
+        name.into()
+    }
 }
 
 fn js_error(e: &JsValue) -> String {

@@ -110,8 +110,10 @@ index.html?firmware=os.elf&board=btl-01&sd=card.img
 ```
 
 `firmware` and `sd` are URLs (`sd` goes to the board's first SD card);
-`board` and `shield` (repeatable) are a built-in name or else a URL. Files
-that fail to load are listed under Problems. To publish a firmware this way,
+`board` and `shield` (repeatable) are a built-in name or else a URL. `osc`
+(repeatable) and `drums` patch the test synth as `--osc` and `--drums` do,
+e.g. `&drums&osc=saw:dac.A:expander.4`. Files that fail to load are listed
+under Problems. To publish a firmware this way,
 copy `trunk build --release`'s `dist/` to any static host and put the files
 next to it. `llvm-objcopy --strip-debug` makes the ELF much smaller and keeps
 what the defmt log needs.
@@ -176,8 +178,10 @@ mpremote connect /tmp/ttyACM
 tartelette os.elf --board btl-01 --drums
 ```
 
-`firmware/examples` has Pico W firmware that runs both here and on real
-hardware (Wi-Fi, Bluetooth, USB and two apps for the Pico Display Pack). Their
+`firmware/showcase` has the demos from the web page: a drum machine, a
+game, an LED matrix and a shell, on plain RP2040 boards (see its
+[README](firmware/showcase/README.md)). `firmware/examples` has Pico W
+firmware that runs both here and on real hardware (Wi-Fi, Bluetooth, USB and two apps for the Pico Display Pack). Their
 `cargo run` starts them in tartelette; see
 [firmware/README.md](firmware/README.md).
 

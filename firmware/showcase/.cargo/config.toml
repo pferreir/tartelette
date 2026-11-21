@@ -1,0 +1,10 @@
+[build]
+target = "thumbv6m-none-eabi"
+
+# `cargo run --bin DEMO` runs it in tartelette on its board (see ./run), or
+# flashes a real board with TARTELETTE_RUNNER=probe-rs or picotool.
+[target.thumbv6m-none-eabi]
+runner = ["./run"]
+
+[env]
+DEFMT_LOG = "info"

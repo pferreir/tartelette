@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tartelette demos</title>
+  <meta name="description" content="tartelette, an RP2040 emulator: run unmodified Raspberry Pi Pico firmware, and the board around it, in your browser.">
+  <link rel="icon" href="img/logo.png">
+  <style>
+    :root {
+      --bg: #f6f4ef;
+      --surface: #ffffff;
+      --ink: #1d1b22;
+      --muted: #5f5b68;
+      --line: #e3dfd6;
+      --accent: #b4532a;
+      --accent-ink: #ffffff;
+      --chip: #efe9df;
+      --code: #2a2730;
+      --code-ink: #f1ede6;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #17161b;
+        --surface: #211f26;
+        --ink: #eeeaf2;
+        --muted: #a49fae;
+        --line: #34313b;
+        --accent: #e7895a;
+        --accent-ink: #1a1112;
+        --chip: #2c2933;
+        --code: #0f0e12;
+        --code-ink: #e6e1ea;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    a { color: var(--accent); }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+    header.hero {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 28px;
+      align-items: center;
+      padding: 56px 0 36px;
+    }
+    header.hero img { width: 132px; height: auto; display: block; }
+    h1 { font-size: 2.4rem; line-height: 1.1; margin: 0 0 10px; letter-spacing: -0.02em; }
+    .lede { font-size: 1.15rem; color: var(--muted); margin: 0; max-width: 46em; }
+    .links { margin-top: 14px; display: flex; gap: 18px; flex-wrap: wrap; font-weight: 600; }
+    .note {
+      border: 1px solid var(--line);
+      background: var(--surface);
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: var(--muted);
+      font-size: 0.94rem;
+      margin-bottom: 32px;
+    }
+    .demos { display: grid; gap: 22px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
+    article {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    article .shot {
+      display: block;
+      aspect-ratio: 16 / 10;
+      background: #1b1b1b;
+      border-bottom: 1px solid var(--line);
+    }
+    article .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+    article .body { padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+    article h2 { margin: 0; font-size: 1.3rem; letter-spacing: -0.01em; }
+    article p { margin: 0; color: var(--muted); }
+    .board { font-size: 0.86rem; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; padding: 0; list-style: none; }
+    .chips li { background: var(--chip); border-radius: 999px; padding: 2px 10px; font-size: 0.8rem; }
+    .try { font-size: 0.92rem; }
+    .try kbd {
+      font: 0.82rem ui-monospace, Menlo, Consolas, monospace;
+      border: 1px solid var(--line);
+      border-bottom-width: 2px;
+      border-radius: 4px;
+      padding: 0 5px;
+      background: var(--bg);
+    }
+    .actions { margin-top: auto; padding-top: 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    pre.snippet { margin: 0; padding: 10px 12px; font-size: 0.82rem; }
+    .run {
+      display: inline-block;
+      background: var(--accent);
+      color: var(--accent-ink);
+      text-decoration: none;
+      font-weight: 650;
+      padding: 9px 14px;
+      border-radius: 8px;
+    }
+    .run:hover, .run:focus-visible { filter: brightness(1.08); }
+    .src { font-size: 0.92rem; }
+    section.local { margin: 56px 0 24px; }
+    section.local h2 { font-size: 1.5rem; margin: 0 0 10px; }
+    pre {
+      background: var(--code);
+      color: var(--code-ink);
+      padding: 16px 18px;
+      border-radius: 10px;
+      overflow-x: auto;
+      font: 0.88rem/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    footer { color: var(--muted); font-size: 0.88rem; padding: 24px 0 48px; border-top: 1px solid var(--line); margin-top: 40px; }
+    @media (max-width: 640px) {
+      header.hero { grid-template-columns: 1fr; gap: 16px; padding-top: 32px; }
+      header.hero img { width: 92px; }
+      h1 { font-size: 1.9rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <img src="img/logo.png" alt="The tartelette logo">
+      <div>
+        <h1>tartelette</h1>
+        <p class="lede">An emulator for the Raspberry Pi RP2040 and the board around it. Give it a firmware and a
+          small description of the PCB, and it runs the firmware against emulated screens, knobs, LEDs, DACs,
+          port expanders and SD cards. These demos run entirely in your browser, in WebAssembly.</p>
+        <div class="links">
+          <a href="{{REPO_URL}}">Source code</a>
+          <a href="{{REPO_URL}}/tree/HEAD/firmware/showcase">The demos' firmware</a>
+          <a href="emu/">Open the emulator empty</a>
+        </div>
+      </div>
+    </header>
+
+    <p class="note">Every demo is an ordinary RP2040 firmware: the same ELF would run on a real Pico wired the same
+      way. Click a button or knob on the front panel, or use the keys shown. The tabs at the bottom hold the UARTs,
+      the USB serial port, the firmware's log and the test synth. Needs a browser with WebAssembly tail calls:
+      Chrome or Edge 112+, Firefox 121+, Safari 18.2+.</p>
+
+    <main class="demos">
+      <article>
+        <a class="shot" href="emu/?firmware=../demos/groovebox.elf&amp;board=../demos/groovebox.toml&amp;drums&amp;osc=saw:dac.A:expander.bass"><img src="img/groovebox.png" alt="The Groovebox demo: a step sequencer grid on the emulated screen, with knob, keys and gate lights" loading="lazy"></a>
+        <div class="body">
+          <h2>Groovebox</h2>
+          <div class="board">custom board · ST7789 · MCP23008 · DAC8165 · encoder</div>
+          <p>A 16-step drum machine and bass sequencer. Its gates and pitch CV are played by tartelette's test synth:
+            kick, snare and hats on the expander's gate outputs, a saw following the DAC.</p>
+          <ul class="chips"><li>I2C</li><li>SPI + DMA</li><li>PIO encoder</li><li>bit-banged DAC</li><li>two async tasks</li></ul>
+          <p class="try">Tick <b>Sound</b> in the Synth tab to hear it. <kbd>←</kbd><kbd>→</kbd> move,
+            <kbd>Space</kbd> toggles a step, <kbd>T</kbd> track, <kbd>P</kbd> play, hold <kbd>S</kbd> + knob for tempo.</p>
+          <div class="actions">
+            <a class="run" href="emu/?firmware=../demos/groovebox.elf&amp;board=../demos/groovebox.toml&amp;drums&amp;osc=saw:dac.A:expander.bass">Run in the browser</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/src/bin/groovebox.rs">Source</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/boards/groovebox.toml">Board</a>
+          </div>
+        </div>
+      </article>
+
+      <article>
+        <a class="shot" href="emu/?firmware=../demos/stardust.elf&amp;board=pico&amp;shield=pico-display-2"><img src="img/stardust.png" alt="The Stardust game: a ship orbiting a glowing star among motes of dust and comets" loading="lazy"></a>
+        <div class="body">
+          <h2>Stardust</h2>
+          <div class="board">pico + pico-display-2 shield</div>
+          <p>A small arcade game. Fall around a star, scoop up stardust for points and fuel, and dodge the comets,
+            or break them apart with a pulse. Full-screen redraws at 25 frames a second, sending only what changed.</p>
+          <ul class="chips"><li>SPI + DMA</li><li>strip rendering</li><li>soft-float physics</li><li>a shield</li></ul>
+          <p class="try"><kbd>A</kbd>/<kbd>B</kbd> turn, <kbd>X</kbd> thrust, <kbd>Y</kbd> pulse and start.</p>
+          <div class="actions">
+            <a class="run" href="emu/?firmware=../demos/stardust.elf&amp;board=pico&amp;shield=pico-display-2">Run in the browser</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/src/bin/stardust.rs">Source</a>
+          </div>
+        </div>
+      </article>
+
+      <article>
+        <a class="shot" href="emu/?firmware=../demos/lumen.elf&amp;board=../demos/lumen.toml"><img src="img/lumen.png" alt="The Lumen demo: an 8 by 8 grid of coloured LEDs beside a knob and two buttons" loading="lazy"></a>
+        <div class="body">
+          <h2>Lumen</h2>
+          <div class="board">custom board · 64 WS2812 · encoder · buttons</div>
+          <p>Generative light for an 8×8 LED matrix: plasma, fire, rain, the Game of Life, ripples and fireflies.
+            The LEDs are decoded from the PIO's pulse timings, as real ones would.</p>
+          <ul class="chips"><li>PIO WS2812</li><li>PIO encoder</li><li>DMA</li><li>UART</li></ul>
+          <p class="try"><kbd>Space</kbd> next scene, <kbd>←</kbd><kbd>→</kbd> tweak it, <kbd>B</kbd> brightness.</p>
+          <div class="actions">
+            <a class="run" href="emu/?firmware=../demos/lumen.elf&amp;board=../demos/lumen.toml">Run in the browser</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/src/bin/lumen.rs">Source</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/boards/lumen.toml">Board</a>
+          </div>
+        </div>
+      </article>
+
+      <article>
+        <a class="shot" href="emu/?firmware=../demos/picosh.elf&amp;board=pico"><img src="img/picosh.png" alt="The picosh demo: an ASCII Mandelbrot set in the UART console" loading="lazy"></a>
+        <div class="body">
+          <h2>picosh</h2>
+          <div class="board">pico</div>
+          <p>A tiny shell on UART0. Draw the Mandelbrot set on one core and then on both, read the bootrom,
+            sieve primes, blink the LED.</p>
+          <ul class="chips"><li>UART</li><li>both cores</li><li>interrupts</li></ul>
+          <p class="try">Type in the UART0 tab: <kbd>help</kbd>, <kbd>mandel</kbd>, <kbd>peek 0</kbd>, <kbd>blink 3</kbd>.</p>
+          <div class="actions">
+            <a class="run" href="emu/?firmware=../demos/picosh.elf&amp;board=pico">Run in the browser</a>
+            <a class="src" href="{{REPO_URL}}/blob/HEAD/firmware/showcase/src/bin/picosh.rs">Source</a>
+          </div>
+        </div>
+      </article>
+
+      <!-- micropython -->
+      <article>
+        <a class="shot" href="emu/?firmware=../demos/micropython.uf2&amp;board=pico"><img src="img/micropython.png" alt="MicroPython's REPL in the USB serial console" loading="lazy"></a>
+        <div class="body">
+          <h2>MicroPython</h2>
+          <div class="board">pico · the official RPI_PICO build</div>
+          <p>MicroPython {{MICROPYTHON_VERSION}}, straight from micropython.org, unmodified. Its REPL is on the
+            emulated USB serial port.</p>
+          <ul class="chips"><li>USB device</li><li>UF2</li><li>flash filesystem</li></ul>
+          <p class="try">Open the USB serial tab and light the LED:</p>
+          <pre class="snippet">from machine import Pin
+Pin(25, Pin.OUT).on()</pre>
+          <div class="actions">
+            <a class="run" href="emu/?firmware=../demos/micropython.uf2&amp;board=pico">Run in the browser</a>
+            <a class="src" href="https://micropython.org">micropython.org</a>
+          </div>
+        </div>
+      </article>
+      <!-- /micropython -->
+    </main>
+
+    <section class="local">
+      <h2>Run them on your machine</h2>
+      <p>The native build adds a few things the browser can't do: Wi-Fi to the real network, Bluetooth, the USB
+        serial port as a real tty, MIDI. From a checkout:</p>
+<pre>cargo install --locked --path crates/tartelette
+cd firmware/showcase
+cargo run --release --bin groovebox        # or stardust, lumen, picosh
+cargo run --release --bin stardust -- --headless --log --max-cycles 1000000000</pre>
+    </section>
+
+    <footer>
+      tartelette runs RP2040 firmware built with Embassy, rp2040-hal, the Pico SDK and MicroPython.
+      Much of its code was written with AI assistance. <a href="{{REPO_URL}}">Source and docs</a>.
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+#:schema ../../../boards/board.schema.json
+# GROOVEBOX: a Pico as a 16-step drum machine and bass sequencer. A 320x240
+# screen (wired as on a Pico Display Pack 2.0), a knob with a push switch,
+# an MCP23008 port expander for the five gate outputs and three keys, and a
+# DAC8165 for the bass line's pitch CV. The firmware is src/bin/groovebox.rs.
+#
+# tartelette's test synth plays it: kick, snare and hats on the first four
+# gates and a saw following the CV on the fifth:
+#
+#   tartelette groovebox.elf --board groovebox.toml --drums --osc saw:dac.A:expander.bass
+name = "Groovebox"
+
+[buses]
+spi0 = { sck = 18, mosi = 19 }
+i2c1 = { sda = 2, scl = 3 }
+
+[parts.screen]
+kind = "st7789"
+bus = "spi0"
+cs = 9
+dc = 13
+bl = 17
+
+# GP0..4 are the gate outputs (high while on), GP5..7 keys to GND, read
+# through the expander's own pull-ups.
+[parts.expander]
+kind = "mcp23008"
+bus = "i2c1"
+addr = 0x20
+pins = [
+  { pin = 0, as = "led", name = "kick" },
+  { pin = 1, as = "led", name = "snare" },
+  { pin = 2, as = "led", name = "hat" },
+  { pin = 3, as = "led", name = "openhat" },
+  { pin = 4, as = "led", name = "bass" },
+  { pin = 5, as = "switch", name = "track" },
+  { pin = 6, as = "switch", name = "play" },
+  { pin = 7, as = "switch", name = "shift" },
+]
+
+# Bit-banged from GPIOs. Behind it, an op-amp stage maps the DAC's 0..2.5 V
+# to -5..+5 V at the jack (1.25 V is 0 V, a quarter volt per volt), so the
+# bass's 1 V/octave CV can go below C4.
+[parts.dac]
+kind = "dac8165"
+sdi = 4
+cs = 5
+clk = 6
+rst = 7
+vref_mv = 2500
+cv_zero_uv = 1250000
+cv_uv_per_volt = 250000
+
+# The knob on PIO0 (A = GPIO21, B = 22) and its push switch.
+[parts.knob]
+kind = "encoder"
+clk = 21
+dt = 22
+cw = "dt"
+
+[parts.push]
+kind = "button"
+gpio = 20
+
+[panel]
+screen = { at = [0, 0], span = [6, 4], rotate = 270 }
+knob = { at = [6, 0], span = [2, 2], keys = ["Left", "Right"] }
+push = { at = [6, 2], label = "Push", key = "Space" }
+expander = [
+  { at = [0, 4], span = [5, 1], label = "Gates", pins = [0, 1, 2, 3, 4], labels = ["Kick", "Snare", "Hat", "Open", "Bass"] },
+  { at = [5, 4], span = [3, 1], label = "Keys", pins = [5, 6, 7], keys = ["T", "P", "S"], labels = ["Track", "Play", "Shift"] },
+]
+dac = { at = [6, 3], span = [2, 1], label = "CV" }

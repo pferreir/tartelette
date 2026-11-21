@@ -1,0 +1,38 @@
+#:schema ../../../boards/board.schema.json
+# LUMEN: a Pico driving an 8x8 matrix of WS2812 LEDs (one chain, wired in
+# rows), with a rotary encoder and two push buttons. The firmware is
+# src/bin/lumen.rs; the README in this directory says how to run it.
+name = "Lumen"
+
+# 64 LEDs in a chain on GPIO2, driven by PIO0 SM0.
+[parts.matrix]
+kind = "ws2812"
+gpio = 2
+count = 64
+
+# The knob on PIO0 SM1, which reads two consecutive pins (A = GPIO4, B = 5).
+[parts.knob]
+kind = "encoder"
+clk = 4
+dt = 5
+cw = "dt"
+
+# Next scene, and brightness: switches to GND, read with the RP2040's pull-ups.
+[parts.next]
+kind = "button"
+gpio = 6
+
+[parts.bright]
+kind = "button"
+gpio = 7
+
+[parts.led]
+kind = "led"
+gpio = 25
+
+[panel]
+matrix = { at = [0, 0], span = [4, 4], label = "8x8 matrix" }
+knob = { at = [4, 0], span = [2, 2], label = "Tweak", keys = ["Left", "Right"] }
+next = { at = [4, 2], label = "Next", key = "Space" }
+bright = { at = [5, 2], label = "Bright", key = "B" }
+led = { at = [4, 3], label = "Beat", color = "green" }

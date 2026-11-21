@@ -82,6 +82,19 @@ The web build uses WebAssembly tail calls (set in `.cargo/config.toml`) so the
 CPU interpreter can use threaded dispatch, as it does natively. Without the
 flag it still works, about 20% slower.
 
+### The demo site
+
+`scripts/build-site.sh [OUT]` builds the static site GitHub Pages serves
+(`.github/workflows/pages.yml` runs it on each push to `master`): the
+landing page from `site/`, the web app under `emu/`, and the
+`firmware/showcase` demos under `demos/`. `MICROPYTHON=fetch` adds the
+official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
+one. Look at it with `python3 -m http.server -d target/site`.
+
+The page links each demo as `emu/?firmware=../demos/NAME.elf&board=...`.
+Its screenshots (`site/img/`) are checked in: retake them when a demo's
+look changes.
+
 ### MicroPython's test suite
 
 `scripts/micropython-tests.sh` runs MicroPython's own `tests/run-tests.py`
