@@ -89,6 +89,23 @@ timings, the same way the real LEDs do.
 [lumen.rs](../firmware/showcase/src/bin/lumen.rs)
 [lumen.toml](../firmware/showcase/boards/lumen.toml)
 
+### Spectra
+
+![The Spectra demo: an oscilloscope trace above a bar spectrum of a song, on the emulated screen](img/spectra.png)
+
+An oscilloscope and spectrum analyser listening to a song. The song is a WAV
+file played into the RP2040's ADC as a voltage. The ADC samples the line input
+and a gain knob in round robin, DMA moves the samples while the screen is
+drawn, and a fixed-point FFT turns them into 40 bands, or a waterfall.
+
+- Board: custom: line in, gain knob + pico-display-2 shield
+- Uses: ADC round robin+DMA · fixed-point FFT · SPI+DMA · strip rendering
+- Keys: `A` view, `B` freeze, `X` peaks, `Y` colours; drag the knob for gain
+
+[Run](emu/?firmware=../demos/spectra.elf&board=../demos/spectra.toml&shield=pico-display-2)
+[spectra.rs](../firmware/showcase/src/bin/spectra.rs)
+[spectra.toml](../firmware/showcase/boards/spectra.toml)
+
 ### picosh
 
 ![The picosh demo: an ASCII Mandelbrot set in the UART console](img/picosh.png)
@@ -137,7 +154,7 @@ up as a MIDI device. [How to run it](../docs/running.md).
 ```sh
 cargo install --locked --path crates/app/tartelette
 cd firmware/showcase
-cargo run --release --bin groovebox    # stardust, lumen, picosh
+cargo run --release --bin groovebox    # stardust, lumen, spectra, picosh
 cargo run --release --bin stardust -- \
     --headless --log --max-cycles 1000000000
 ```
