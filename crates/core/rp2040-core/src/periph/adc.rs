@@ -205,10 +205,11 @@ impl Adc {
         }
     }
 
+    /// FCS.THRESH. At its reset value of 0 the interrupt and the DMA
+    /// request are always asserted: embassy-rp's one-shot `read` enables
+    /// the interrupt with the FIFO off and relies on it firing at once.
     fn thresh(&self) -> usize {
-        // A threshold of 0 would request on an empty FIFO; the SDK never
-        // sets one, and the hardware's behaviour there is undocumented.
-        ((self.fcs >> FCS_THRESH_SHIFT & 0xF) as usize).max(1)
+        (self.fcs >> FCS_THRESH_SHIFT & 0xF) as usize
     }
 
     fn intr(&self) -> u32 {
@@ -407,6 +408,15 @@ mod tests {
         assert_ne!(a.read(FCS) & FCS_OVER, 0);
         a.write(FCS, FCS_OVER);
         assert_eq!(a.read(FCS) & FCS_OVER, 0);
+    }
+
+    #[test]
+    fn threshold_zero_raises_the_irq_on_an_empty_fifo() {
+        let mut a = Adc::new();
+        a.write(INTE, 1);
+        assert!(a.irq());
+        a.write(FCS, 1 << FCS_THRESH_SHIFT);
+        assert!(!a.irq());
     }
 
     #[test]
