@@ -1,2 +1,4 @@
 [build]
 target = "thumbv6m-none-eabi"
+# The repository's target/, next to the rest of the firmware.
+target-dir = "../../target/firmware/tests"

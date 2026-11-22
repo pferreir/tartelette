@@ -1,5 +1,7 @@
 [build]
 target = "thumbv6m-none-eabi"
+# The repository's target/, where the emulator's tests build it too.
+target-dir = "../../../target/firmware/pico-usb-hal"
 
 # `cargo run` runs the firmware in tartelette, or flashes a real board with
 # TARTELETTE_RUNNER=probe-rs or picotool: see ../run. Add `--usb-bridge

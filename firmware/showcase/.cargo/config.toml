@@ -1,5 +1,7 @@
 [build]
 target = "thumbv6m-none-eabi"
+# The repository's target/, where the emulator's tests build it too.
+target-dir = "../../target/firmware/showcase"
 
 # `cargo run --bin DEMO` runs it in tartelette on its board (see ./run), or
 # flashes a real board with TARTELETTE_RUNNER=probe-rs or picotool.

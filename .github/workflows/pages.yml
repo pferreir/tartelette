@@ -44,7 +44,6 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-            firmware/showcase/target
           key: site-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'firmware/showcase/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: site-${{ runner.os }}-
 

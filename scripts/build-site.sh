@@ -41,7 +41,7 @@ rm -f "$out/emu/.trunk-lock"
 
 echo "build-site: the demo firmware" >&2
 (cd "$root/firmware/showcase" && env -u RUSTFLAGS cargo build --release --bins)
-bins=$root/firmware/showcase/target/thumbv6m-none-eabi/release
+bins=$root/target/firmware/showcase/thumbv6m-none-eabi/release
 for demo in picosh lumen groovebox stardust; do
     # Debug info off, the defmt symbols kept: the log still decodes.
     "$objcopy" --strip-debug "$bins/$demo" "$out/demos/$demo.elf"
