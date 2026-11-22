@@ -97,14 +97,6 @@ impl Session {
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
         sys.set_board(board);
-        #[cfg(target_arch = "wasm32")]
-        for (name, wav) in sys.board.devices_mut::<Wav>() {
-            if let Some(file) = wav.file.as_ref().filter(|_| wav.name.is_none()) {
-                sys.warnings.push(format!(
-                    "{name}: the browser cannot read {file}: load it from the panel"
-                ));
-            }
-        }
         network::connect(&mut sys.board, links)?;
         let usb = UsbSide::new(&links.usb)?;
         let uarts = UartSide::new(&links.uart)?;
@@ -289,13 +281,18 @@ impl Session {
             .map(|c| c.blocks_written)
     }
 
-    /// Load a WAV file into the player `name`; it stops at the file's start.
-    /// False if there is no such player.
+    /// Load a WAV file into the player `name`: it waits at the file's start,
+    /// or plays it if the player has `autoplay`. False if there is no such
+    /// player.
     pub fn load_wav(&mut self, name: &str, file: &Source) -> Result<bool, String> {
-        match self.sys.board.device_mut::<Wav>(name) {
-            Some(wav) => wav.load(&file.name, &file.bytes).map(|()| true),
-            None => Ok(false),
+        let Some(wav) = self.sys.board.device_mut::<Wav>(name) else {
+            return Ok(false);
+        };
+        wav.load(&file.name, &file.bytes)?;
+        if wav.autoplay {
+            self.input(name, "play", 0);
         }
+        Ok(true)
     }
 
     /// Load a disk image into the card `name`. It stops writing to any file
