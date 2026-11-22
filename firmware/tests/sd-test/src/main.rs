@@ -10,8 +10,10 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{addr_of_mut, read_volatile, write_volatile},
+};
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -107,7 +109,11 @@ fn crc16(data: &[u8]) -> u16 {
     for &byte in data {
         crc ^= (byte as u16) << 8;
         for _ in 0..8 {
-            crc = if crc & 0x8000 != 0 { crc << 1 ^ 0x1021 } else { crc << 1 };
+            crc = if crc & 0x8000 != 0 {
+                crc << 1 ^ 0x1021
+            } else {
+                crc << 1
+            };
         }
     }
     crc
@@ -115,7 +121,14 @@ fn crc16(data: &[u8]) -> u16 {
 
 /// Send a command and return R1.
 fn command(c: u8, arg: u32) -> u8 {
-    let mut frame = [0x40 | c, (arg >> 24) as u8, (arg >> 16) as u8, (arg >> 8) as u8, arg as u8, 0];
+    let mut frame = [
+        0x40 | c,
+        (arg >> 24) as u8,
+        (arg >> 16) as u8,
+        (arg >> 8) as u8,
+        arg as u8,
+        0,
+    ];
     frame[5] = crc7(&frame[..5]) << 1 | 1;
     for b in frame {
         xfer(b);
@@ -147,8 +160,20 @@ const DMA_INCR_WRITE: u32 = 1 << 5;
 fn dma_read_512(buf: *mut u8) {
     drain_rx();
     wr(SPI_DMACR, 3);
-    dma_start(0, SPI_DR, buf as u32, 512, DMA_EN | DMA_INCR_WRITE | TREQ_SPI1_RX << 15);
-    dma_start(1, FILL.as_ptr() as u32, SPI_DR, 512, DMA_EN | DMA_INCR_READ | TREQ_SPI1_TX << 15);
+    dma_start(
+        0,
+        SPI_DR,
+        buf as u32,
+        512,
+        DMA_EN | DMA_INCR_WRITE | TREQ_SPI1_RX << 15,
+    );
+    dma_start(
+        1,
+        FILL.as_ptr() as u32,
+        SPI_DR,
+        512,
+        DMA_EN | DMA_INCR_READ | TREQ_SPI1_TX << 15,
+    );
     dma_wait(0);
     dma_wait(1);
     wr(SPI_DMACR, 0);
@@ -159,7 +184,13 @@ fn dma_read_512(buf: *mut u8) {
 /// overrun, so the next `xfer` reads its own reply.
 fn dma_write_512(buf: *const u8) {
     wr(SPI_DMACR, 2);
-    dma_start(0, buf as u32, SPI_DR, 512, DMA_EN | DMA_INCR_READ | TREQ_SPI1_TX << 15);
+    dma_start(
+        0,
+        buf as u32,
+        SPI_DR,
+        512,
+        DMA_EN | DMA_INCR_READ | TREQ_SPI1_TX << 15,
+    );
     dma_wait(0);
     while rd(SPI_SR) & SR_BSY != 0 {}
     drain_rx();
@@ -189,7 +220,9 @@ fn read_block(n: u32, buf: *mut u8) -> bool {
 extern "C" fn default_handler() {
     puts(b"unexpected exception\n");
     unsafe { asm!("bkpt #2") };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -278,10 +311,14 @@ pub extern "C" fn reset() -> ! {
 
     puts(b"sd done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

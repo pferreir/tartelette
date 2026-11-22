@@ -13,8 +13,10 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{addr_of_mut, read_volatile, write_volatile},
+};
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -87,11 +89,17 @@ const TREQ_PIO1_TX1: u32 = 9;
 const SPI_TX: [u16; 7] = [0xE836, 0x6841, 0xA002, 0x7141, 0x0042, 0xA002, 0xB142];
 /// ws2812.pio relocated to offset 7 (its two jumps are absolute).
 const WS2812_OFFSET: u16 = 7;
-const WS2812: [u16; 4] = [0x6221, 0x1123 + WS2812_OFFSET, 0x1400 + WS2812_OFFSET, 0xA442];
+const WS2812: [u16; 4] = [
+    0x6221,
+    0x1123 + WS2812_OFFSET,
+    0x1400 + WS2812_OFFSET,
+    0xA442,
+];
 /// encoder.pio: a 16-entry jump table, then the loop at 16..27.
 const ENCODER: [u16; 28] = [
-    0x0010, 0x0015, 0x0017, 0x0010, 0x0017, 0x0010, 0x0010, 0x0015, 0x0015, 0x0010, 0x0010, 0x0017, 0x0010, 0x0017, 0x0015, 0x0010,
-    0xA0C3, 0x4042, 0xA040, 0x4042, 0xA0A6, 0x005A, 0x001A, 0xA029, 0x0059, 0xA029, 0xA0C1, 0x8000,
+    0x0010, 0x0015, 0x0017, 0x0010, 0x0017, 0x0010, 0x0010, 0x0015, 0x0015, 0x0010, 0x0010, 0x0017,
+    0x0010, 0x0017, 0x0015, 0x0010, 0xA0C3, 0x4042, 0xA040, 0x4042, 0xA0A6, 0x005A, 0x001A, 0xA029,
+    0x0059, 0xA029, 0xA0C1, 0x8000,
 ];
 
 static mut ENC_COUNT: i32 = 0;
@@ -144,7 +152,10 @@ fn dma_start(channel: u32, read: u32, write: u32, count: u32, treq: u32) {
     wr(base, read);
     wr(base + 0x04, write);
     wr(base + 0x08, count);
-    wr(base + 0x0C, DMA_EN | DMA_WORD | DMA_INCR_READ | treq << 15 | channel << 11);
+    wr(
+        base + 0x0C,
+        DMA_EN | DMA_WORD | DMA_INCR_READ | treq << 15 | channel << 11,
+    );
 }
 fn dma_wait(channel: u32) {
     while rd(DMA + channel * 0x40 + 0x0C) & BUSY != 0 {}
@@ -154,7 +165,9 @@ fn dma_wait(channel: u32) {
 extern "C" fn default_handler() {
     puts(b"unexpected exception\n");
     unsafe { asm!("bkpt #2") };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// PIO0 IRQ 0: the encoder pushed a counter value. Drain the RX FIFO.
@@ -164,7 +177,10 @@ extern "C" fn pio0_irq0() {
         let v = rd(PIO0 + RXF0) as i32;
         unsafe {
             write_volatile(&raw mut ENC_COUNT, v);
-            write_volatile(&raw mut ENC_EVENTS, read_volatile(&raw const ENC_EVENTS) + 1);
+            write_volatile(
+                &raw mut ENC_EVENTS,
+                read_volatile(&raw const ENC_EVENTS) + 1,
+            );
         }
     }
 }
@@ -203,7 +219,10 @@ pub extern "C" fn reset() -> ! {
     load(PIO1, 0, &SPI_TX);
     wr(sm(PIO1, 0, CLKDIV), 1 << 16 | 64 << 8); // 1.25: ~100 MHz PIO clock
     wr(sm(PIO1, 0, EXECCTRL), 6 << 12); // wrap 0..6
-    wr(sm(PIO1, 0, SHIFTCTRL), SHIFT_AUTOPULL | 24 << 25 | SHIFT_FJOIN_TX); // shift left, 24 bits
+    wr(
+        sm(PIO1, 0, SHIFTCTRL),
+        SHIFT_AUTOPULL | 24 << 25 | SHIFT_FJOIN_TX,
+    ); // shift left, 24 bits
     wr(sm(PIO1, 0, PINCTRL), 3 << 26 | 4 << 5); // set pins 4..6, to make them outputs
     exec(PIO1, 0, 0xE087); // set pindirs, 7
     wr(sm(PIO1, 0, PINCTRL), 1 << 20 | 4 | 2 << 29 | 5 << 10); // out pin 4; side-set pins 5, 6
@@ -212,9 +231,19 @@ pub extern "C" fn reset() -> ! {
     let regs: [u32; 4] = [0x10_0000, 0x12_0000, 0x14_0000, 0x16_0000];
     let volts: [u32; 4] = [0x8000, 0x4000, 0x1000, 0xFFFC];
     for i in 0..4 {
-        unsafe { (addr_of_mut!(DAC_FRAMES) as *mut u32).add(i).write_volatile((regs[i] | (volts[i] & 0xFFFC)) << 8) };
+        unsafe {
+            (addr_of_mut!(DAC_FRAMES) as *mut u32)
+                .add(i)
+                .write_volatile((regs[i] | (volts[i] & 0xFFFC)) << 8)
+        };
     }
-    dma_start(0, addr_of_mut!(DAC_FRAMES) as u32, PIO1 + TXF0, 4, TREQ_PIO1_TX0);
+    dma_start(
+        0,
+        addr_of_mut!(DAC_FRAMES) as u32,
+        PIO1 + TXF0,
+        4,
+        TREQ_PIO1_TX0,
+    );
     dma_wait(0);
     delay_us(20);
     puts(b"dac sent\n");
@@ -222,8 +251,14 @@ pub extern "C" fn reset() -> ! {
     // ---- LEDs: ws2812 on PIO1 SM1 ----
     load(PIO1, WS2812_OFFSET as usize, &WS2812);
     wr(sm(PIO1, 1, CLKDIV), 15 << 16 | 160 << 8); // 125 MHz / 15.625 = 8 MHz
-    wr(sm(PIO1, 1, EXECCTRL), (WS2812_OFFSET as u32) << 7 | (WS2812_OFFSET as u32 + 3) << 12);
-    wr(sm(PIO1, 1, SHIFTCTRL), SHIFT_AUTOPULL | 24 << 25 | SHIFT_FJOIN_TX);
+    wr(
+        sm(PIO1, 1, EXECCTRL),
+        (WS2812_OFFSET as u32) << 7 | (WS2812_OFFSET as u32 + 3) << 12,
+    );
+    wr(
+        sm(PIO1, 1, SHIFTCTRL),
+        SHIFT_AUTOPULL | 24 << 25 | SHIFT_FJOIN_TX,
+    );
     wr(sm(PIO1, 1, PINCTRL), 1 << 26 | 14 << 5);
     exec(PIO1, 1, 0xE081); // set pindirs, 1
     wr(sm(PIO1, 1, PINCTRL), 1 << 20 | 14 | 1 << 29 | 14 << 10); // out pin 14, side-set pin 14
@@ -232,9 +267,19 @@ pub extern "C" fn reset() -> ! {
     for i in 0..8u32 {
         let (r, g, b) = (i * 16, 255 - i * 16, i);
         let grb = g << 16 | r << 8 | b;
-        unsafe { (addr_of_mut!(PIXELS) as *mut u32).add(i as usize).write_volatile(grb << 8) };
+        unsafe {
+            (addr_of_mut!(PIXELS) as *mut u32)
+                .add(i as usize)
+                .write_volatile(grb << 8)
+        };
     }
-    dma_start(1, addr_of_mut!(PIXELS) as u32, PIO1 + TXF0 + 4, 8, TREQ_PIO1_TX1);
+    dma_start(
+        1,
+        addr_of_mut!(PIXELS) as u32,
+        PIO1 + TXF0 + 4,
+        8,
+        TREQ_PIO1_TX1,
+    );
     dma_wait(1);
     delay_us(150); // the last bits go out, then the reset gap latches the frame
     puts(b"leds sent\n");
@@ -263,10 +308,14 @@ pub extern "C" fn reset() -> ! {
 
     puts(b"pio done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }
