@@ -1,5 +1,5 @@
-//! Bare-metal test firmware that sets up PIO the way the BTL-01's embassy
-//! drivers do, with the same three programs:
+//! Bare-metal test firmware that sets up PIO the way a real firmware's
+//! Embassy drivers do, with its three programs:
 //!
 //! * PIO1 SM0: `spi_tx` (bit-banged SPI to the DAC8165 on GPIO4 data, 5 CS,
 //!   6 CLK), 24-bit autopull, fed by DMA with a frame per channel;

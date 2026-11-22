@@ -1,7 +1,7 @@
 //! Bare-metal test firmware for an SD card on SPI1 (SCK 10, TX 11, RX 12,
 //! CS GPIO8): the SPI-mode initialisation with CRC checking, then 512-byte
 //! blocks moved by DMA (a full-duplex RX/TX pair for reads, TX for writes),
-//! with CRC16 verified in both directions, as the BTL-01's driver does.
+//! with CRC16 verified in both directions.
 //!
 //! Block 0 of the card holds a known pattern (the host puts it there); the
 //! firmware reads it, writes a transformed copy to block 5 and reads that back.
