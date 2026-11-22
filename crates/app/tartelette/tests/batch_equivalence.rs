@@ -110,6 +110,13 @@ fn dma_and_spi_firmware_matches_unbatched() {
     compare("spi-dma-test", 1_000_000, SPACING);
 }
 
+/// Conversions finishing on their own, an ADC interrupt waking WFI and
+/// DMA paced by the ADC's request.
+#[test]
+fn adc_firmware_matches_unbatched() {
+    compare("adc-test", 200_000, SPACING);
+}
+
 #[test]
 fn uart_firmware_matches_unbatched_with_large_chunks() {
     compare("uart-hello", 2_000_000, &[250_000]);

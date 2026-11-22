@@ -3,7 +3,7 @@
 # the emulator's workspace.
 [workspace]
 resolver = "3"
-members = ["testrt", "batch-timer", "button-led", "cpu-bench", "i2c-test", "io-test", "irq-timer", "multicore-test", "pio-test", "sd-test", "spi-dma-test", "uart-echo", "uart-hello"]
+members = ["testrt", "adc-test", "batch-timer", "button-led", "cpu-bench", "i2c-test", "io-test", "irq-timer", "multicore-test", "pio-test", "sd-test", "spi-dma-test", "uart-echo", "uart-hello"]
 
 [workspace.package]
 version = "0.1.0"

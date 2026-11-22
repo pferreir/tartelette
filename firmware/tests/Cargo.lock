@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "adc-test"
+version = "0.1.0"
+dependencies = [
+ "testrt",
+]
+
+[[package]]
 name = "batch-timer"
 version = "0.1.0"
 dependencies = [
