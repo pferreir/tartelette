@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Cargo runner for the showcase demos: picks each demo's board from the ELF's
 # name, then hands over to ../examples/run (which runs it in tartelette, or
-# on a real board with TARTELETTE_RUNNER=probe-rs or picotool).
+# on a real board with TARTELETTE_RUNNER=probe-rs or picotool). A demo missing
+# from the list below runs on a plain Pico, with a warning.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 elf=$1
@@ -11,6 +12,9 @@ picosh)    board=(pico) ;;
 lumen)     board=("$here/boards/lumen.toml") ;;
 groovebox) board=("$here/boards/groovebox.toml" --drums --osc saw:dac.A:expander.bass) ;;
 stardust)  board=(pico --shield pico-display-2) ;;
-*)         board=(pico) ;;
+*)
+    echo "showcase/run: no board for $(basename "$elf") in $0, using pico" >&2
+    board=(pico)
+    ;;
 esac
 exec "$here/../examples/run" "${board[@]}" -- "$elf" "$@"
