@@ -4,8 +4,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{read_volatile, write_volatile},
+};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -24,43 +28,17 @@ global_asm!(
     ".word timer_irq0", // IRQ 0
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const UART0: u32 = 0x4003_4000;
-const TIMER: u32 = 0x4005_4000;
 const SYST_CSR: u32 = 0xE000_E010;
 const SYST_RVR: u32 = 0xE000_E014;
 const SYST_CVR: u32 = 0xE000_E018;
-const NVIC_ISER: u32 = 0xE000_E100;
 const ICSR: u32 = 0xE000_ED04;
 
 static mut ALARM_FIRED: u32 = 0;
 static mut TICKS: u32 = 0;
 static mut PENDSV_RAN: u32 = 0;
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
 fn wfi() {
     unsafe { asm!("wfi") }
-}
-fn get(p: *const u32) -> u32 {
-    unsafe { read_volatile(p) }
 }
 fn bump(p: *mut u32) -> u32 {
     unsafe {
@@ -68,13 +46,6 @@ fn bump(p: *mut u32) -> u32 {
         write_volatile(p, v);
         v
     }
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {}
 }
 
 #[unsafe(no_mangle)]
@@ -113,7 +84,11 @@ pub extern "C" fn reset() -> ! {
         wfi();
     }
     let dt = rd(TIMER + 0x28).wrapping_sub(t0);
-    puts(if (1000..1100).contains(&dt) { b"A ok\n" } else { b"A bad\n" });
+    puts(if (1000..1100).contains(&dt) {
+        b"A ok\n"
+    } else {
+        b"A bad\n"
+    });
 
     // SysTick on the CPU clock: 3 interrupts, 100 us apart.
     wr(SYST_RVR, 12_499);
@@ -136,10 +111,7 @@ pub extern "C" fn reset() -> ! {
 
     puts(b"irq done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

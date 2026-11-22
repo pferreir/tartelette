@@ -1,13 +1,8 @@
 [package]
 name = "button-led"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+build = "../build.rs"
 
-# Standalone (not part of the emulator workspace): bare-metal test firmware.
-[workspace]
-
-[profile.dev]
-panic = "abort"
-[profile.release]
-panic = "abort"
-opt-level = "s"
+[dependencies]
+testrt.workspace = true

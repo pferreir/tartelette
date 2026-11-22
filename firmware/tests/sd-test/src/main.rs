@@ -12,8 +12,10 @@
 
 use core::{
     arch::{asm, global_asm},
-    ptr::{addr_of_mut, read_volatile, write_volatile},
+    ptr::addr_of_mut,
 };
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -26,16 +28,7 @@ global_asm!(
     ".endr",
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
 const SPI1: u32 = 0x4004_0000;
-const UART0: u32 = 0x4003_4000;
-const DMA: u32 = 0x5000_0000;
-const SIO: u32 = 0xD000_0000;
 
 const SPI_CR0: u32 = SPI1;
 const SPI_CR1: u32 = SPI1 + 0x04;
@@ -56,24 +49,6 @@ static mut BLOCK: [u8; 512] = [0; 512];
 static mut BACK: [u8; 512] = [0; 512];
 static FILL: [u8; 512] = [0xFF; 512];
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
-fn check(ok: bool, pass: &[u8], fail: &[u8]) {
-    puts(if ok { pass } else { fail });
-}
 fn cs(high: bool) {
     wr(if high { SIO + 0x14 } else { SIO + 0x18 }, 1 << CS);
 }
@@ -217,15 +192,6 @@ fn read_block(n: u32, buf: *mut u8) -> bool {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn reset() -> ! {
     // DMA, IO_BANK0, SPI1 and UART0 out of reset (PADS_BANK0 keeps its defaults).
     let release = 1 << 2 | 1 << 5 | 1 << 8 | 1 << 17 | 1 << 22;
@@ -311,13 +277,6 @@ pub extern "C" fn reset() -> ! {
 
     puts(b"sd done\n");
     unsafe { asm!("bkpt #1") };
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
     }

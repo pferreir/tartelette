@@ -5,6 +5,8 @@ MEMORY
 }
 
 ENTRY(reset)
+/* testrt's boot2, which nothing references. */
+EXTERN(BOOT2)
 
 SECTIONS
 {

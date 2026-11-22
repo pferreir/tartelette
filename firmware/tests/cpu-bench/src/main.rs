@@ -11,8 +11,10 @@
 use core::{
     arch::{asm, global_asm},
     hint::black_box,
-    ptr::{read_volatile, write_volatile},
+    ptr::{addr_of_mut, read_volatile, write_volatile},
 };
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -20,12 +22,6 @@ global_asm!(
     ".word reset",
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const UART0: u32 = 0x4003_4000;
 /// Rounds of the whole mix: about 300 M cycles (2.4 s emulated).
 const ROUNDS: u32 = 500;
 
@@ -40,24 +36,6 @@ unsafe extern "C" {
 static mut BUF: [u8; 2048] = [0; 2048];
 static mut WORDS: [u32; 256] = [0; 256];
 static mut COPY: [u32; 512] = [0; 512];
-
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {} // TXFF
-    wr(UART0, c as u32);
-}
-
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
 
 fn put_hex(v: u32) {
     for i in (0..8).rev() {
@@ -81,7 +59,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { crc >> 1 ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                crc >> 1 ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -99,6 +81,8 @@ fn insertion_sort(v: &mut [u32]) {
     }
 }
 
+// Indexed loops, as C would write them.
+#[allow(clippy::needless_range_loop)]
 fn matmul(a: &[[i32; 12]; 12], b: &[[i32; 12]; 12]) -> i32 {
     let mut sum = 0i32;
     for i in 0..12 {
@@ -189,7 +173,13 @@ pub extern "C" fn reset() -> ! {
     wr(UART0 + 0x2C, 0x70); // 8N1, FIFOs on
     wr(UART0 + 0x30, 0x301); // UARTEN | TXE
 
-    let (buf, words, copy) = unsafe { (&mut *&raw mut BUF, &mut *&raw mut WORDS, &mut *&raw mut COPY) };
+    let (buf, words, copy) = unsafe {
+        (
+            &mut *addr_of_mut!(BUF),
+            &mut *addr_of_mut!(WORDS),
+            &mut *addr_of_mut!(COPY),
+        )
+    };
     let program = [
         Op::Push(0),
         Op::Push(400),
@@ -248,10 +238,7 @@ pub extern "C" fn reset() -> ! {
     putc(b'\n');
     while rd(UART0 + 0x18) & (1 << 3) != 0 {} // BUSY: let the FIFO drain
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

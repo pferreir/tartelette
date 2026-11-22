@@ -14,8 +14,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::addr_of_mut,
+};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -39,19 +43,11 @@ global_asm!(
     ".word sio_irq_proc0", // IRQ 15
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
 unsafe extern "C" {
     static vectors: u32;
 }
 
-const RESETS: u32 = 0x4000_C000;
 const PSM: u32 = 0x4001_0000;
-const UART0: u32 = 0x4003_4000;
-const SIO: u32 = 0xD000_0000;
-const NVIC_ISER: u32 = 0xE000_E100;
 
 const SIO_CPUID: u32 = SIO;
 const FIFO_ST: u32 = SIO + 0x50;
@@ -81,30 +77,6 @@ static mut DIV1_DONE: u32 = 0;
 static mut IRQ_VALUE: u32 = 0;
 static mut CORE1_STACK: [u32; 256] = [0; 256];
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn get(p: *const u32) -> u32 {
-    unsafe { read_volatile(p) }
-}
-fn put(p: *mut u32, v: u32) {
-    unsafe { write_volatile(p, v) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
-fn check(ok: bool, pass: &[u8], fail: &[u8]) {
-    puts(if ok { pass } else { fail });
-}
 fn sev() {
     unsafe { asm!("sev") };
 }
@@ -170,13 +142,6 @@ fn divider_rounds(seed: u32) -> u32 {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {}
-}
-
-#[unsafe(no_mangle)]
 extern "C" fn sio_irq_proc0() {
     // Reading the word empties the FIFO, which drops the level interrupt.
     put(&raw mut IRQ_VALUE, rd(FIFO_RD));
@@ -204,7 +169,14 @@ fn launch_core1() {
     wr(PSM + 0x4, 0);
 
     let stack_top = addr_of_mut!(CORE1_STACK) as u32 + 4 * 256;
-    let seq = [0, 0, 1, &raw const vectors as u32, stack_top, core1_main as *const () as usize as u32 | 1];
+    let seq = [
+        0,
+        0,
+        1,
+        &raw const vectors as u32,
+        stack_top,
+        core1_main as *const () as usize as u32 | 1,
+    ];
     let mut i = 0;
     while i < seq.len() {
         let cmd = seq[i];
@@ -235,11 +207,19 @@ pub extern "C" fn reset() -> ! {
     // Both cores are running now: count together, then divide together.
     locked_increments();
     while get(&raw const LOCK1_DONE) == 0 {}
-    check(get(&raw const COUNTER) == 2 * INCREMENTS, b"lock ok\n", b"lock bad\n");
+    check(
+        get(&raw const COUNTER) == 2 * INCREMENTS,
+        b"lock ok\n",
+        b"lock bad\n",
+    );
 
     let mine = divider_rounds(3);
     while get(&raw const DIV1_DONE) == 0 {}
-    check(mine == 0 && get(&raw const DIV1_ERRORS) == 0, b"div ok\n", b"div bad\n");
+    check(
+        mine == 0 && get(&raw const DIV1_ERRORS) == 0,
+        b"div ok\n",
+        b"div bad\n",
+    );
 
     // Echo service on core 1.
     let mut echoed_ok = true;
@@ -257,14 +237,15 @@ pub extern "C" fn reset() -> ! {
         unsafe { asm!("wfi") };
         spins += 1;
     }
-    check(get(&raw const IRQ_VALUE) == IRQ_WORD, b"fifo irq ok\n", b"fifo irq bad\n");
+    check(
+        get(&raw const IRQ_VALUE) == IRQ_WORD,
+        b"fifo irq ok\n",
+        b"fifo irq bad\n",
+    );
 
     puts(b"multicore done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

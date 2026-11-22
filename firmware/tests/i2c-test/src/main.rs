@@ -10,8 +10,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{read_volatile, write_volatile},
+};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -37,16 +41,7 @@ global_asm!(
     ".word i2c1_irq", // IRQ 24
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
-const PADS_BANK0: u32 = 0x4001_C000;
 const I2C1: u32 = 0x4004_8000;
-const UART0: u32 = 0x4003_4000;
-const NVIC_ISER: u32 = 0xE000_E100;
 
 // I2C registers
 const IC_CON: u32 = I2C1;
@@ -81,27 +76,9 @@ const EDGE_LOW: u32 = 1 << 2; // per-pin event bit within a 4-bit group
 static mut RX_IRQS: u32 = 0;
 static mut INT_EDGES: u32 = 0;
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
 fn hex(b: u8) {
     putc(b"0123456789ABCDEF"[(b >> 4) as usize]);
     putc(b"0123456789ABCDEF"[(b & 15) as usize]);
-}
-fn check(ok: bool, pass: &[u8], fail: &[u8]) {
-    puts(if ok { pass } else { fail });
 }
 
 fn cmd(v: u32) {
@@ -126,13 +103,6 @@ fn read_reg(reg: u32) -> u8 {
     cmd(CMD_READ | CMD_RESTART | CMD_STOP);
     wait_stop();
     rd(IC_DATA_CMD) as u8
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {}
 }
 
 #[unsafe(no_mangle)]
@@ -174,7 +144,11 @@ pub extern "C" fn reset() -> ! {
     write_reg(MCP_OLAT, 0xA0);
     write_reg(MCP_GPPU, 0x0F);
     wait_stop();
-    check(rd(IC_RAW_INTR_STAT) & INT_TX_ABRT == 0, b"write ok\n", b"write bad\n");
+    check(
+        rd(IC_RAW_INTR_STAT) & INT_TX_ABRT == 0,
+        b"write ok\n",
+        b"write bad\n",
+    );
 
     puts(b"read ");
     hex(read_reg(MCP_OLAT));
@@ -208,7 +182,11 @@ pub extern "C" fn reset() -> ! {
     while rd(IC_RAW_INTR_STAT) & INT_TX_ABRT == 0 {}
     let src = rd(IC_TX_ABRT_SOURCE);
     rd(IC_CLR_TX_ABRT);
-    check(src & 1 == 1 && rd(IC_RAW_INTR_STAT) & INT_TX_ABRT == 0, b"nack ok\n", b"nack bad\n");
+    check(
+        src & 1 == 1 && rd(IC_RAW_INTR_STAT) & INT_TX_ABRT == 0,
+        b"nack ok\n",
+        b"nack bad\n",
+    );
     wait_stop();
     set_target(0x20);
 
@@ -230,10 +208,7 @@ pub extern "C" fn reset() -> ! {
     putc(b'\n');
     puts(b"i2c done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

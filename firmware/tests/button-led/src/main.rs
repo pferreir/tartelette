@@ -5,7 +5,8 @@
 #![no_main]
 
 use core::arch::{asm, global_asm};
-use core::ptr::{read_volatile, write_volatile};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -13,25 +14,8 @@ global_asm!(
     ".word reset",
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
-const PADS_BANK0: u32 = 0x4001_C000;
-const UART0: u32 = 0x4003_4000;
-const SIO: u32 = 0xD000_0000;
-
 const BUTTON: u32 = 2;
 const LED: u32 = 25;
-
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn reset() -> ! {
@@ -55,15 +39,9 @@ pub extern "C" fn reset() -> ! {
         }
         was_pressed = pressed;
     }
-    for &c in b"done\n" {
-        while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-        wr(UART0, c as u32);
-    }
+    puts(b"done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

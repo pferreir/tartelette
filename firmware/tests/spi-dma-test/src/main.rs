@@ -13,8 +13,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{addr_of_mut, read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{addr_of_mut, read_volatile, write_volatile},
+};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -36,17 +40,7 @@ global_asm!(
     ".word dma_irq0", // IRQ 11
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
 const SPI0: u32 = 0x4003_C000;
-const UART0: u32 = 0x4003_4000;
-const DMA: u32 = 0x5000_0000;
-const SIO: u32 = 0xD000_0000;
-const NVIC_ISER: u32 = 0xE000_E100;
 
 const SIO_OUT_SET: u32 = SIO + 0x14;
 const SIO_OUT_CLR: u32 = SIO + 0x18;
@@ -80,25 +74,6 @@ static mut SRC: [u32; 16] = [0; 16];
 static mut DST: [u32; 16] = [0; 16];
 static mut MID: [u32; 4] = [0; 4];
 static mut OUT: [u32; 4] = [0; 4];
-
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
-fn check(ok: bool, pass: &[u8], fail: &[u8]) {
-    puts(if ok { pass } else { fail });
-}
 
 fn pin_set(pin: u32, high: bool) {
     wr(if high { SIO_OUT_SET } else { SIO_OUT_CLR }, 1 << pin);
@@ -154,13 +129,6 @@ fn dma_start(channel: u32, read: u32, write: u32, count: u32, ctrl: u32) {
 }
 fn dma_wait(channel: u32) {
     while rd(DMA + channel * 0x40 + 0x0C) & BUSY != 0 {}
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {}
 }
 
 #[unsafe(no_mangle)]
@@ -244,7 +212,13 @@ pub extern "C" fn reset() -> ! {
     wr(SPI_DMACR, 2); // TXDMAE
     wr(DMA + 0x404, 1); // INTE0: channel 0
     wr(NVIC_ISER, 1 << 11);
-    dma_start(0, addr_of_mut!(FILL) as u32, SPI_DR, 400, EN | INCR_READ | TREQ_SPI0_TX << 15);
+    dma_start(
+        0,
+        addr_of_mut!(FILL) as u32,
+        SPI_DR,
+        400,
+        EN | INCR_READ | TREQ_SPI0_TX << 15,
+    );
     let mut spins = 0;
     while unsafe { read_volatile(&raw const DMA_IRQS) } == 0 && spins < 1000 {
         unsafe { asm!("wfi") };
@@ -254,7 +228,9 @@ pub extern "C" fn reset() -> ! {
     pin_set(CS, true);
     spi_drain();
     check(
-        unsafe { read_volatile(&raw const DMA_IRQS) } == 1 && rd(DMA + 0x400) == 0 && rd(DMA + 0x0C) & BUSY == 0,
+        unsafe { read_volatile(&raw const DMA_IRQS) } == 1
+            && rd(DMA + 0x400) == 0
+            && rd(DMA + 0x0C) & BUSY == 0,
         b"dma draw ok\n",
         b"dma draw bad\n",
     );
@@ -269,14 +245,30 @@ pub extern "C" fn reset() -> ! {
     pin_set(DC, true);
     spi_drain();
     wr(SPI_DMACR, 3);
-    dma_start(1, SPI_DR, addr_of_mut!(RX) as u32, 4, EN | INCR_WRITE | TREQ_SPI0_RX << 15 | 1 << 11);
-    dma_start(2, addr_of_mut!(ZEROS) as u32, SPI_DR, 4, EN | INCR_READ | TREQ_SPI0_TX << 15 | 2 << 11);
+    dma_start(
+        1,
+        SPI_DR,
+        addr_of_mut!(RX) as u32,
+        4,
+        EN | INCR_WRITE | TREQ_SPI0_RX << 15 | 1 << 11,
+    );
+    dma_start(
+        2,
+        addr_of_mut!(ZEROS) as u32,
+        SPI_DR,
+        4,
+        EN | INCR_READ | TREQ_SPI0_TX << 15 | 2 << 11,
+    );
     dma_wait(1);
     spi_wait_idle();
     pin_set(CS, true);
     wr(SPI_DMACR, 0);
     let rx = unsafe { read_volatile(&raw const RX) };
-    check(rx == [0x85, 0x85, 0x52, 0x00], b"dma rx ok\n", b"dma rx bad\n");
+    check(
+        rx == [0x85, 0x85, 0x52, 0x00],
+        b"dma rx ok\n",
+        b"dma rx bad\n",
+    );
 
     // Memory to memory, word sized, always ready.
     unsafe {
@@ -293,8 +285,17 @@ pub extern "C" fn reset() -> ! {
         EN | 2 << 2 | INCR_READ | INCR_WRITE | TREQ_PERMANENT << 15 | 3 << 11,
     );
     dma_wait(3);
-    let same = unsafe { (0..16).all(|i| read_volatile((addr_of_mut!(SRC) as *const u32).add(i)) == read_volatile((addr_of_mut!(DST) as *const u32).add(i))) };
-    check(same && rd(DMA + 3 * 0x40) == addr_of_mut!(SRC) as u32 + 64, b"memcpy ok\n", b"memcpy bad\n");
+    let same = unsafe {
+        (0..16).all(|i| {
+            read_volatile((addr_of_mut!(SRC) as *const u32).add(i))
+                == read_volatile((addr_of_mut!(DST) as *const u32).add(i))
+        })
+    };
+    check(
+        same && rd(DMA + 3 * 0x40) == addr_of_mut!(SRC) as u32 + 64,
+        b"memcpy ok\n",
+        b"memcpy bad\n",
+    );
 
     // Chain: channel 4 copies SRC[0..4] -> MID and chains to channel 5,
     // which copies MID -> OUT. Only channel 4 is triggered.
@@ -302,7 +303,10 @@ pub extern "C" fn reset() -> ! {
     wr(base5, addr_of_mut!(MID) as u32);
     wr(base5 + 0x04, addr_of_mut!(OUT) as u32);
     wr(base5 + 0x08, 4);
-    wr(base5 + 0x10, EN | 2 << 2 | INCR_READ | INCR_WRITE | TREQ_PERMANENT << 15 | 5 << 11); // CTRL, no trigger
+    wr(
+        base5 + 0x10,
+        EN | 2 << 2 | INCR_READ | INCR_WRITE | TREQ_PERMANENT << 15 | 5 << 11,
+    ); // CTRL, no trigger
     dma_start(
         4,
         addr_of_mut!(SRC) as u32,
@@ -312,15 +316,17 @@ pub extern "C" fn reset() -> ! {
     );
     dma_wait(4);
     dma_wait(5);
-    let chained = unsafe { (0..4).all(|i| read_volatile((addr_of_mut!(OUT) as *const u32).add(i)) == 0x1000_0000 + i as u32 * 0x0101) };
+    let chained = unsafe {
+        (0..4).all(|i| {
+            read_volatile((addr_of_mut!(OUT) as *const u32).add(i))
+                == 0x1000_0000 + i as u32 * 0x0101
+        })
+    };
     check(chained, b"chain ok\n", b"chain bad\n");
 
     puts(b"spi done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

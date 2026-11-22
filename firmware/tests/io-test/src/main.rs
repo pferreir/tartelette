@@ -5,8 +5,12 @@
 #![no_std]
 #![no_main]
 
-use core::arch::{asm, global_asm};
-use core::ptr::{read_volatile, write_volatile};
+use core::{
+    arch::{asm, global_asm},
+    ptr::{read_volatile, write_volatile},
+};
+
+use testrt::*;
 
 global_asm!(
     ".section .vectors, \"a\"",
@@ -28,17 +32,6 @@ global_asm!(
     ".word io_irq_bank0", // IRQ 13
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
-const PADS_BANK0: u32 = 0x4001_C000;
-const UART0: u32 = 0x4003_4000;
-const SIO: u32 = 0xD000_0000;
-const NVIC_ISER: u32 = 0xE000_E100;
-
 const SIO_GPIO_IN: u32 = SIO + 0x04;
 const SIO_GPIO_OUT_SET: u32 = SIO + 0x14;
 const SIO_GPIO_OUT_CLR: u32 = SIO + 0x18;
@@ -58,24 +51,6 @@ const FLOAT_PIN: u32 = 15; // input only; tested with pull-up / pull-down
 static mut EDGE_EVENTS: u32 = 0;
 static mut EDGE_STATUS: u32 = 0;
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
-fn check(ok: bool, pass: &[u8], fail: &[u8]) {
-    puts(if ok { pass } else { fail });
-}
 fn pin_in(pin: u32) -> bool {
     rd(SIO_GPIO_IN) >> pin & 1 != 0
 }
@@ -86,13 +61,6 @@ fn pad(pin: u32) -> u32 {
     PADS_BANK0 + 4 + 4 * pin
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {}
-}
-
 /// IO_BANK0 interrupt: record which edge events are pending for pins 16-23
 /// (INTS2) and acknowledge them (INTR2 is write-1-to-clear for edges).
 #[unsafe(no_mangle)]
@@ -101,7 +69,10 @@ extern "C" fn io_irq_bank0() {
     wr(IO_BANK0 + 0x0F8, status); // INTR2
     unsafe {
         write_volatile(&raw mut EDGE_STATUS, status);
-        write_volatile(&raw mut EDGE_EVENTS, read_volatile(&raw const EDGE_EVENTS) + 1);
+        write_volatile(
+            &raw mut EDGE_EVENTS,
+            read_volatile(&raw const EDGE_EVENTS) + 1,
+        );
     }
 }
 
@@ -134,7 +105,11 @@ pub extern "C" fn reset() -> ! {
     let toggled_low = !pin_in(OUT_PIN);
     wr(SIO_GPIO_OUT_XOR, 1 << OUT_PIN);
     let toggled_high = pin_in(OUT_PIN);
-    check(low && high && toggled_low && toggled_high, b"out ok\n", b"out bad\n");
+    check(
+        low && high && toggled_low && toggled_high,
+        b"out ok\n",
+        b"out bad\n",
+    );
 
     // Input with pull resistors: an undriven pin follows its pull.
     wr(pad(FLOAT_PIN), PAD_IE | PAD_PUE);
@@ -156,7 +131,12 @@ pub extern "C" fn reset() -> ! {
         unsafe { asm!("wfi") };
         spins += 1;
     }
-    let (events, status) = unsafe { (read_volatile(&raw const EDGE_EVENTS), read_volatile(&raw const EDGE_STATUS)) };
+    let (events, status) = unsafe {
+        (
+            read_volatile(&raw const EDGE_EVENTS),
+            read_volatile(&raw const EDGE_STATUS),
+        )
+    };
     // Exactly one event, reporting the rising edge on OUT_PIN, and it was acknowledged.
     // Only the edge bits latch; the level bits are live and the pin is high.
     let acked = rd(IO_BANK0 + 0x0F8) & (0xC << shift) == 0;
@@ -169,10 +149,7 @@ pub extern "C" fn reset() -> ! {
     wr(SIO_GPIO_OE_CLR, 1 << OUT_PIN);
     puts(b"io done\n");
     unsafe { asm!("bkpt #1") };
-    loop {}
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {}
+    loop {
+        core::hint::spin_loop();
+    }
 }

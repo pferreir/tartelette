@@ -18,6 +18,8 @@ use core::{
     ptr::{addr_of_mut, read_volatile, write_volatile},
 };
 
+use testrt::*;
+
 global_asm!(
     ".section .vectors, \"a\"",
     ".word _stack_top",
@@ -38,20 +40,8 @@ global_asm!(
     ".word pio0_irq0", // IRQ 7
 );
 
-#[used]
-#[unsafe(link_section = ".boot2")]
-static BOOT2: [u8; 256] = [0; 256];
-
-const RESETS: u32 = 0x4000_C000;
-const IO_BANK0: u32 = 0x4001_4000;
-const PADS_BANK0: u32 = 0x4001_C000;
-const TIMER: u32 = 0x4005_4000;
-const UART0: u32 = 0x4003_4000;
-const DMA: u32 = 0x5000_0000;
 const PIO0: u32 = 0x5020_0000;
 const PIO1: u32 = 0x5030_0000;
-const SIO: u32 = 0xD000_0000;
-const NVIC_ISER: u32 = 0xE000_E100;
 
 const FUNCSEL_SIO: u32 = 5;
 const FUNCSEL_PIO0: u32 = 6;
@@ -107,21 +97,6 @@ static mut ENC_EVENTS: u32 = 0;
 static mut DAC_FRAMES: [u32; 4] = [0; 4];
 static mut PIXELS: [u32; 8] = [0; 8];
 
-fn wr(addr: u32, v: u32) {
-    unsafe { write_volatile(addr as *mut u32, v) }
-}
-fn rd(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-fn putc(c: u8) {
-    while rd(UART0 + 0x18) & (1 << 5) != 0 {}
-    wr(UART0, c as u32);
-}
-fn puts(s: &[u8]) {
-    for &c in s {
-        putc(c);
-    }
-}
 fn put_i32(v: i32) {
     if v < 0 {
         putc(b'-');
@@ -159,15 +134,6 @@ fn dma_start(channel: u32, read: u32, write: u32, count: u32, treq: u32) {
 }
 fn dma_wait(channel: u32) {
     while rd(DMA + channel * 0x40 + 0x0C) & BUSY != 0 {}
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn default_handler() {
-    puts(b"unexpected exception\n");
-    unsafe { asm!("bkpt #2") };
-    loop {
-        core::hint::spin_loop();
-    }
 }
 
 /// PIO0 IRQ 0: the encoder pushed a counter value. Drain the RX FIFO.
@@ -308,13 +274,6 @@ pub extern "C" fn reset() -> ! {
 
     puts(b"pio done\n");
     unsafe { asm!("bkpt #1") };
-    loop {
-        core::hint::spin_loop();
-    }
-}
-
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
     }
