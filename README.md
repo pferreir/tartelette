@@ -144,9 +144,9 @@ what the defmt log needs.
 Open a window with a firmware on a board:
 
 ```sh
-tartelette firmware.elf                                   # a plain Pico
-tartelette firmware.elf --board pico-w --shield pico-display-2
-tartelette firmware.elf --board path/to/my-board.toml
+tartelette fw.elf                                # a plain Pico
+tartelette fw.elf --board pico-w --shield pico-display-2
+tartelette fw.elf --board path/to/my-board.toml
 ```
 
 An ELF is better than a UF2 when you have one: a UF2 has no symbols, so there
@@ -162,7 +162,7 @@ synth, SD card browsers and the problems found.
 ### Headless
 
 ```sh
-tartelette firmware.elf --board my-board.toml --headless --max-cycles 250000000 \
+tartelette fw.elf --board my-board.toml --headless --max-cycles 250000000 \
     --press enc_sw@1000000+50000
 ```
 
@@ -182,24 +182,32 @@ images, the flash file, faults, the test synth, and so on.
 
 ### Some things to try
 
-```sh
-# A blank FAT32 SD card image, and a firmware with it
-tartelette mkdisk card.img --dir data
-tartelette fw.elf --board my-board.toml --sd sd=card.img
+The demos in `firmware/showcase` build and run from the checkout (you need
+the `thumbv6m-none-eabi` target: `rustup target add thumbv6m-none-eabi`):
 
+```sh
+cd firmware/showcase
+
+# An arcade game on a Pico with a Display Pack: A/B turn, X thrusts, Y starts
+cargo run --release --bin stardust
+
+# A drum machine and bass sequencer: tick Sound on the Synth tab to hear it
+cargo run --release --bin groovebox
+```
+
+MicroPython runs as it is, from a
+[release UF2](https://micropython.org/download/RPI_PICO_W/):
+
+```sh
 # MicroPython, with its REPL on the terminal
 tartelette RPI_PICO_W-v1.29.0.uf2 --headless
 
 # ... or as a serial port that mpremote can talk to (Linux)
 tartelette RPI_PICO_W-v1.29.0.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM
 mpremote connect /tmp/ttyACM
-
-# Hear a board's CV and gate outputs
-tartelette fw.elf --board my-board.toml --drums
 ```
 
-`firmware/showcase` has the demos from the web page: a drum machine, a
-game, an LED matrix and a shell, on plain RP2040 boards (see its
+`firmware/showcase` also has an LED matrix and a shell (see its
 [README](firmware/showcase/README.md)). `firmware/examples` has Pico W
 firmware that runs both here and on real hardware (Wi-Fi, Bluetooth, USB and two apps for the Pico Display Pack). Their
 `cargo run` starts them in tartelette; see
