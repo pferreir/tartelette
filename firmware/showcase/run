@@ -12,6 +12,7 @@ picosh)    board=(pico) ;;
 lumen)     board=("$here/boards/lumen.toml") ;;
 groovebox) board=("$here/boards/groovebox.toml" --drums --osc saw:dac.A:expander.bass) ;;
 stardust)  board=(pico --shield pico-display-2) ;;
+spectra)   board=("$here/boards/spectra.toml" --shield pico-display-2) ;;
 *)
     echo "showcase/run: no board for $(basename "$elf") in $0, using pico" >&2
     board=(pico)

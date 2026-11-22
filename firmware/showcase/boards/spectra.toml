@@ -1,0 +1,25 @@
+#:schema ../../../boards/board.schema.json
+# SPECTRA: a Pico listening to a line-level audio input on GPIO26 (ADC0),
+# with a gain knob on GPIO27 (ADC1). Run with the pico-display-2 shield for
+# the screen and buttons. The firmware is src/bin/spectra.rs; the README in
+# the directory above says how to run it.
+name = "Spectra"
+
+# The audio input: a self-made 8-second loop, biased to mid-rail.
+[parts.input]
+kind = "wav"
+gpio = 26
+file = "spectra.wav"
+loop = "on"
+autoplay = "on"
+
+# A potentiometer across 3V3 as a divider: the display gain.
+[parts.gain]
+kind = "pot"
+gpio = 27
+value = 500
+
+# Next to the shield's screen and buttons.
+[panel]
+input = { at = [4, 4], span = [2, 1], label = "Line in" }
+gain = { at = [6, 4], label = "Gain" }
