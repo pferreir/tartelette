@@ -5,8 +5,7 @@ An LED on a GPIO, through a resistor to GND (lit when the pin is high) or to
 
 The LED only watches its pin, so it can share it with another part. That
 makes it handy for things that aren't LEDs at all: an activity line, a clock
-or trigger output you want to see blink on the panel (the BTL-01's clock
-output is an `led`), or a gate for the [test synth](../running.md#test-synth).
+or trigger output you want to see blink on the panel, or a gate for the [test synth](../running.md#test-synth).
 
 ## Keys
 

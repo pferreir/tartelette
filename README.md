@@ -127,7 +127,7 @@ A page can open straight onto a firmware: the query string names the files
 to fetch at startup, relative to the page.
 
 ```text
-index.html?firmware=os.elf&board=btl-01&sd=card.img
+index.html?firmware=fw.elf&board=my-board.toml&sd=card.img
 ```
 
 `firmware` and `sd` are URLs (`sd` goes to the board's first SD card);
@@ -145,7 +145,6 @@ Open a window with a firmware on a board:
 
 ```sh
 tartelette firmware.elf                                   # a plain Pico
-tartelette firmware.elf --board btl-01
 tartelette firmware.elf --board pico-w --shield pico-display-2
 tartelette firmware.elf --board path/to/my-board.toml
 ```
@@ -163,7 +162,7 @@ synth, SD card browsers and the problems found.
 ### Headless
 
 ```sh
-tartelette firmware.elf --board btl-01 --headless --max-cycles 250000000 \
+tartelette firmware.elf --board my-board.toml --headless --max-cycles 250000000 \
     --press enc_sw@1000000+50000
 ```
 
@@ -184,9 +183,9 @@ images, the flash file, faults, the test synth, and so on.
 ### Some things to try
 
 ```sh
-# A blank FAT32 SD card image, and the BTL-01 OS with it
+# A blank FAT32 SD card image, and a firmware with it
 tartelette mkdisk card.img --dir data
-tartelette os.elf --board btl-01 --sd sd=card.img
+tartelette fw.elf --board my-board.toml --sd sd=card.img
 
 # MicroPython, with its REPL on the terminal
 tartelette RPI_PICO_W-v1.29.0.uf2 --headless
@@ -195,8 +194,8 @@ tartelette RPI_PICO_W-v1.29.0.uf2 --headless
 tartelette RPI_PICO_W-v1.29.0.uf2 --usb-bridge serial --usb-tty-link /tmp/ttyACM
 mpremote connect /tmp/ttyACM
 
-# Hear the BTL-01's CV and gate outputs
-tartelette os.elf --board btl-01 --drums
+# Hear a board's CV and gate outputs
+tartelette fw.elf --board my-board.toml --drums
 ```
 
 `firmware/showcase` has the demos from the web page: a drum machine, a

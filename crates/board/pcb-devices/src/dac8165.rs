@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn output_stage_maps_codes_to_jack_volts() {
-        // BTL-01: inverting, 0 V at about half scale.
+        // Inverting, 0 V at about half scale.
         let mut r = Rig::new("cv_zero_uv = 1239240, cv_uv_per_volt = -240310");
         assert!(
             (r.dac().cv_volts(0) - 5.157).abs() < 0.001,

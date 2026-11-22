@@ -23,7 +23,6 @@ bytes) and Embassy/rp2040-hal images work.
 ## Boards and shields
 
 ```sh
-tartelette fw.elf --board btl-01
 tartelette fw.elf --board pico-w --shield pico-display-2
 tartelette fw.elf --board ./my-board.toml --shield ./my-shield.toml
 ```
@@ -109,7 +108,7 @@ interrupt it or the firmware executes a `bkpt`.
 --input NAME:ACTION[=VALUE]@US  # any device action
 ```
 
-For example `--press enc_sw@1000000+50000` holds the BTL-01's encoder switch
+For example `--press enc_sw@1000000+50000` holds the button `enc_sw`
 for 50 ms after one second, `--input knob:turn=3@2000000` turns the knob three
 detents clockwise and `--input expander:gp3=0@500` pulls pin 3 of the port
 expander low. The actions each device takes are on its page.
@@ -137,7 +136,7 @@ doesn't exist.
 
 ```sh
 tartelette mkdisk card.img --dir data
-tartelette os.elf --board btl-01 --sd sd=card.img
+tartelette fw.elf --board my-board.toml --sd sd=card.img
 ```
 
 `mkdisk` makes a sparse image with an MBR and one empty FAT32 partition
@@ -255,7 +254,7 @@ rendered in emulated time and is sample-exact, however fast or slow the run
 was:
 
 ```sh
-tartelette os.elf --board btl-01 --headless --max-cycles 1250000000 \
+tartelette fw.elf --board my-board.toml --headless --max-cycles 1250000000 \
     --osc saw:dac.A:expander.0 --osc square:dac.B:expander.1 --wav out.wav
 ```
 

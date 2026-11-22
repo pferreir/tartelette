@@ -2,7 +2,7 @@
 //! page can open straight onto a firmware:
 //!
 //! ```text
-//! index.html?firmware=os.elf&board=btl-01&sd=card.img
+//! index.html?firmware=fw.elf&board=my-board.toml&sd=card.img
 //! ```
 //!
 //! `firmware` and `sd` are URLs, relative to the page. `board` and `shield`

@@ -27,7 +27,7 @@ use history::History;
 
 /// Tall enough to read the lettering, as tall as the top bar's two rows.
 const LOGO_HEIGHT: f32 = 64.0;
-/// The UART whose receiver is the firmware's MIDI in (GPIO1 on the BTL-01).
+/// The UART whose receiver is the firmware's MIDI in.
 const MIDI_UART: usize = 0;
 
 /// A tab of the dock.

@@ -122,8 +122,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "WAVE[:CV[:GATE]]|DRUM[:GATE]", value_parser = clap::value_parser!(Patch))]
     pub osc: Vec<Patch>,
     /// Patch a drum kit into the board's first four gates (kick, snare,
-    /// closed and open hat; on the BTL-01 gates A..D), with any `--osc`
-    /// voices, to hear the firmware as a drum machine
+    /// closed and open hat), with any `--osc` voices, to hear the firmware as a drum machine
     #[arg(long)]
     pub drums: bool,
     /// Run without a window
@@ -308,7 +307,7 @@ impl Headless {
 }
 
 /// Make a blank SD card image: an MBR with one empty FAT32 (or FAT16)
-/// partition, as the BTL-01 OS mounts it (the file is sparse).
+/// partition, as `embedded-sdmmc` mounts it (the file is sparse).
 #[derive(Args, Debug)]
 pub struct MkdiskArgs {
     pub file: PathBuf,

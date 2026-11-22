@@ -6,7 +6,7 @@ emulated board from it, and lays out the front panel from its optional
 `[panel]` section.
 
 The built-in boards are in [`boards/`](../boards) and are a good place to
-start. [`btl-01.toml`](../boards/btl-01.toml) uses most device kinds.
+start.
 
 ## An example
 

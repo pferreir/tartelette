@@ -1,6 +1,6 @@
 //! A formatter for blank SD card images: an MBR with one FAT32 or FAT16
 //! partition and an empty file system in it, which is what `embedded-sdmmc`
-//! (and so the BTL-01 OS) mounts as volume 0, optionally with some empty
+//! mounts as volume 0, optionally with some empty
 //! top-level directories. A formatted disk is almost all zeros, so
 //! [`format()`] returns only the few regions that are not. [`read`] reads
 //! what is on one.
@@ -340,7 +340,7 @@ pub fn format_fat32(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
 /// FATs, and the root directory's label entry and `dirs`) with the volume
 /// `label` (up to 11 characters; empty means none) and an empty directory in
 /// the root for each of `dirs`. A label is a directory entry like any other
-/// to `embedded-sdmmc`, so the BTL-01 OS lists it as an empty file named
+/// to `embedded-sdmmc`, so a firmware using it lists it as an empty file named
 /// after it: leave it off unless the disk is meant for a PC too.
 pub fn format_fat16(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regions, String> {
     let (label, dirs) = check(Fat::Fat16, megabytes, label, dirs)?;
@@ -436,12 +436,12 @@ mod tests {
 
     #[test]
     fn regions_describe_one_partition_and_two_fats() {
-        let image = blank_fat16_image(16, "BTL01", &[]).unwrap();
+        let image = blank_fat16_image(16, "SDCARD", &[]).unwrap();
         assert_eq!(image.len(), 16 * 1024 * 1024);
         assert_eq!(image[510..512], [0x55, 0xAA]);
         assert_eq!(image[450], 0x06);
         let boot = &image[START * BLOCK..][..BLOCK];
-        assert_eq!(&boot[43..54], b"BTL01      ");
+        assert_eq!(&boot[43..54], b"SDCARD     ");
         assert_eq!(&boot[54..62], b"FAT16   ");
         let fat = u16::from_le_bytes([boot[22], boot[23]]) as usize;
         for f in 0..FATS {
@@ -512,12 +512,12 @@ mod tests {
 
     #[test]
     fn a_fat32_disk_has_its_boot_sector_fsinfo_backups_and_root_cluster() {
-        let image = blank_image(Fat::Fat32, 64, "BTL01", &["data"]).unwrap();
+        let image = blank_image(Fat::Fat32, 64, "SDCARD", &["data"]).unwrap();
         assert_eq!(image[450], 0x0C);
         let part = START * BLOCK;
         let boot = &image[part..][..BLOCK];
         assert_eq!(&boot[82..90], b"FAT32   ");
-        assert_eq!(&boot[71..82], b"BTL01      ");
+        assert_eq!(&boot[71..82], b"SDCARD     ");
         assert_eq!(boot[510..512], [0x55, 0xAA]);
         assert_eq!(u16::from_le_bytes([boot[17], boot[18]]), 0, "no fixed root");
         assert_eq!(
@@ -540,7 +540,7 @@ mod tests {
             (0x0FFF_FFF8, 0x0FFF_FFFF, 0x0FFF_FFFF, 0x0FFF_FFFF, 0)
         );
         let data = (START + RESERVED32 + FATS * fat) * BLOCK;
-        assert_eq!(&image[data..data + 12], b"BTL01      \x08");
+        assert_eq!(&image[data..data + 12], b"SDCARD     \x08");
         assert_eq!(&image[data + 32..data + 44], b"DATA       \x10");
         assert_eq!(&image[data + spc * BLOCK..][..11], b".          ");
         let clusters = (64 * 2048 - START - RESERVED32 - FATS * fat) / spc;

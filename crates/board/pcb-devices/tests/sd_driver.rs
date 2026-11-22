@@ -1,7 +1,6 @@
 //! The SD card model against the real `embedded-sdmmc` driver.
 //!
-//! The driver (upstream's version of the code the BTL-01 firmware uses) talks
-//! to the card through a `SpiDevice` that sits on a `pcb::Board`, so every byte
+//! The driver talks to the card through a `SpiDevice` that sits on a `pcb::Board`, so every byte
 //! goes through the board's SPI routing. The driver makes one SPI call per
 //! byte and leaves chip select to the caller ("use an SpiDevice with a dummy
 //! chip-select"), so here CS is simply held low for the whole session, as if
@@ -69,7 +68,7 @@ impl Bench {
 }
 
 /// An `SpiDevice` over the bench, like `embedded_hal_bus::spi::ExclusiveDevice`
-/// (which the BTL-01 OS uses): CS goes low for each transaction and high
+/// (as an Embassy firmware would use): CS goes low for each transaction and high
 /// again after it, so the driver's single-byte reads each pulse CS.
 #[derive(Clone)]
 struct SdSpi(Rc<RefCell<Bench>>);
@@ -182,7 +181,7 @@ fn driver_initialises_the_card_and_reads_its_size_with_crc_on_and_off() {
 #[test]
 fn files_round_trip_through_a_fat_filesystem() {
     let bench = bench_with_image(formatted_image(IMAGE_MB));
-    let small = b"Hello from the emulated BTL-01!\n".to_vec();
+    let small = b"Hello from the emulated card!\n".to_vec();
     let big = pattern(10_000, 7); // several clusters: multi-block reads and writes
 
     {
@@ -243,7 +242,7 @@ fn files_round_trip_through_a_fat_filesystem() {
 
 #[test]
 fn a_volume_label_shows_up_as_an_empty_directory_entry() {
-    let bench = bench_with_image(sdimage::blank_fat16_image(IMAGE_MB, "BTL01", &[]).unwrap());
+    let bench = bench_with_image(sdimage::blank_fat16_image(IMAGE_MB, "SDCARD", &[]).unwrap());
     let volume_mgr = VolumeManager::new(new_card(&bench, true), FixedTime);
     let volume = volume_mgr.open_volume(VolumeIdx(0)).unwrap();
     let root = volume.open_root_dir().unwrap();
@@ -253,7 +252,7 @@ fn a_volume_label_shows_up_as_an_empty_directory_entry() {
         std::ops::ControlFlow::Continue(())
     })
     .unwrap();
-    assert_eq!(names, [("BTL01".to_string(), 0)]);
+    assert_eq!(names, [("SDCARD".to_string(), 0)]);
 }
 
 #[test]

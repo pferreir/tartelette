@@ -969,7 +969,7 @@ fn a_parked_machine_does_not_cost_per_cycle_work() {
     assert!(r.pio.active(), "a FIFO write unparks it");
 }
 
-// ---- the BTL-01 firmware's own programs ----
+// ---- programs from a real Embassy firmware ----
 
 /// ws2812.pio from the firmware: 1 side-set bit, T1=2, T2=5, T3=3.
 const WS2812: [u16; 4] = [0x6221, 0x1123, 0x1400, 0xA442];

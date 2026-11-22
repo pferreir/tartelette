@@ -1,8 +1,8 @@
 # `sdcard`: SD card
 
-An SDHC card in SPI mode, backed by a disk image held in memory. The BTL-01
-OS drives it with `embedded-sdmmc`; other SPI-mode drivers that stick to the
-commands below should work too.
+An SDHC card in SPI mode, backed by a disk image held in memory. It works
+with `embedded-sdmmc`, and other SPI-mode drivers that stick to the commands
+below should work too.
 
 ## Keys
 
@@ -32,7 +32,7 @@ image with `tartelette mkdisk` or any other tool:
 
 ```sh
 tartelette mkdisk card.img --dir data      # 64 MiB, FAT32
-tartelette fw.elf --board btl-01 --sd sd=card.img
+tartelette fw.elf --board my-board.toml --sd sd=card.img
 ```
 
 `--sd NAME=FILE` loads the image into the card called NAME. An image that's
