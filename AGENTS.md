@@ -10,8 +10,9 @@ scripts. User-facing docs are in `README.md` and `docs/`.
   `no_std` + `alloc`, deterministic and do no I/O. Keep them that way: I/O
   belongs in `tartelette-runtime`, `tartelette` or the bridge crates.
 - The core must keep building for `wasm32-unknown-unknown`.
-- Each directory under `firmware/` is its own Cargo workspace (target
-  `thumbv6m-none-eabi`), outside the main one.
+- The firmware under `firmware/` (target `thumbv6m-none-eabi`) is outside the
+  main workspace: `firmware/tests` is one workspace, and every example and
+  `firmware/showcase` is its own.
 - Don't commit generated or local files (`target/`, `card.img`, firmware
   blobs). `boards/board.schema.json` is generated but checked in: regenerate
   it when a device's `KIND` changes (see `docs/development.md`).

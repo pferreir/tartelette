@@ -1,8 +1,11 @@
 # Firmware
 
-Every firmware here is a standalone crate (its own `[workspace]`, lock file
-and `.cargo/config.toml` targeting `thumbv6m-none-eabi`), outside the
-emulator's workspace.
+The firmware here is outside the emulator's workspace and targets
+`thumbv6m-none-eabi` (each `.cargo/config.toml` says so). Every example and
+`showcase/` is a standalone crate, with its own `[workspace]` and lock file;
+`tests/` is one workspace for all the test firmware. They build into the
+repository's `target/firmware/` (`target/firmware/NAME`, `tests` for the test
+firmware), where the emulator's tests also build the examples they run.
 
 ```
 examples/   real firmware for real boards; runs in the emulator too
@@ -16,7 +19,11 @@ their own [README](showcase/README.md).
 ## Examples
 
 Embassy firmware for the Raspberry Pi Pico W, unmodified for the emulator:
-the same ELF runs in tartelette and on the board.
+the same ELF runs in tartelette and on the board. The Embassy examples and
+`showcase/` all use one Embassy revision from git, set by the `[patch]` at
+the end of each `Cargo.toml`: Embassy's released crates lack the cyw43
+Bluetooth fixes the Bluetooth examples need. Moving to another revision means
+changing it in all of them.
 
 | Example        | Board            | What it does |
 |----------------|------------------|--------------|
@@ -34,8 +41,8 @@ buttons A/B/X/Y) on top of the Pico W.
 ### Building
 
 The CYW43439's firmware blobs are Infineon's and not in this repository: point
-`CYW43_FIRMWARE_DIR` at a directory with `43439A0.bin` and `43439A0_clm.bin`,
-plus `43439A0_btfw.bin` and `nvram_rp2040.bin` for the Bluetooth examples
+`CYW43_FIRMWARE_DIR` at a directory with `43439A0.bin`, `43439A0_clm.bin` and
+`nvram_rp2040.bin`, plus `43439A0_btfw.bin` for the Bluetooth examples
 (`pico-w-ble`, `catprint`). Embassy has them in its `cyw43-firmware/`.
 
 The examples that join a network take its name and password at build time,
@@ -93,12 +100,21 @@ to act as the board around them (press a button, turn a knob, pull a pin, put
 data on an SD card) at the right moment.
 
 The tests in `crates/app/tartelette` and `crates/app/tartelette-runtime` build them
-as needed (`cargo test -p tartelette -p tartelette-runtime`); nothing else
-uses them.
+as needed (`cargo test -p tartelette -p tartelette-runtime`), and
+`cpu-bench` is the benchmark the scripts run (`scripts/web-check.sh`,
+`scripts/web-bench.sh`, `scripts/pgo-build.sh`).
+
+Each test firmware is a crate of the `tests/` workspace with only its
+`src/main.rs`: its vector table, its `reset` and the test. What they all
+share is in `tests/testrt` (the boot2, the panic handler, the handler for
+unexpected exceptions, register and UART0 helpers), `tests/link.ld` and
+`tests/build.rs`. To build one by hand: `cd firmware/tests && cargo build
+--release -p uart-hello`.
 
 | Firmware          | Checks | Run by |
 |-------------------|--------|--------|
 | `uart-hello`      | UART0, `.data`/`.bss` init, the bootrom's function table | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
+| `uart-echo`       | UART0 receive, RX and receive-timeout interrupts waking WFI; the headless runner holding stdin back until the receiver is on, or bridging the UART to a pseudo-terminal | `tests/uart_hello.rs` |
 | `button-led`      | a GPIO input driving a GPIO output through the board | `tests/uart_hello.rs`, `tartelette-runtime/src/session.rs` |
 | `io-test`         | SIO outputs, pad pulls, input loopback, edge interrupts | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `irq-timer`       | TIMER alarms, SysTick, PendSV, WFI | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
@@ -108,6 +124,7 @@ uses them.
 | `sd-test`         | an SD card on SPI1 with DMA and CRCs | `tests/uart_hello.rs` |
 | `pio-test`        | PIO driving a DAC8165 and WS2812s and reading an encoder | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `multicore-test`  | core 1 launch, spinlocks, dividers, the inter-core FIFOs | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
+| `cpu-bench`       | nothing: CPU-bound work (CRC, sort, multiplies, copies, a bytecode loop, 64-bit division) ending in a checksum, to time the core | `scripts/web-check.sh`, `scripts/web-bench.sh`, `scripts/pgo-build.sh` |
 
 Each one's `src/main.rs` starts with what it does and the exact output
 expected. `examples/pico-w-wifi` and `examples/pico-w-ble` also serve as tests
