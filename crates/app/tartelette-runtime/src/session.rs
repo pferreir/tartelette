@@ -5,7 +5,7 @@
 //! deadline, or [`Session::advance`] one stretch at a time) and takes what
 //! it produced with [`Session::take_output`].
 use pcb::BoardEvent;
-use pcb_devices::sdcard::SdCard;
+use pcb_devices::{sdcard::SdCard, wav::Wav};
 use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
 use web_time::Instant;
 
@@ -97,6 +97,14 @@ impl Session {
             format!("{}: cannot load {kind}: {e:?}", firmware.name)
         })?;
         sys.set_board(board);
+        #[cfg(target_arch = "wasm32")]
+        for (name, wav) in sys.board.devices_mut::<Wav>() {
+            if let Some(file) = wav.file.as_ref().filter(|_| wav.name.is_none()) {
+                sys.warnings.push(format!(
+                    "{name}: the browser cannot read {file}: load it from the panel"
+                ));
+            }
+        }
         network::connect(&mut sys.board, links)?;
         let usb = UsbSide::new(&links.usb)?;
         let uarts = UartSide::new(&links.uart)?;
@@ -279,6 +287,15 @@ impl Session {
             .board
             .device::<SdCard>(name)
             .map(|c| c.blocks_written)
+    }
+
+    /// Load a WAV file into the player `name`; it stops at the file's start.
+    /// False if there is no such player.
+    pub fn load_wav(&mut self, name: &str, file: &Source) -> Result<bool, String> {
+        match self.sys.board.device_mut::<Wav>(name) {
+            Some(wav) => wav.load(&file.name, &file.bytes).map(|()| true),
+            None => Ok(false),
+        }
     }
 
     /// Load a disk image into the card `name`. It stops writing to any file
