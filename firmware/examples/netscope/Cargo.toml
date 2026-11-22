@@ -1,33 +1,43 @@
 [package]
 name = "netscope"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # Standalone (not part of the emulator workspace). NETSCOPE, an internet sonar
-# for a Pico W on a Pico Display Pack 2.0; see ../README.md. Same Embassy
-# versions as ../pico-w-wifi.
+# for a Pico W on a Pico Display Pack 2.0; see ../README.md. Embassy is the
+# revision all the examples share (the [patch] below).
 
 [workspace]
 
 [dependencies]
-embassy-executor = { version = "0.6.0", features = ["task-arena-size-65536", "arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "integrated-timers"] }
-embassy-time = { version = "0.3.2", features = ["defmt", "defmt-timestamp-uptime"] }
-embassy-rp = { version = "0.2.0", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl"] }
-embassy-net = { version = "0.4.0", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet", "dns"] }
-cyw43 = { version = "0.2.0", features = ["defmt", "firmware-logs"] }
-cyw43-pio = { version = "0.2.0", features = ["defmt"] }
-defmt = "0.3"
-defmt-rtt = "0.4"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
-cortex-m = { version = "0.7.6", features = ["inline-asm"] }
+embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { version = "0.10", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-net = { version = "0.9.1", features = ["defmt", "tcp", "udp", "dhcpv4", "medium-ethernet", "dns"] }
+embassy-sync = "0.8"
+cyw43 = { version = "0.7.0", features = ["defmt", "firmware-logs"] }
+cyw43-pio = { version = "0.10.0", features = ["defmt"] }
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0", features = ["print-defmt"] }
+cortex-m = { version = "0.7.6" }
 cortex-m-rt = "0.7.0"
 static_cell = "2.1"
-embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
-embassy-sync = "0.6.0"
+embedded-io-async = "0.7"
 embedded-graphics = "0.8"
-heapless = "0.8"
+heapless = "0.9"
 libm = "0.2"
 portable-atomic = { version = "1.5", features = ["critical-section"] }
+
+[patch.crates-io]
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
 
 [profile.release]
 debug = 2

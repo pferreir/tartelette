@@ -1,11 +1,12 @@
 [package]
 name = "showcase"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # Standalone (not part of the emulator workspace). The demos on tartelette's
 # web page, one binary each, on plain RP2040 boards (no Wi-Fi blobs needed);
-# see README.md. `src/lib.rs` has the bits they share.
+# see README.md. `src/lib.rs` has the bits they share. Embassy is the
+# revision the examples share (the [patch] below).
 
 [workspace]
 
@@ -27,6 +28,13 @@ heapless = "0.8"
 libm = "0.2"
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 embedded-io-async = "0.7"
+
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
 
 [profile.release]
 debug = 2

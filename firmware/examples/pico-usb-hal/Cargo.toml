@@ -1,7 +1,7 @@
 [package]
 name = "pico-usb-hal"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # Standalone (not part of the emulator workspace). The USB composite device
 # of `../pico-usb` (serial port, HID keyboard, USB-MIDI) on rp2040-hal and

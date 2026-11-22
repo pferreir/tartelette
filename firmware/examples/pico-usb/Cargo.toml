@@ -1,13 +1,14 @@
 [package]
 name = "pico-usb"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # Standalone (not part of the emulator workspace). A USB composite device on
 # Embassy's embassy-usb: a CDC-ACM serial port, a HID keyboard and a USB-MIDI
 # interface; see ../README.md. `../pico-usb-hal` is the same device on
 # rp2040-hal + usb-device. The emulator's tests run both
-# (crates/app/tartelette/tests/usb_firmware.rs).
+# (crates/app/tartelette/tests/usb_firmware.rs). Embassy is the revision all
+# the examples share (the [patch] below).
 
 [workspace]
 
@@ -15,7 +16,7 @@ edition = "2021"
 embassy-executor = { version = "0.10", default-features = false, features = ["platform-cortex-m", "executor-thread", "defmt", "executor-interrupt"] }
 embassy-time = { version = "0.5.1", default-features = false, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { version = "0.10", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
-embassy-usb = { version = "0.6", default-features = false, features = ["defmt", "max-interface-count-6"] }
+embassy-usb = { version = "0.6", default-features = false, features = ["defmt", "device", "class-cdc-acm", "class-hid", "class-midi", "max-interface-count-6"] }
 embassy-futures = "0.1"
 embassy-sync = "0.8"
 defmt = "1.0"
@@ -23,6 +24,14 @@ defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 cortex-m = { version = "0.7.6" }
 cortex-m-rt = "0.7.0"
+
+[patch.crates-io]
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-usb = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
 
 [profile.release]
 debug = 2

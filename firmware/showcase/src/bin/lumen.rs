@@ -23,7 +23,8 @@ use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::pio_programs::rotary_encoder::{Direction, PioEncoder, PioEncoderProgram};
 use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
-use embassy_rp::uart::{self, Blocking, UartTx};
+use embassy_rp::mode::Blocking;
+use embassy_rp::uart::{self, UartTx};
 use embassy_time::{Instant, Ticker, Duration};
 use heapless::String;
 use showcase::Rng;
@@ -325,7 +326,7 @@ async fn main(spawner: Spawner) {
 
     let Pio { mut common, sm0, sm1, .. } = Pio::new(p.PIO0, Irqs);
     let prg = PioWs2812Program::new(&mut common);
-    let mut leds: PioWs2812<'_, PIO0, 0, N, _> = PioWs2812::new(&mut common, sm0, p.DMA_CH0, Irqs, p.PIN_2, &prg);
+    let mut leds: PioWs2812<'_, PIO0, 0, _> = PioWs2812::new(&mut common, sm0, p.PIN_2, p.DMA_CH0, Irqs, &prg);
     let enc_prg = PioEncoderProgram::new(&mut common);
     let enc = PioEncoder::new(&mut common, sm1, p.PIN_4, p.PIN_5, &enc_prg);
     spawner.spawn(knob_task(enc).unwrap());
@@ -411,7 +412,7 @@ async fn main(spawner: Spawner) {
         for (o, &c) in out.iter_mut().zip(&px) {
             *o = scale(c, LEVELS[level]);
         }
-        leds.write(&out).await;
+        leds.write_slice(&out).await;
         ticker.next().await;
     }
 }

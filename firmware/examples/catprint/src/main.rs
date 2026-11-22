@@ -29,7 +29,7 @@ use defmt::{info, unwrap};
 use embassy_executor::Spawner;
 use embassy_net::iface::Iface;
 use embassy_net::wire::HardwareAddress;
-use embassy_net::{Stack, StackStorage};
+use embassy_net::{Stack, StackStorage, StaticPool};
 use embassy_rp::gpio::{Input, Level, Output, Pull};
 use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
@@ -458,14 +458,16 @@ async fn main(spawner: Spawner) {
     static RADIO: StaticCell<cyw43::State> = StaticCell::new();
     let (net_device, bt_device, mut control, runner) = cyw43::new_with_bluetooth(RADIO.init(cyw43::State::new()), pwr, spi, fw, btfw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
-    control.init(clm).await;
+    control.init(clm, cyw43::Config::default()).await;
     control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
 
     static STACK: StaticCell<StackStorage<'static>> = StaticCell::new();
-    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), 0xca7_f00d_0b17_0001);
+    // cyw43 receives each frame, bus headers included, straight into these.
+    static POOL: StaticPool<{ cyw43::RX_BUF_SIZE }, 8, { cyw43::RX_BUF_ALIGN }> = StaticPool::new();
+    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), &POOL, 0xca7_f00d_0b17_0001);
     static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
-    let iface = unwrap!(stack.add_iface(DEVICE.init(net_device)).ok());
-    iface.set_dhcpv4(Some(Default::default()));
+    let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(net_device)).ok());
+    unwrap!(iface.set_dhcpv4(Some(Default::default())).ok());
     spawner.spawn(unwrap!(net_task(net_runner)));
     spawner.spawn(unwrap!(app_task(control, stack, iface)));
     spawner.spawn(unwrap!(ble_task(ExternalController::new(bt_device))));

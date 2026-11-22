@@ -6,17 +6,17 @@ use embassy_net::dns::DnsQueryType;
 use embassy_net::tcp::TcpSocket;
 use embassy_net::Stack;
 use embassy_net::udp::UdpSocket;
-use embassy_net::wire::{IpAddress, IpEndpoint, Ipv4Address};
+use embassy_net::wire::{IpAddr, Ipv4Addr, SocketAddr};
 use embassy_time::{with_timeout, Duration, Instant, Timer};
 use embedded_io_async::Write;
 use heapless::String;
 
-pub async fn resolve(stack: Stack<'_>, name: &str) -> Option<Ipv4Address> {
+pub async fn resolve(stack: Stack<'_>, name: &str) -> Option<Ipv4Addr> {
     let r = with_timeout(Duration::from_secs(5), stack.dns_query(name, DnsQueryType::A)).await;
     match r {
         Ok(Ok(addrs)) => addrs.iter().find_map(|a| match a {
             #[allow(unreachable_patterns)]
-            IpAddress::Ipv4(a) => Some(*a),
+            IpAddr::V4(a) => Some(*a),
             #[allow(unreachable_patterns)]
             _ => None,
         }),
@@ -28,11 +28,11 @@ pub async fn resolve(stack: Stack<'_>, name: &str) -> Option<Ipv4Address> {
 pub async fn ntp(stack: Stack<'_>, server: &str) -> Option<(u64, u32)> {
     let ip = resolve(stack, server).await?;
     let mut sock = UdpSocket::new(stack).ok()?;
-    sock.bind(40123).ok()?;
+    sock.bind(40123, SocketAddr::UNSPECIFIED).ok()?;
     let mut pkt = [0u8; 48];
     pkt[0] = 0x1B; // LI 0, version 3, client
     let t = Instant::now();
-    sock.send_to(&pkt, IpEndpoint::new(ip.into(), 123)).await.ok()?;
+    sock.send_to(&pkt, SocketAddr::new(ip.into(), 123)).await.ok()?;
     let reply = with_timeout(Duration::from_secs(4), sock.recv()).await.ok()?.ok()?;
     let us = t.elapsed().as_micros() as u32;
     let buf: &[u8] = &reply;
@@ -79,7 +79,7 @@ async fn fetch(stack: Stack<'_>, host: &str, path: &str, buf: &mut [u8], probe: 
     let mut tx = [0u8; 512];
     let mut sock = TcpSocket::new(stack, &mut rx, &mut tx).ok()?;
     sock.set_timeout(Some(Duration::from_secs(10)));
-    sock.connect(IpEndpoint::new(ip.into(), 80)).await.ok()?;
+    sock.connect(SocketAddr::new(ip.into(), 80)).await.ok()?;
     let mut req: String<384> = String::new();
     let _ = write!(req, "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: curl/8.5.0 (catprint; pico-w)\r\nAccept: */*\r\nConnection: close\r\n\r\n");
     sock.write_all(req.as_bytes()).await.ok()?;

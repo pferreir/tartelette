@@ -1,13 +1,13 @@
 [package]
 name = "pico-w-ble"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # Standalone (not part of the emulator workspace). trouble's example apps
 # (trouble `main`) on the Pico W over Embassy's cyw43 Bluetooth; see
 # ../README.md. The emulator's tests run them against the emulated CYW43439
-# (crates/app/tartelette/tests/ble_firmware.rs). The Embassy revision is the one
-# trouble's own rp-pico-w examples pin.
+# (crates/app/tartelette/tests/ble_firmware.rs). Embassy is the revision all
+# the examples share (the [patch] below).
 
 [workspace]
 
@@ -28,12 +28,13 @@ static_cell = "2"
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 
 [patch.crates-io]
-cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "3cd51e6d8eb6aff8b0d64d9e56a75a538bcfc65a" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
 
 [profile.release]
 debug = 2

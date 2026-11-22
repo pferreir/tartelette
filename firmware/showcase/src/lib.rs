@@ -15,8 +15,8 @@ use core::convert::Infallible;
 
 use embassy_futures::join::join;
 use embassy_rp::gpio::Output;
-use embassy_rp::spi::{Async, Spi};
-use embassy_rp::peripherals::SPI0;
+use embassy_rp::mode::Async;
+use embassy_rp::spi::Spi;
 use embassy_time::Timer;
 use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
 use embedded_graphics::pixelcolor::raw::RawU16;
@@ -280,7 +280,7 @@ impl DrawTarget for Canvas {
 /// A 320x240 ST7789 on SPI0, landscape, as on the Pico Display Pack 2.0:
 /// SCK 18, MOSI 19, CS 9, D/C 13 (backlight on 17 is the caller's).
 pub struct Lcd {
-    pub spi: Spi<'static, SPI0, Async>,
+    pub spi: Spi<'static, Async>,
     pub cs: Output<'static>,
     pub dc: Output<'static>,
     strips: [Canvas; 2],
@@ -289,7 +289,7 @@ pub struct Lcd {
 }
 
 impl Lcd {
-    pub fn new(spi: Spi<'static, SPI0, Async>, cs: Output<'static>, dc: Output<'static>) -> Self {
+    pub fn new(spi: Spi<'static, Async>, cs: Output<'static>, dc: Output<'static>) -> Self {
         Self { spi, cs, dc, strips: [Canvas::new(), Canvas::new()], sent: [0; (H / STRIP) as usize] }
     }
 

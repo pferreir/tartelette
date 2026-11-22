@@ -1,8 +1,8 @@
 //! Real Pico W Bluetooth firmware (trouble's example apps over Embassy
 //! `cyw43`, `firmware/examples/pico-w-ble`) against the emulated CYW43439 and the
 //! virtual controller's mock devices. The firmware blobs are found as for the
-//! Wi-Fi tests, and these need `43439A0_btfw.bin` and `nvram_rp2040.bin` too
-//! (Embassy's `cyw43-firmware/`). The first run builds the firmware, which
+//! Wi-Fi tests, and these need `43439A0_btfw.bin` too (Embassy's
+//! `cyw43-firmware/`). The first run builds the firmware, which
 //! needs network access.
 mod common;
 

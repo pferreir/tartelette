@@ -22,8 +22,9 @@ use defmt::info;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::i2c::{self, Blocking, I2c};
-use embassy_rp::peripherals::{DMA_CH0, I2C1, PIO0};
+use embassy_rp::i2c::{self, I2c};
+use embassy_rp::mode::Blocking;
+use embassy_rp::peripherals::{DMA_CH0, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::pio_programs::rotary_encoder::{Direction, PioEncoder, PioEncoderProgram};
 use embassy_rp::spi::{self, Spi};
@@ -188,7 +189,7 @@ fn note_mv(note: u8) -> i32 {
 }
 
 #[embassy_executor::task]
-async fn sequencer(mut i2c: I2c<'static, I2C1, Blocking>, mut dac: Dac) {
+async fn sequencer(mut i2c: I2c<'static, Blocking>, mut dac: Dac) {
     let _ = i2c.blocking_write(MCP, &[IODIR, 0b1110_0000]);
     let _ = i2c.blocking_write(MCP, &[GPPU, 0b1110_0000]);
     let _ = i2c.blocking_write(MCP, &[OLAT, 0]);
@@ -411,7 +412,7 @@ async fn main(spawner: Spawner) {
     say("GROOVEBOX: T track, P play/stop, S shift; knob and push to edit.");
 
     let mut cfg = i2c::Config::default();
-    cfg.frequency = 400_000;
+    cfg.frequency = embassy_rp::time::Hertz(400_000);
     let i2c = I2c::new_blocking(p.I2C1, p.PIN_3, p.PIN_2, cfg);
     let _rst = Output::new(p.PIN_7, Level::High);
     let dac = Dac {
@@ -427,8 +428,8 @@ async fn main(spawner: Spawner) {
     let push = Input::new(p.PIN_20, Pull::Up);
 
     let mut scfg = spi::Config::default();
-    scfg.frequency = 62_500_000;
-    let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg);
+    scfg.frequency = embassy_rp::time::Hertz(62_500_000);
+    let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg).unwrap();
     let mut lcd = Lcd::new(spi, Output::new(p.PIN_9, Level::High), Output::new(p.PIN_13, Level::Low));
     let _bl = Output::new(p.PIN_17, Level::High);
     lcd.init().await;

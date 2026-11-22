@@ -17,12 +17,15 @@ use embassy_rp::{
 };
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_usb::{
-    class::{
-        cdc_acm::{self, CdcAcmClass},
-        hid::{self, HidBootProtocol, HidSubclass, HidWriter},
-        midi::MidiClass,
-    },
     Builder, Config,
+    class::{
+        cdc_acm::device::{self as cdc_acm, CdcAcmClass},
+        hid::{
+            HidBootProtocol, HidSubclass,
+            device::{self as hid, HidWriter},
+        },
+        midi::device::{MidiClass, MidiClassConfig},
+    },
 };
 use {defmt_rtt as _, panic_probe as _};
 
@@ -72,7 +75,7 @@ async fn main(_spawner: Spawner) {
         &mut [],
         &mut control_buf,
     );
-    let mut serial = CdcAcmClass::new(&mut builder, &mut cdc_state, 64);
+    let mut serial = CdcAcmClass::new(&mut builder, &mut cdc_state, cdc_acm::Config::new());
     let mut keyboard = HidWriter::<_, 8>::new(
         &mut builder,
         &mut hid_state,
@@ -83,9 +86,11 @@ async fn main(_spawner: Spawner) {
             max_packet_size: 8,
             hid_subclass: HidSubclass::Boot,
             hid_boot_protocol: HidBootProtocol::Keyboard,
+            interface_name: None,
         },
     );
-    let mut midi = MidiClass::new(&mut builder, 1, 1, 64);
+    // One jack each way, 64-byte packets.
+    let mut midi = MidiClass::new(&mut builder, MidiClassConfig::default());
     let mut usb = builder.build();
 
     let serial_loop = async {

@@ -550,8 +550,8 @@ impl Game {
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let mut scfg = spi::Config::default();
-    scfg.frequency = 62_500_000;
-    let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg);
+    scfg.frequency = embassy_rp::time::Hertz(62_500_000);
+    let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg).unwrap();
     let mut lcd = Lcd::new(spi, Output::new(p.PIN_9, Level::High), Output::new(p.PIN_13, Level::Low));
     let _bl = Output::new(p.PIN_17, Level::High);
     lcd.init().await;

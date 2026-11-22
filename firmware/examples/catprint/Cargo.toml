@@ -6,9 +6,9 @@ edition = "2024"
 # Standalone (not part of the emulator workspace): THE DAILY BIT, a Pico W on
 # a Pico Display Pack 2.0 (`boards/shields/pico-display-2.toml`) that gathers a few
 # things from the internet over Wi-Fi and prints them as a receipt on an
-# MXW01 "cat printer" over Bluetooth LE; see ../README.md. Embassy at
-# 10592165 (cyw43 waits for the chip's interrupt with Bluetooth on instead of
-# busy-polling it), trouble `main` as in ../pico-w-ble.
+# MXW01 "cat printer" over Bluetooth LE; see ../README.md. Embassy is the
+# revision all the examples share (the [patch] below), trouble `main` as in
+# ../pico-w-ble.
 
 [workspace]
 
@@ -36,14 +36,14 @@ heapless = "0.9"
 libm = "0.2"
 
 [patch.crates-io]
-cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
-embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "10592165e4d8a3a647f824a4374a82bb87272235" }
+cyw43 = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+cyw43-pio = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-rp = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-sync = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-time = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-net = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
+embassy-futures = { git = "https://github.com/embassy-rs/embassy.git", rev = "e81e8501d43883de31c02a821862188a8ef154f0" }
 
 [profile.release]
 debug = 2

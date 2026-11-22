@@ -23,7 +23,7 @@ use embassy_rp::bind_interrupts;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
-use embedded_io_async::{Read, Write};
+use embedded_io_async::Write;
 use heapless::String;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
@@ -241,7 +241,7 @@ async fn run(line: &str, out: &mut Out) {
             let us = t0.elapsed().as_micros();
             let count = sieve[..n].iter().filter(|&&p| p).count();
             let mut col = 0;
-            for (p, _) in sieve[..n].iter().enumerate().filter(|(_, &p)| p) {
+            for (p, _) in sieve[..n].iter().enumerate().filter(|&(_, &p)| p) {
                 if out.len() > 3500 {
                     let _ = out.push_str("...");
                     break;
