@@ -559,6 +559,10 @@
                   "enum": ["off", "on"],
                   "description": "start over at the end (default \"off\")"
                 },
+                "autoplay": {
+                  "enum": ["off", "on"],
+                  "description": "play from power-up, and each file as it is loaded (default \"off\")"
+                },
                 "mhz": {
                   "type": "integer",
                   "minimum": 1,

@@ -16,7 +16,8 @@
 //!
 //! Host actions: `play`, `stop` (pauses where it is), `rewind` (back to
 //! the start, playing on if it was). Emits `playing` (1 / 0), including
-//! when it reaches the end of a file that doesn't loop.
+//! when it reaches the end of a file that doesn't loop. With `autoplay`, it
+//! plays from power-up; the host plays a file it loads later, too.
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 use pcb::{Device, Io, Kind, Param};
@@ -36,6 +37,8 @@ pub struct Wav {
     gain: f32,
     channel: Channel,
     pub looping: bool,
+    /// Play from power-up, and each file as it is loaded.
+    pub autoplay: bool,
     cycles_per_sec: u64,
     /// The loaded file's name, mono samples and rate.
     pub name: Option<String>,
@@ -76,6 +79,12 @@ pub const KIND: Kind = Kind {
         )
         .default_str("mix"),
         Param::choice("loop", &["off", "on"], "start over at the end").default_str("off"),
+        Param::choice(
+            "autoplay",
+            &["off", "on"],
+            "play from power-up, and each file as it is loaded",
+        )
+        .default_str("off"),
         Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
     ],
     build: |p| {
@@ -91,6 +100,7 @@ pub const KIND: Kind = Kind {
             gain: p.int("gain") as f32 / 1000.0,
             channel,
             looping: p.str("loop") == "on",
+            autoplay: p.str("autoplay") == "on",
             cycles_per_sec: p.int("mhz") as u64 * 1_000_000,
             name: None,
             samples: Vec::new(),
@@ -191,6 +201,12 @@ impl Wav {
 }
 
 impl Device for Wav {
+    fn attach(&mut self, io: &mut Io) {
+        if self.autoplay && !self.samples.is_empty() {
+            self.set_playing(io, true);
+        }
+    }
+
     fn input(&mut self, io: &mut Io, action: &str, _value: i64) -> bool {
         match action {
             "play" => self.set_playing(io, true),
@@ -322,6 +338,7 @@ mod tests {
             gain: 1.0,
             channel: Channel::Mix,
             looping,
+            autoplay: false,
             cycles_per_sec: 1_000_000,
             name: None,
             samples: Vec::new(),
@@ -404,6 +421,18 @@ mod tests {
             close(w.analog(26, 1500), 2.0),
             "the last sample leads into the first"
         );
+    }
+
+    #[test]
+    fn autoplay_starts_at_power_up() {
+        let mut w = player(true);
+        w.autoplay = true;
+        w.load("t.wav", &wav(1, 1000, &[0, 32767])).unwrap();
+        let (mut pins, mut events, mut pending) =
+            (FakePins::default(), Vec::new(), pcb::Pending::default());
+        w.attach(&mut Io::new(&mut pins, 0, &mut events, 0, true).with_pending(&mut pending));
+        assert!(w.playing());
+        assert!(close(w.analog(26, 1000), 2.5));
     }
 
     #[test]

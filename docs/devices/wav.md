@@ -16,6 +16,7 @@ digital level stays whatever pulls or other parts make it.
 | `gain` | 0..10000 | `1650` | how far a full-scale sample swings from `bias`, in millivolts |
 | `channel` | `left` \| `right` \| `mix` | `mix` | the channel of a stereo file to play |
 | `loop` | `off` \| `on` | `off` | start over at the end of the file |
+| `autoplay` | `off` \| `on` | `off` | play from power-up, and each file as it is loaded |
 | `mhz` | 1..1000 | `125` | core clock, to turn time into cycles |
 
 ```toml
@@ -64,7 +65,8 @@ that doesn't loop.
 - `stop` pauses where it is.
 - `rewind` goes back to the start, and keeps playing if it was.
 
-The player starts out stopped. Headless, start it with `--input`:
+Without `autoplay`, the player starts out stopped. Headless, start it with
+`--input`:
 
 ```sh
 tartelette fw.elf --board my-board.toml --headless --input mic:play@0
