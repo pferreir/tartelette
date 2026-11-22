@@ -609,21 +609,20 @@ mod log_tests {
 
     use super::*;
 
-    /// The BTL-01 OS logs over defmt-rtt; set `BTL_FIRMWARE` to its ELF.
+    /// Set `DEFMT_FIRMWARE` to a firmware that logs over defmt-rtt, and
+    /// `DEFMT_BOARD` to its board file if it needs more than a plain Pico.
     #[test]
     fn session_collects_the_firmware_log() {
-        let Ok(path) = std::env::var("BTL_FIRMWARE") else {
-            eprintln!("BTL_FIRMWARE not set: skipped");
+        let Ok(path) = std::env::var("DEFMT_FIRMWARE") else {
+            eprintln!("DEFMT_FIRMWARE not set: skipped");
             return;
         };
-        let board = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../boards/btl-01.toml"
-        ))
-        .unwrap();
+        let board = std::env::var("DEFMT_BOARD")
+            .ok()
+            .map(|b| Source::new("board", std::fs::read(b).unwrap()));
         let mut s = Session::new(
             &Source::new("fw", std::fs::read(path).unwrap()),
-            Some(&Source::new("board", board)),
+            board.as_ref(),
             &[],
             &Links::default(),
         )
@@ -631,12 +630,7 @@ mod log_tests {
         assert_eq!(s.log_note, None);
         s.step(125_000_000, Instant::now() + Duration::from_secs(60));
         let log = s.take_output().log;
-        assert!(
-            log.iter()
-                .any(|e| e.line.text.contains("Entering main loop")),
-            "{:?}",
-            log.iter().map(|e| &e.line.text).collect::<Vec<_>>()
-        );
+        assert!(!log.is_empty(), "the firmware logs during boot");
         let first = log.front().unwrap();
         assert!(first.at > 0.0 && first.at < 1.0);
     }
@@ -648,16 +642,21 @@ mod bench {
 
     use super::*;
 
-    /// Host speed of `Session::step` in 14 ms slices, no GUI. Run with
+    /// Host speed of `Session::step` in 14 ms slices, no GUI, running the
+    /// firmware in `BENCH_FIRMWARE` on the board in `BENCH_BOARD` (a plain
+    /// Pico if unset). Run with
     /// `cargo test --release -p tartelette-runtime bench_ -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn bench_headless_slices() {
-        let fw = std::fs::read("../../../../btl_01/software/os-embedded/target/thumbv6m-none-eabi/release/btl_os_embedded").unwrap();
-        let board = std::fs::read("../../../boards/btl-01.toml").unwrap();
+        let fw =
+            std::fs::read(std::env::var("BENCH_FIRMWARE").expect("set BENCH_FIRMWARE")).unwrap();
+        let board = std::env::var("BENCH_BOARD")
+            .ok()
+            .map(|b| Source::new("board", std::fs::read(b).unwrap()));
         let mut s = Session::new(
             &Source::new("fw", fw),
-            Some(&Source::new("board", board)),
+            board.as_ref(),
             &[],
             &Links::default(),
         )

@@ -216,9 +216,8 @@ pub fn gate_outputs(board: &Board) -> Vec<String> {
     v
 }
 
-/// The expander pins the panel shows as outputs, in panel order (the
-/// BTL-01's gates A..D): those of `mode = "view"` items, and those wired to
-/// LEDs on items without a mode.
+/// The expander pins the panel shows as outputs, in panel order: those of
+/// `mode = "view"` items, and those wired to LEDs on items without a mode.
 fn panel_gates(board: &Board) -> Vec<String> {
     let mut v = Vec::new();
     for i in &board.panel {
