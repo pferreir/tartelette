@@ -17,6 +17,7 @@ use crate::{
     elf::{self, ElfError},
     periph::{
         Peripheral, RegStub,
+        adc::{self, Adc},
         clocks::Clocks,
         dma::{self, Dma},
         gpio::{Gpio, IoBank0, PadsBank0},
@@ -81,6 +82,7 @@ const APB_BUSCTRL: u32 = 12;
 const APB_ROSC: u32 = 24;
 const APB_PLL_SYS: u32 = 10;
 const APB_PLL_USB: u32 = 11;
+const APB_ADC: u32 = 19;
 const APB_TIMER: u32 = 21;
 const APB_RTC: u32 = 23;
 const APB_UART0: u32 = 13;
@@ -103,10 +105,12 @@ pub const IRQ_SPI0: u32 = 18;
 pub const IRQ_SPI1: u32 = 19;
 pub const IRQ_UART0: u32 = 20;
 pub const IRQ_UART1: u32 = 21;
+pub const IRQ_ADC_FIFO: u32 = 22;
 pub const IRQ_I2C0: u32 = 23;
 pub const IRQ_I2C1: u32 = 24;
 const APB_BLOCKS: usize = 32;
-/// RESETS bit of the DMA controller.
+/// RESETS bits of the ADC and the DMA controller.
+const RESET_ADC: u32 = 0;
 const RESET_DMA: u32 = 2;
 /// RESETS bits of PIO0 and PIO1.
 const RESET_PIO: [u32; 2] = [10, 11];
@@ -146,8 +150,12 @@ const PLL_FORCED: &[(u32, u32)] = &[(0x00, 1 << 31)]; // CS.LOCK
 const PLL_CS: u32 = 0x0;
 const PLL_FBDIV_INT: u32 = 0x8;
 const PLL_PRIM: u32 = 0xC;
+const XOSC_HZ: u64 = 12_000_000;
 /// CLOCKS: clk_peri's control (ENABLE, AUXSRC in bits 7:5; no divider).
 const CLK_PERI_CTRL: u32 = 0x48;
+/// CLOCKS: clk_adc's control (AUXSRC in bits 7:5) and divider (INT in 9:8).
+const CLK_ADC_CTRL: u32 = 0x60;
+const CLK_ADC_DIV: u32 = 0x64;
 // The ring oscillator runs from power-up (pico_rand asserts it does).
 const ROSC_FORCED: &[(u32, u32)] = &[(0x18, 1 << 31 | 1 << 12)]; // STATUS.STABLE, ENABLED
 // PERFSEL0..3 reset to 0x1F ("none"): pico_rand claims a free counter by
@@ -197,6 +205,7 @@ pub struct SystemBus {
     pub psm: Psm,
     pub clocks: Clocks,
     pub rtc: Rtc,
+    pub adc: Adc,
     pub usb: Usb,
     /// Each core has its own NVIC/SysTick/SCB.
     pub ppb: [Ppb; 2],
@@ -267,6 +276,7 @@ impl SystemBus {
             psm: Psm::new(),
             clocks: Clocks::new(),
             rtc: Rtc::new(),
+            adc: Adc::new(),
             usb: Usb::new(),
             ppb: [Ppb::new(CYCLES_PER_US), Ppb::new(CYCLES_PER_US)],
             stubs,
@@ -640,7 +650,7 @@ impl SystemBus {
 
     /// Can reading `addr` change an interrupt line? Only reads with side
     /// effects can: popping a FIFO the line watches (SIO FIFO_RD, the UART,
-    /// SPI, I2C and PIO RX FIFOs) or a read-to-clear (I2C's CLR_* registers,
+    /// SPI, I2C, ADC and PIO RX FIFOs) or a read-to-clear (I2C's CLR_* registers,
     /// USB SOF_RD). Reads of everything else (the hot ones: SIO CPUID, the
     /// timer, GPIO, NVIC) leave the lines alone, so the cores' NVIC inputs
     /// needn't be recomputed after them. Time catching up on a read raises
@@ -651,7 +661,7 @@ impl SystemBus {
             0xD => addr.wrapping_sub(SIO_BASE) == SIO_FIFO_RD,
             0x4 => matches!(
                 addr.wrapping_sub(APB_BASE) >> 14,
-                APB_UART0 | APB_UART1 | APB_SPI0 | APB_SPI1 | APB_I2C0 | APB_I2C1
+                APB_UART0 | APB_UART1 | APB_SPI0 | APB_SPI1 | APB_I2C0 | APB_I2C1 | APB_ADC
             ),
             0x5 if addr >> 16 == USBCTRL_REGS_BASE >> 16 => addr & 0xFFF == usb::SOF_RD,
             0x5 => addr >> 20 == PIO0_BASE >> 20 || addr >> 20 == PIO1_BASE >> 20,
@@ -739,6 +749,7 @@ impl SystemBus {
             | (self.pio[1].irq(0) as u32) << IRQ_PIO1_0
             | (self.pio[1].irq(1) as u32) << IRQ_PIO1_1
             | (self.usb.irq() as u32) << IRQ_USBCTRL
+            | (self.adc.irq() as u32) << IRQ_ADC_FIFO
     }
 
     /// Current level of every DMA request in `needed` (bit n = TREQ n).
@@ -761,6 +772,7 @@ impl SystemBus {
             33 => self.i2c[0].dreq_rx(),
             34 => self.i2c[1].dreq_tx(),
             35 => self.i2c[1].dreq_rx(),
+            36 => self.adc.dreq(),
             _ => false,
         };
         let mut mask = 0;
@@ -791,7 +803,8 @@ impl SystemBus {
             };
             e = earliest(e, until(next));
         }
-        earliest(e, until(self.usb.next_event()))
+        e = earliest(e, until(self.usb.next_event()));
+        earliest(e, until(self.adc.next_event()))
     }
 
     /// Run `f` on the peripheral behind `addr` and its register offset;
@@ -827,6 +840,10 @@ impl SystemBus {
                 self.rtc.now = self.time;
                 f(&mut self.rtc, off)
             }
+            APB_ADC => {
+                self.adc.now = self.time;
+                f(&mut self.adc, off)
+            }
             b => f(&mut self.stubs[b as usize], off),
         })
     }
@@ -836,25 +853,47 @@ impl SystemBus {
     /// and PLLs not set up yet, count as clk_sys.
     fn clk_peri_hz(&mut self) -> u64 {
         const CLK_SYS_HZ: u64 = CYCLES_PER_US * 1_000_000;
-        const XOSC_HZ: u64 = 12_000_000;
-        let mut pll = |block: u32| {
-            let regs = &mut self.stubs[block as usize];
-            let refdiv = (regs.read(PLL_CS) & 0x3F) as u64;
-            let fbdiv = (regs.read(PLL_FBDIV_INT) & 0xFFF) as u64;
-            let prim = regs.read(PLL_PRIM);
-            let post = (prim >> 16 & 7) as u64 * (prim >> 12 & 7) as u64;
-            match refdiv * post {
-                0 => 0,
-                d => XOSC_HZ * fbdiv / d,
-            }
-        };
         let hz = match self.clocks.read(CLK_PERI_CTRL) >> 5 & 7 {
-            1 => pll(APB_PLL_SYS),
-            2 => pll(APB_PLL_USB),
+            1 => self.pll_hz(APB_PLL_SYS),
+            2 => self.pll_hz(APB_PLL_USB),
             4 => XOSC_HZ,
             _ => CLK_SYS_HZ,
         };
         if hz == 0 { CLK_SYS_HZ } else { hz }
+    }
+
+    /// clk_adc's frequency, from its mux, its divider and the PLL it may run
+    /// from. Unmodelled sources (the ring oscillator, GPIN pins), and PLLs
+    /// not set up yet, count as the SDK's 48 MHz.
+    fn clk_adc_hz(&mut self) -> u64 {
+        let hz = match self.clocks.read(CLK_ADC_CTRL) >> 5 & 7 {
+            0 => self.pll_hz(APB_PLL_USB),
+            1 => self.pll_hz(APB_PLL_SYS),
+            3 => XOSC_HZ,
+            _ => 0,
+        };
+        // DIV.INT is two bits; 0 divides by 4.
+        let div = match self.clocks.read(CLK_ADC_DIV) >> 8 & 3 {
+            0 => 4,
+            d => d as u64,
+        };
+        match hz / div {
+            0 => adc::DEFAULT_CLK_HZ,
+            hz => hz,
+        }
+    }
+
+    /// A PLL's output frequency from its registers (0 if not set up).
+    fn pll_hz(&mut self, block: u32) -> u64 {
+        let regs = &mut self.stubs[block as usize];
+        let refdiv = (regs.read(PLL_CS) & 0x3F) as u64;
+        let fbdiv = (regs.read(PLL_FBDIV_INT) & 0xFFF) as u64;
+        let prim = regs.read(PLL_PRIM);
+        let post = (prim >> 16 & 7) as u64 * (prim >> 12 & 7) as u64;
+        match refdiv * post {
+            0 => 0,
+            d => XOSC_HZ * fbdiv / d,
+        }
     }
 
     fn apb_read(&mut self, addr: u32) -> u32 {
@@ -876,6 +915,9 @@ impl SystemBus {
         let rel = addr.wrapping_sub(APB_BASE);
         if rel >> 14 == APB_RESETS {
             self.usb.set_held(self.resets.in_reset(RESET_USBCTRL));
+            if self.resets.in_reset(RESET_ADC) {
+                self.adc.reset();
+            }
         }
         if matches!(rel >> 14, APB_CLOCKS | APB_PLL_SYS | APB_PLL_USB) {
             let hz = self.clk_peri_hz();
@@ -885,6 +927,8 @@ impl SystemBus {
             for s in &mut self.spi {
                 s.set_clk_peri(hz);
             }
+            let hz = self.clk_adc_hz();
+            self.adc.set_clk_adc(hz);
         }
         if rel >> 14 == APB_IO_QSPI && rel & 0xFFF == QSPI_SS_CTRL {
             let outover = self.stubs[APB_IO_QSPI as usize].read(QSPI_SS_CTRL) >> 8 & 3;
@@ -1647,11 +1691,32 @@ impl System {
         }
         self.bus.update_uarts(to);
         self.bus.update_usb(to);
+        self.update_adc(to);
         // A sleeping core's clock keeps pace with real time.
         for (cpu, held) in self.cores.iter_mut().zip(self.held) {
             if cpu.sleeping && !held {
                 cpu.cycles = cpu.cycles.max(to);
             }
+        }
+    }
+
+    /// Finish the ADC conversions due by `to`, sampling the board's analog
+    /// sources. A pin no device drives reads as its digital level (a pull,
+    /// a button), at 0 or 3.3 V. A result can raise the FIFO interrupt or
+    /// DMA request, so it gets a full sync.
+    fn update_adc(&mut self, to: u64) {
+        if self.bus.adc.next_event().is_none_or(|t| t > to) {
+            return;
+        }
+        let (board, gpio) = (&self.board, &self.bus.gpio);
+        let sample = |pin: usize, at: u64| {
+            board
+                .analog(pin, at)
+                .unwrap_or(if gpio.pin_level(pin) { adc::VREF } else { 0.0 })
+        };
+        if self.bus.adc.update(to, sample) {
+            self.bus.lines_dirty = true;
+            self.bus.touched = true;
         }
     }
 

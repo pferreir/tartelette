@@ -3,6 +3,7 @@
 //! handled by the system bus.
 use alloc::vec::Vec;
 
+pub mod adc;
 pub mod clocks;
 pub mod dma;
 pub mod gpio;
