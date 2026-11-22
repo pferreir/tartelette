@@ -14,15 +14,14 @@
 use core::convert::Infallible;
 
 use embassy_futures::join::join;
-use embassy_rp::gpio::Output;
-use embassy_rp::mode::Async;
-use embassy_rp::spi::Spi;
+use embassy_rp::{gpio::Output, mode::Async, spi::Spi};
 use embassy_time::Timer;
-use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
-use embedded_graphics::pixelcolor::raw::RawU16;
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
+use embedded_graphics::{
+    mono_font::{MonoFont, MonoTextStyle},
+    pixelcolor::{Rgb565, raw::RawU16},
+    prelude::*,
+    text::{Baseline, Text},
+};
 
 pub const W: i32 = 320;
 pub const H: i32 = 240;
@@ -49,7 +48,7 @@ pub fn mix(a: u16, b: u16, t: u32) -> u16 {
 pub struct Rng(pub u32);
 
 impl Rng {
-    pub fn next(&mut self) -> u32 {
+    pub fn next_u32(&mut self) -> u32 {
         let mut x = self.0;
         x ^= x << 13;
         x ^= x >> 17;
@@ -60,12 +59,12 @@ impl Rng {
 
     /// In `0..n`.
     pub fn below(&mut self, n: u32) -> u32 {
-        self.next() % n.max(1)
+        self.next_u32() % n.max(1)
     }
 
     /// In `0.0..1.0`.
     pub fn unit(&mut self) -> f32 {
-        (self.next() >> 8) as f32 / (1u32 << 24) as f32
+        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
     }
 }
 
@@ -80,12 +79,18 @@ pub struct Canvas {
 
 impl Canvas {
     pub const fn new() -> Self {
-        Self { buf: [0; (W * STRIP / 2) as usize], y0: 0, h: 0 }
+        Self {
+            buf: [0; (W * STRIP / 2) as usize],
+            y0: 0,
+            h: 0,
+        }
     }
 
     fn pixels(&mut self) -> &mut [u16] {
         // SAFETY: u32s are u16-aligned, and twice the size.
-        unsafe { core::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u16, self.buf.len() * 2) }
+        unsafe {
+            core::slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut u16, self.buf.len() * 2)
+        }
     }
 
     fn begin(&mut self, y: i32, h: i32, bg: u16) {
@@ -97,7 +102,9 @@ impl Canvas {
 
     fn bytes(&self) -> &[u8] {
         // SAFETY: plain integers, viewed as the bytes they are in memory.
-        unsafe { core::slice::from_raw_parts(self.buf.as_ptr() as *const u8, (W * self.h * 2) as usize) }
+        unsafe {
+            core::slice::from_raw_parts(self.buf.as_ptr() as *const u8, (W * self.h * 2) as usize)
+        }
     }
 
     /// FNV-1a over the pixels, a word at a time; never 0.
@@ -118,17 +125,21 @@ impl Canvas {
     #[inline]
     pub fn px(&mut self, x: i32, y: i32, c: u16) {
         let ly = y - self.y0;
-        if x >= 0 && x < W && ly >= 0 && ly < self.h {
+        if (0..W).contains(&x) && ly >= 0 && ly < self.h {
             self.pixels()[(ly * W + x) as usize] = c.to_be();
         }
     }
 
     pub fn get(&self, x: i32, y: i32) -> u16 {
         let ly = y - self.y0;
-        if x >= 0 && x < W && ly >= 0 && ly < self.h {
+        if (0..W).contains(&x) && ly >= 0 && ly < self.h {
             let i = (ly * W + x) as usize;
             let w = self.buf[i / 2];
-            let half = if cfg!(target_endian = "little") == (i % 2 == 0) { w as u16 } else { (w >> 16) as u16 };
+            let half = if cfg!(target_endian = "little") == i.is_multiple_of(2) {
+                w as u16
+            } else {
+                (w >> 16) as u16
+            };
             u16::from_be(half)
         } else {
             0
@@ -137,7 +148,7 @@ impl Canvas {
 
     /// Blend `c` over what is there, `t` out of 256.
     pub fn blend(&mut self, x: i32, y: i32, c: u16, t: u32) {
-        if y >= self.y0 && y < self.y0 + self.h && x >= 0 && x < W {
+        if y >= self.y0 && y < self.y0 + self.h && (0..W).contains(&x) {
             let old = self.get(x, y);
             self.px(x, y, mix(old, c, t));
         }
@@ -197,7 +208,16 @@ impl Canvas {
         }
         let (mut x, mut y, mut d) = (r, 0, 1 - r);
         while x >= y {
-            for (px, py) in [(x, y), (y, x), (-y, x), (-x, y), (-x, -y), (-y, -x), (y, -x), (x, -y)] {
+            for (px, py) in [
+                (x, y),
+                (y, x),
+                (-y, x),
+                (-x, y),
+                (-x, -y),
+                (-y, -x),
+                (y, -x),
+                (x, -y),
+            ] {
                 self.px(cx + px, cy + py, c);
             }
             y += 1;
@@ -241,6 +261,12 @@ impl Canvas {
     }
 }
 
+impl Default for Canvas {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn text_width(s: &str, font: &MonoFont) -> i32 {
     s.len() as i32 * (font.character_size.width + font.character_spacing) as i32
 }
@@ -269,7 +295,10 @@ impl DrawTarget for Canvas {
     type Color = Rgb565;
     type Error = Infallible;
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<Self::Color>>>(&mut self, pixels: I) -> Result<(), Infallible> {
+    fn draw_iter<I: IntoIterator<Item = Pixel<Self::Color>>>(
+        &mut self,
+        pixels: I,
+    ) -> Result<(), Infallible> {
         for Pixel(p, c) in pixels {
             self.px(p.x, p.y, c.into_storage());
         }
@@ -290,7 +319,13 @@ pub struct Lcd {
 
 impl Lcd {
     pub fn new(spi: Spi<'static, Async>, cs: Output<'static>, dc: Output<'static>) -> Self {
-        Self { spi, cs, dc, strips: [Canvas::new(), Canvas::new()], sent: [0; (H / STRIP) as usize] }
+        Self {
+            spi,
+            cs,
+            dc,
+            strips: [Canvas::new(), Canvas::new()],
+            sent: [0; (H / STRIP) as usize],
+        }
     }
 
     fn cmd(&mut self, c: u8, args: &[u8]) {
@@ -320,11 +355,18 @@ impl Lcd {
     /// DMA sends one strip, the CPU draws the next.
     pub async fn frame(&mut self, bg: u16, scene: &mut dyn FnMut(&mut Canvas)) {
         const N: usize = (H / STRIP) as usize;
-        let Self { spi, cs, dc, strips, sent } = self;
+        let Self {
+            spi,
+            cs,
+            dc,
+            strips,
+            sent,
+        } = self;
         let [a, b] = strips;
         let (mut ready, mut spare) = (a, b);
         // The strip in `ready`, if it is to be sent.
         let mut pending: Option<usize> = None;
+        #[allow(clippy::needless_range_loop)] // `pending` and `s` lag one strip apart
         for s in 0..=N {
             let send = async {
                 if let Some(p) = pending {
@@ -365,5 +407,4 @@ impl Lcd {
             core::mem::swap(&mut ready, &mut spare);
         }
     }
-
 }

@@ -5,8 +5,10 @@
 #[path = "../pico_w.rs"]
 mod pico_w;
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use {defmt_rtt as _, embassy_time as _, panic_probe as _};
+use embassy_time as _;
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {

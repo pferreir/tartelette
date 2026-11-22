@@ -7,13 +7,19 @@ use std::{env, fs::File, io::Write, path::PathBuf};
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    File::create(out.join("memory.x")).unwrap().write_all(include_bytes!("memory.x")).unwrap();
+    File::create(out.join("memory.x"))
+        .unwrap()
+        .write_all(include_bytes!("memory.x"))
+        .unwrap();
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rerun-if-env-changed=CYW43_FIRMWARE_DIR");
     let dir = env::var("CYW43_FIRMWARE_DIR").expect("set CYW43_FIRMWARE_DIR");
     for f in ["43439A0.bin", "43439A0_clm.bin", "nvram_rp2040.bin"] {
-        assert!(PathBuf::from(&dir).join(f).exists(), "{dir}/{f} not found: set CYW43_FIRMWARE_DIR");
+        assert!(
+            PathBuf::from(&dir).join(f).exists(),
+            "{dir}/{f} not found: set CYW43_FIRMWARE_DIR"
+        );
     }
     println!("cargo:rustc-env=CYW43_FIRMWARE_DIR={dir}");
     println!("cargo:rustc-link-arg-bins=--nmagic");

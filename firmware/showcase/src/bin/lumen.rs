@@ -13,23 +13,28 @@
 #![no_main]
 
 use core::fmt::Write as _;
-use portable_atomic::{AtomicI32, Ordering};
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::pio_programs::rotary_encoder::{Direction, PioEncoder, PioEncoderProgram};
-use embassy_rp::pio_programs::ws2812::{PioWs2812, PioWs2812Program};
-use embassy_rp::mode::Blocking;
-use embassy_rp::uart::{self, UartTx};
-use embassy_time::{Instant, Ticker, Duration};
+use embassy_rp::{
+    bind_interrupts,
+    gpio::{Input, Level, Output, Pull},
+    mode::Blocking,
+    peripherals::{DMA_CH0, PIO0},
+    pio::{InterruptHandler, Pio},
+    pio_programs::{
+        rotary_encoder::{Direction, PioEncoder, PioEncoderProgram},
+        ws2812::{PioWs2812, PioWs2812Program},
+    },
+    uart::{self, UartTx},
+};
+use embassy_time::{Duration, Instant, Ticker};
 use heapless::String;
+use panic_probe as _;
+use portable_atomic::{AtomicI32, Ordering};
 use showcase::Rng;
 use smart_leds::RGB8;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -57,9 +62,10 @@ async fn knob_task(mut enc: PioEncoder<'static, PIO0, 1>) {
 /// sin over a 256-step turn, -127..127.
 fn sin8(a: u32) -> i32 {
     const Q: [i8; 65] = [
-        0, 3, 6, 9, 12, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46, 49, 51, 54, 57, 60, 63, 65, 68, 71, 73, 76,
-        78, 81, 83, 85, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 107, 109, 111, 112, 113, 115, 116, 117,
-        118, 120, 121, 122, 122, 123, 124, 125, 125, 126, 126, 126, 127, 127, 127, 127,
+        0, 3, 6, 9, 12, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46, 49, 51, 54, 57, 60, 63, 65, 68,
+        71, 73, 76, 78, 81, 83, 85, 88, 90, 92, 94, 96, 98, 100, 102, 104, 106, 107, 109, 111, 112,
+        113, 115, 116, 117, 118, 120, 121, 122, 122, 123, 124, 125, 125, 126, 126, 126, 127, 127,
+        127, 127,
     ];
     let a = a & 255;
     let (quad, i) = (a / 64, (a % 64) as usize);
@@ -74,7 +80,7 @@ fn sin8(a: u32) -> i32 {
 /// A colour wheel, `h` over 256 steps, full saturation.
 fn hue(h: u32, v: u8) -> RGB8 {
     let h = (h & 255) as u16 * 6;
-    let (sector, f) = (h / 256, (h % 256) as u16);
+    let (sector, f) = (h / 256, h % 256);
     let v16 = v as u16;
     let up = (v16 * f / 256) as u8;
     let down = (v16 * (255 - f) / 256) as u8;
@@ -101,11 +107,19 @@ fn heat(t: u8) -> RGB8 {
 fn scale(c: RGB8, s: u16) -> RGB8 {
     // A rough gamma, then brightness: dim LEDs look better that way.
     let g = |v: u8| ((v as u16 * v as u16 / 255) * s / 256) as u8;
-    RGB8 { r: g(c.r), g: g(c.g), b: g(c.b) }
+    RGB8 {
+        r: g(c.r),
+        g: g(c.g),
+        b: g(c.b),
+    }
 }
 
 fn add(a: RGB8, b: RGB8) -> RGB8 {
-    RGB8 { r: a.r.saturating_add(b.r), g: a.g.saturating_add(b.g), b: a.b.saturating_add(b.b) }
+    RGB8 {
+        r: a.r.saturating_add(b.r),
+        g: a.g.saturating_add(b.g),
+        b: a.b.saturating_add(b.b),
+    }
 }
 
 // -------------------------------------------------------------- scenes ----
@@ -120,7 +134,14 @@ enum Scene {
     Fireflies,
 }
 
-const SCENES: [Scene; 6] = [Scene::Plasma, Scene::Fire, Scene::Rain, Scene::Life, Scene::Ripples, Scene::Fireflies];
+const SCENES: [Scene; 6] = [
+    Scene::Plasma,
+    Scene::Fire,
+    Scene::Rain,
+    Scene::Life,
+    Scene::Ripples,
+    Scene::Fireflies,
+];
 
 impl Scene {
     fn name(self) -> &'static str {
@@ -188,7 +209,7 @@ impl World {
                         px[at(x, y)] = hue((v / 4 + 128) as u32 + shift + t / 4, 255);
                     }
                 }
-                beat = t % 50 == 0;
+                beat = t.is_multiple_of(50);
             }
             Scene::Fire => {
                 let fuel = (180 + k * 6).clamp(60, 255) as u32;
@@ -216,7 +237,7 @@ impl World {
                 for v in self.drops.iter_mut() {
                     *v = v.saturating_sub(40);
                 }
-                if t % 3 == 0 {
+                if t.is_multiple_of(3) {
                     for y in (1..8).rev() {
                         for x in 0..8 {
                             if self.drops[at(x, y - 1)] >= 200 {
@@ -233,17 +254,30 @@ impl World {
                 }
                 for i in 0..N {
                     let v = self.drops[i];
-                    px[i] = RGB8 { r: v / 6, g: v / 2, b: v };
+                    px[i] = RGB8 {
+                        r: v / 6,
+                        g: v / 2,
+                        b: v,
+                    };
                 }
             }
             Scene::Life => {
                 let every = (12 - k).clamp(1, 40) as u32;
-                if t % every == 0 {
+                if t.is_multiple_of(every) {
                     let mut next = [false; N];
                     for y in 0..8 {
                         for x in 0..8 {
                             let mut n = 0;
-                            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                            for (dx, dy) in [
+                                (-1, -1),
+                                (0, -1),
+                                (1, -1),
+                                (-1, 0),
+                                (1, 0),
+                                (-1, 1),
+                                (0, 1),
+                                (1, 1),
+                            ] {
                                 n += self.life[at(x + dx, y + dy)] as u8;
                             }
                             let alive = self.life[at(x, y)];
@@ -255,10 +289,14 @@ impl World {
                     }
                     let count = next.iter().filter(|&&c| c).count();
                     for i in 0..N {
-                        self.life_age[i] = if next[i] { self.life_age[i].saturating_add(1) } else { 0 };
+                        self.life_age[i] = if next[i] {
+                            self.life_age[i].saturating_add(1)
+                        } else {
+                            0
+                        };
                     }
                     self.life = next;
-                    if self.still > 3 || count < 3 || t % (every * 300) == 0 {
+                    if self.still > 3 || count < 3 || t.is_multiple_of(every * 300) {
                         self.seed_life();
                     }
                     beat = true;
@@ -272,9 +310,14 @@ impl World {
                 }
             }
             Scene::Ripples => {
-                if t % 40 == 0 || self.rings.iter().all(|r| r.2 > 400) {
+                if t.is_multiple_of(40) || self.rings.iter().all(|r| r.2 > 400) {
                     let slot = (t / 40) as usize % self.rings.len();
-                    self.rings[slot] = (self.rng.below(8) as i32, self.rng.below(8) as i32, 0, self.rng.below(256));
+                    self.rings[slot] = (
+                        self.rng.below(8) as i32,
+                        self.rng.below(8) as i32,
+                        0,
+                        self.rng.below(256),
+                    );
                     beat = true;
                 }
                 px.fill(RGB8::default());
@@ -282,7 +325,9 @@ impl World {
                     r.2 += 3;
                     for y in 0..8 {
                         for x in 0..8 {
-                            let d = showcase::isqrt(((x - r.0) * (x - r.0) + (y - r.1) * (y - r.1)) * 256);
+                            let d = showcase::isqrt(
+                                ((x - r.0) * (x - r.0) + (y - r.1) * (y - r.1)) * 256,
+                            );
                             let off = (d - r.2 / 2 * 3).abs();
                             if off < 24 {
                                 let v = ((24 - off) * 10).clamp(0, 255) as u8;
@@ -307,11 +352,15 @@ impl World {
                         continue;
                     }
                     let glow = sin8(t * 4 + f.4).max(0) as u32 * 2;
-                    if glow > 200 && t % 4 == 0 && i == 0 {
+                    if glow > 200 && t.is_multiple_of(4) && i == 0 {
                         beat = true;
                     }
                     let (cx, cy) = (f.0 / 256, f.1 / 256);
-                    let c = RGB8 { r: (glow * 3 / 4) as u8, g: glow as u8, b: 0 };
+                    let c = RGB8 {
+                        r: (glow * 3 / 4) as u8,
+                        g: glow as u8,
+                        b: 0,
+                    };
                     px[at(cx, cy)] = add(px[at(cx, cy)], c);
                 }
             }
@@ -324,9 +373,15 @@ impl World {
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
 
-    let Pio { mut common, sm0, sm1, .. } = Pio::new(p.PIO0, Irqs);
+    let Pio {
+        mut common,
+        sm0,
+        sm1,
+        ..
+    } = Pio::new(p.PIO0, Irqs);
     let prg = PioWs2812Program::new(&mut common);
-    let mut leds: PioWs2812<'_, PIO0, 0, _> = PioWs2812::new(&mut common, sm0, p.PIN_2, p.DMA_CH0, Irqs, &prg);
+    let mut leds: PioWs2812<'_, PIO0, 0, _> =
+        PioWs2812::new(&mut common, sm0, p.PIN_2, p.DMA_CH0, Irqs, &prg);
     let enc_prg = PioEncoderProgram::new(&mut common);
     let enc = PioEncoder::new(&mut common, sm1, p.PIN_4, p.PIN_5, &enc_prg);
     spawner.spawn(knob_task(enc).unwrap());
@@ -334,7 +389,8 @@ async fn main(spawner: Spawner) {
     let next = Input::new(p.PIN_6, Pull::Up);
     let bright = Input::new(p.PIN_7, Pull::Up);
     let mut led = Output::new(p.PIN_25, Level::Low);
-    let mut uart: UartTx<'_, Blocking> = UartTx::new_blocking(p.UART0, p.PIN_0, uart::Config::default());
+    let mut uart: UartTx<'_, Blocking> =
+        UartTx::new_blocking(p.UART0, p.PIN_0, uart::Config::default());
     let mut say = |s: &str| {
         let _ = uart.blocking_write(s.as_bytes());
         let _ = uart.blocking_write(b"\r\n");
@@ -372,7 +428,13 @@ async fn main(spawner: Spawner) {
     let mut out = [RGB8::default(); N];
     let mut ticker = Ticker::every(Duration::from_hz(FPS));
     let mut s: String<80> = String::new();
-    let _ = write!(s, "scene 1/{}: {} (knob: {})", SCENES.len(), SCENES[0].name(), SCENES[0].knob());
+    let _ = write!(
+        s,
+        "scene 1/{}: {} (knob: {})",
+        SCENES.len(),
+        SCENES[0].name(),
+        SCENES[0].knob()
+    );
     say(&s);
     let mut beat_until = Instant::now();
     loop {
@@ -386,7 +448,14 @@ async fn main(spawner: Spawner) {
             shown_k = saved[scene];
             s.clear();
             let sc = SCENES[scene];
-            let _ = write!(s, "scene {}/{}: {} (knob: {})", scene + 1, SCENES.len(), sc.name(), sc.knob());
+            let _ = write!(
+                s,
+                "scene {}/{}: {} (knob: {})",
+                scene + 1,
+                SCENES.len(),
+                sc.name(),
+                sc.knob()
+            );
             say(&s);
             info!("scene {}", sc.name());
         }

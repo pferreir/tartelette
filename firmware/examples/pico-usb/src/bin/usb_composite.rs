@@ -8,6 +8,7 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join4;
 use embassy_rp::{
@@ -27,7 +28,7 @@ use embassy_usb::{
         midi::device::{MidiClass, MidiClassConfig},
     },
 };
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
@@ -125,7 +126,7 @@ async fn main(_spawner: Spawner) {
             midi.wait_connection().await;
             info!("midi: connected");
             while let Ok(n) = midi.read_packet(&mut buf).await {
-                for packet in buf[..n].chunks_exact_mut(4) {
+                for packet in buf[..n].as_chunks_mut::<4>().0 {
                     transpose(packet);
                 }
                 if midi.write_packet(&buf[..n]).await.is_err() {

@@ -2,15 +2,14 @@
 //! frame buffer is needed (the receipt takes most of the RAM).
 use core::convert::Infallible;
 
-use embassy_rp::gpio::Output;
-use embassy_rp::mode::Blocking;
-use embassy_rp::spi::Spi;
+use embassy_rp::{gpio::Output, mode::Blocking, spi::Spi};
 use embassy_time::Timer;
-use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
-use embedded_graphics::pixelcolor::raw::RawU16;
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
+use embedded_graphics::{
+    mono_font::{MonoFont, MonoTextStyle},
+    pixelcolor::{Rgb565, raw::RawU16},
+    prelude::*,
+    text::{Baseline, Text},
+};
 
 pub const W: i32 = 320;
 pub const H: i32 = 240;
@@ -37,7 +36,13 @@ pub struct Canvas {
 
 impl Canvas {
     pub const fn new() -> Self {
-        Self { buf: [0; (W * STRIP * 2) as usize], x0: 0, y0: 0, w: 0, h: 0 }
+        Self {
+            buf: [0; (W * STRIP * 2) as usize],
+            x0: 0,
+            y0: 0,
+            w: 0,
+            h: 0,
+        }
     }
 
     fn begin(&mut self, x: i32, y: i32, w: i32, h: i32) {
@@ -100,7 +105,10 @@ impl DrawTarget for Canvas {
     type Color = Rgb565;
     type Error = Infallible;
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb565>>>(&mut self, pixels: I) -> Result<(), Infallible> {
+    fn draw_iter<I: IntoIterator<Item = Pixel<Rgb565>>>(
+        &mut self,
+        pixels: I,
+    ) -> Result<(), Infallible> {
         for Pixel(p, c) in pixels {
             self.px(p.x, p.y, c.into_storage());
         }
@@ -139,7 +147,15 @@ impl Lcd {
     }
 
     /// Render `scene` into the rectangle, one strip at a time.
-    pub fn flush(&mut self, cv: &mut Canvas, x: i32, y: i32, w: i32, h: i32, scene: &mut dyn FnMut(&mut Canvas)) {
+    pub fn flush(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        scene: &mut dyn FnMut(&mut Canvas),
+    ) {
         let mut yy = y;
         while yy < y + h {
             let rows = STRIP.min(y + h - yy);
@@ -147,7 +163,10 @@ impl Lcd {
             scene(cv);
             let (xe, ye) = (x + w - 1, yy + rows - 1);
             self.cmd(0x2A, &[(x >> 8) as u8, x as u8, (xe >> 8) as u8, xe as u8]);
-            self.cmd(0x2B, &[(yy >> 8) as u8, yy as u8, (ye >> 8) as u8, ye as u8]);
+            self.cmd(
+                0x2B,
+                &[(yy >> 8) as u8, yy as u8, (ye >> 8) as u8, ye as u8],
+            );
             self.cs.set_low();
             self.dc.set_low();
             let _ = self.spi.blocking_write(&[0x2C]);

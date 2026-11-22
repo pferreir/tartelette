@@ -9,12 +9,13 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
+use panic_probe as _;
 use rp2040_hal::{self as hal, clocks::init_clocks_and_plls, pac, usb::UsbBus, watchdog::Watchdog};
 use usb_device::{class_prelude::*, prelude::*};
 use usbd_hid::hid_class::HIDClass;
 use usbd_midi::UsbMidiClass;
 use usbd_serial::SerialPort;
-use {defmt_rtt as _, panic_probe as _};
 
 #[unsafe(link_section = ".boot2")]
 #[used]
@@ -97,13 +98,15 @@ fn main() -> ! {
                 }
             }
         }
-        if let [key, more @ ..] = keys {
-            if keyboard.push_raw_input(&[0, 0, *key, 0, 0, 0, 0, 0]).is_ok() {
-                keys = more;
-            }
+        if let [key, more @ ..] = keys
+            && keyboard
+                .push_raw_input(&[0, 0, *key, 0, 0, 0, 0, 0])
+                .is_ok()
+        {
+            keys = more;
         }
         if let Ok(n @ 1..) = midi.read(&mut buf) {
-            for packet in buf[..n].chunks_exact_mut(4) {
+            for packet in buf[..n].as_chunks_mut::<4>().0 {
                 transpose(packet);
                 let p = [packet[0], packet[1], packet[2], packet[3]];
                 while let Err(UsbError::WouldBlock) = midi.send_bytes(p) {

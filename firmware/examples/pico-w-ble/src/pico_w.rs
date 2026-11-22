@@ -1,14 +1,16 @@
 //! Pico W bring-up shared by the binaries: power the CYW43439, load its
 //! Wi-Fi and Bluetooth firmware, and hand back an HCI controller for
 //! trouble. The blobs come from `CYW43_FIRMWARE_DIR` (see build.rs).
-use cyw43::{aligned_bytes, Cyw43439};
+use cyw43::{Cyw43439, aligned_bytes};
 use cyw43_pio::PioSpi;
 use defmt::unwrap;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
+use embassy_rp::{
+    bind_interrupts, dma,
+    gpio::{Level, Output},
+    peripherals::{DMA_CH0, DMA_CH1, PIO0},
+    pio::{InterruptHandler, Pio},
+};
 use static_cell::StaticCell;
 use trouble_host::prelude::ExternalController;
 
@@ -18,11 +20,19 @@ bind_interrupts!(struct Irqs {
 });
 
 #[embassy_executor::task]
-async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>, Cyw43439>) -> ! {
+async fn cyw43_task(
+    runner: cyw43::Runner<
+        'static,
+        cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>,
+        Cyw43439,
+    >,
+) -> ! {
     runner.run().await
 }
 
-pub async fn controller(spawner: Spawner) -> ExternalController<cyw43::bluetooth::BtDriver<'static>, 10> {
+pub async fn controller(
+    spawner: Spawner,
+) -> ExternalController<cyw43::bluetooth::BtDriver<'static>, 10> {
     let p = embassy_rp::init(Default::default());
     let fw = aligned_bytes!(concat!(env!("CYW43_FIRMWARE_DIR"), "/43439A0.bin"));
     let clm = aligned_bytes!(concat!(env!("CYW43_FIRMWARE_DIR"), "/43439A0_clm.bin"));
@@ -46,7 +56,8 @@ pub async fn controller(spawner: Spawner) -> ExternalController<cyw43::bluetooth
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
     let state = STATE.init(cyw43::State::new());
-    let (_net_device, bt_device, mut control, runner) = cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw, nvram).await;
+    let (_net_device, bt_device, mut control, runner) =
+        cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
     control.init(clm, cyw43::Config::default()).await;
     ExternalController::new(bt_device)

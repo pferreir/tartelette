@@ -2,12 +2,16 @@
 use core::fmt::Write as _;
 
 use embassy_time::Instant;
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X13_BOLD, FONT_8X13_BOLD, FONT_9X15_BOLD, FONT_9X18_BOLD};
+use embedded_graphics::mono_font::ascii::{
+    FONT_6X13_BOLD, FONT_8X13_BOLD, FONT_9X15_BOLD, FONT_9X18_BOLD, FONT_10X20,
+};
 use heapless::{String, Vec};
 
-use crate::astro;
-use crate::paper::{Paper, ROW_BYTES, W};
-use crate::web::Probe;
+use crate::{
+    astro,
+    paper::{Paper, ROW_BYTES, W},
+    web::Probe,
+};
 
 // Bold faces throughout: the head can't heat a lone dot enough, so strokes
 // one dot wide print faint.
@@ -85,7 +89,8 @@ impl Report {
     }
 
     pub fn unix(&self) -> Option<i64> {
-        self.clock.map(|(t, at)| (t + at.elapsed().as_secs()) as i64)
+        self.clock
+            .map(|(t, at)| (t + at.elapsed().as_secs()) as i64)
     }
 }
 
@@ -131,7 +136,12 @@ fn hhmm(secs: i64) -> String<8> {
 
 fn utc_offset(off: i32) -> String<12> {
     let a = off.unsigned_abs();
-    s(format_args!("UTC{}{:02}:{:02}", if off < 0 { '-' } else { '+' }, a / 3600, a / 60 % 60))
+    s(format_args!(
+        "UTC{}{:02}:{:02}",
+        if off < 0 { '-' } else { '+' },
+        a / 3600,
+        a / 60 % 60
+    ))
 }
 
 /// "07:42:10" to minutes after midnight.
@@ -186,7 +196,10 @@ fn masthead(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
                 utc_offset(offset)
             ))
         }
-        None => s(format_args!("NO.???  EDITION {}  (CLOCK NOT SET)", r.edition)),
+        None => s(format_args!(
+            "NO.???  EDITION {}  (CLOCK NOT SET)",
+            r.edition
+        )),
     };
     p.text_center(p.y, &line, BODY, 1, true);
     p.y += 16;
@@ -214,7 +227,10 @@ fn whoami(p: &mut Paper, r: &Report) {
     let lan: String<40> = s(format_args!("{} via {}", r.lan_ip, r.gateway));
     kv(p, "lan", &lan);
     let m = r.mac;
-    let mac: String<20> = s(format_args!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", m[0], m[1], m[2], m[3], m[4], m[5]));
+    let mac: String<20> = s(format_args!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        m[0], m[1], m[2], m[3], m[4], m[5]
+    ));
     kv(p, "mac", &mac);
     p.gap(8);
 }
@@ -261,7 +277,11 @@ fn weather(p: &mut Paper, r: &Report, unix: Option<i64>, offset: i32) {
 
     // 24 hours, 16 dots each: the daylight shaded, now marked.
     let (rise, set) = (minutes(w.get(8)), minutes(w.get(9)));
-    let label: String<48> = s(format_args!("daylight {} - {}", hhmm(rise.unwrap_or(0) as i64 * 60), hhmm(set.unwrap_or(0) as i64 * 60)));
+    let label: String<48> = s(format_args!(
+        "daylight {} - {}",
+        hhmm(rise.unwrap_or(0) as i64 * 60),
+        hhmm(set.unwrap_or(0) as i64 * 60)
+    ));
     p.line_text(&label, SMALL);
     p.gap(4);
     let (y0, h) = (p.y, 18);
@@ -302,7 +322,11 @@ fn moon(p: &mut Paper, t: i64) {
     for dy in -r..=r {
         let w = libm::sqrtf((r * r - dy * dy) as f32);
         let c = libm::cosf(theta);
-        let (l0, l1) = if theta < core::f32::consts::PI { (w * c, w) } else { (-w, -w * c) };
+        let (l0, l1) = if theta < core::f32::consts::PI {
+            (w * c, w)
+        } else {
+            (-w, -w * c)
+        };
         for dx in -(w as i32)..=(w as i32) {
             let x = dx as f32;
             if !(x >= l0 && x <= l1) {
@@ -312,12 +336,22 @@ fn moon(p: &mut Paper, t: i64) {
     }
     p.circle(cx, cy, r);
     let half = 29.530_588 / 2.0;
-    let to_full = if age < half { half - age } else { 2.0 * half - age + half };
+    let to_full = if age < half {
+        half - age
+    } else {
+        2.0 * half - age + half
+    };
     p.line_text(astro::moon_name(age), &FONT_8X13_BOLD);
     p.line_text(&s::<32>(format_args!("age  {:.1} days", age)), BODY);
-    p.line_text(&s::<32>(format_args!("lit  {:.0}%", astro::moon_lit(age) * 100.0)), BODY);
+    p.line_text(
+        &s::<32>(format_args!("lit  {:.0}%", astro::moon_lit(age) * 100.0)),
+        BODY,
+    );
     p.line_text(&s::<32>(format_args!("full in {:.1} d", to_full)), BODY);
-    p.line_text(&s::<32>(format_args!("new  in {:.1} d", 2.0 * half - age)), BODY);
+    p.line_text(
+        &s::<32>(format_args!("new  in {:.1} d", 2.0 * half - age)),
+        BODY,
+    );
     p.y = p.y.max(cy + r + 4);
     p.gap(8);
 }
@@ -361,7 +395,11 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
     let tag = |p: &mut Paper, x: i32, y: i32, t: &str, left: Option<bool>| {
         let w = t.len() as i32 * 6;
         let left = left.unwrap_or(x > x0 + 300);
-        let tx = if left { (x - 8 - w).max(x0 + 1) } else { (x + 8).min(x0 + 359 - w) };
+        let tx = if left {
+            (x - 8 - w).max(x0 + 1)
+        } else {
+            (x + 8).min(x0 + 359 - w)
+        };
         p.fill(tx - 1, y - 7, w + 2, 15, false);
         p.text(tx, y - 6, t, SMALL, 1, true);
     };
@@ -371,7 +409,12 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
         for k in 0..8 {
             let a = k as f32 * core::f32::consts::PI / 4.0;
             let (c, s) = (libm::cosf(a), libm::sinf(a));
-            p.line(x + (c * 5.0) as i32, y + (s * 5.0) as i32, x + (c * 7.0) as i32, y + (s * 7.0) as i32);
+            p.line(
+                x + (c * 5.0) as i32,
+                y + (s * 5.0) as i32,
+                x + (c * 7.0) as i32,
+                y + (s * 7.0) as i32,
+            );
         }
         tag(p, x, y, "SUN", None);
     }
@@ -384,8 +427,15 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
         _ => None,
     };
     // Right over you: you become a ring around it (below), labels outside.
-    let over = matches!((you, iss), (Some(u), Some(i)) if (i.0 - u.0).abs() < 9 && (i.1 - u.1).abs() < 7);
-    let past_ring = |x: i32, left: Option<bool>| if over { x + if left == Some(true) { -6 } else { 6 } } else { x };
+    let over =
+        matches!((you, iss), (Some(u), Some(i)) if (i.0 - u.0).abs() < 9 && (i.1 - u.1).abs() < 7);
+    let past_ring = |x: i32, left: Option<bool>| {
+        if over {
+            x + if left == Some(true) { -6 } else { 6 }
+        } else {
+            x
+        }
+    };
     if let Some((x, y)) = iss {
         p.fill(x - 7, y - 4, 15, 9, false);
         p.fill(x - 1, y - 1, 3, 3, true);
@@ -422,9 +472,17 @@ fn orbit(p: &mut Paper, r: &Report, unix: Option<i64>) {
                 let (re, ro) = (6371.0f32, 6371.0f32 + 420.0);
                 let ang = ground / re;
                 let slant = libm::sqrtf(re * re + ro * ro - 2.0 * re * ro * libm::cosf(ang));
-                kv(p, "ground distance", &s::<16>(format_args!("{:.0} km", ground)));
+                kv(
+                    p,
+                    "ground distance",
+                    &s::<16>(format_args!("{:.0} km", ground)),
+                );
                 kv(p, "slant range", &s::<16>(format_args!("{:.0} km", slant)));
-                kv(p, "light time", &s::<16>(format_args!("{:.2} ms", slant / 299.792)));
+                kv(
+                    p,
+                    "light time",
+                    &s::<16>(format_args!("{:.2} ms", slant / 299.792)),
+                );
             }
         }
         None => p.line_text("iss: NO CARRIER", BODY),
@@ -448,7 +506,13 @@ fn crew(p: &mut Paper, r: &Report) {
         kv(p, name, craft);
     }
     if c.number as usize > c.people.len() {
-        p.line_text(&s::<32>(format_args!("...and {} more", c.number as usize - c.people.len())), BODY);
+        p.line_text(
+            &s::<32>(format_args!(
+                "...and {} more",
+                c.number as usize - c.people.len()
+            )),
+            BODY,
+        );
     }
     p.gap(8);
 }
@@ -458,13 +522,25 @@ fn telemetry(p: &mut Paper, r: &Report) {
     p.section("$ TELEMETRY", &up, HEAD);
     p.line_text("ST   BYTES     TIME  WHAT", SMALL);
     for pr in &r.probes {
-        let st: String<4> = if pr.status == 0 { s(format_args!("---")) } else { s(format_args!("{}", pr.status)) };
-        let line: String<64> = s(format_args!("{st:<3} {:>6}B {:>6}ms  {}", pr.bytes, pr.ms, pr.what));
+        let st: String<4> = if pr.status == 0 {
+            s(format_args!("---"))
+        } else {
+            s(format_args!("{}", pr.status))
+        };
+        let line: String<64> = s(format_args!(
+            "{st:<3} {:>6}B {:>6}ms  {}",
+            pr.bytes, pr.ms, pr.what
+        ));
         p.line_text(&line, SMALL);
     }
     if r.clock.is_some() {
         let us = r.ntp_rtt_us;
-        let line: String<64> = s(format_args!("UDP {:>6}B {:>3}.{}ms  pool.ntp.org:123", 48, us / 1000, us / 100 % 10));
+        let line: String<64> = s(format_args!(
+            "UDP {:>6}B {:>3}.{}ms  pool.ntp.org:123",
+            48,
+            us / 1000,
+            us / 100 % 10
+        ));
         p.line_text(&line, SMALL);
     }
     p.gap(10);
@@ -522,7 +598,13 @@ fn footer(p: &mut Paper, unix: Option<i64>) {
         let digits: String<12> = s(format_args!("{:010}", t));
         let d: Vec<u8, 12> = digits.bytes().map(|b| b - b'0').collect();
         barcode(p, &d, 48);
-        p.text_center(p.y, &s::<40>(format_args!("unix {}  0x{:08X}", t, t)), SMALL, 1, true);
+        p.text_center(
+            p.y,
+            &s::<40>(format_args!("unix {}  0x{:08X}", t, t)),
+            SMALL,
+            1,
+            true,
+        );
         p.y += 16;
     }
     // The size line knows how long the receipt ends up.

@@ -5,20 +5,16 @@
 //!   crc8(payload) FF` (CRC-8, polynomial 7, over the payload only).
 //! * `AE02` notifies replies in the same framing.
 //! * `AE03` takes the raster as a byte stream, 48 bytes a row.
-use core::cell::Cell;
-use core::fmt::Write as _;
+use core::{cell::Cell, fmt::Write as _};
 
+use bt_hci::{cmd::le::LeSetScanParams, controller::ControllerCmdSync};
 use defmt::{info, warn};
-use embassy_futures::join::join;
-use embassy_futures::select::select;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_futures::{join::join, select::select};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::{String, Vec};
-use bt_hci::cmd::le::LeSetScanParams;
-use bt_hci::controller::ControllerCmdSync;
 use trouble_host::prelude::*;
 
-use crate::paper::ROW_BYTES;
-use crate::{log, set, with, Stage, Step, PAPER, PRINT};
+use crate::{PAPER, PRINT, Stage, Step, log, paper::ROW_BYTES, set, with};
 
 const NAME: &[u8] = b"MXW01";
 const SERVICE: u16 = 0xAE30;
@@ -86,7 +82,13 @@ impl EventHandler for Finder {
     fn on_adv_reports(&self, mut it: LeAdvReportsIter<'_>) {
         while let Some(Ok(r)) = it.next() {
             if self.found.get().is_none() && has_name(r.data, NAME) {
-                self.found.set(Some((Address { kind: r.addr_kind, addr: r.addr }, r.rssi)));
+                self.found.set(Some((
+                    Address {
+                        kind: r.addr_kind,
+                        addr: r.addr,
+                    },
+                    r.rssi,
+                )));
             }
         }
     }
@@ -111,16 +113,26 @@ pub async fn run<C: Controller + ControllerCmdSync<LeSetScanParams>>(controller:
     // A static random address (top bits 11).
     let address = Address::random([0x01, 0xCA, 0x7C, 0x0B, 0x17, 0xC0]);
     let mut resources: HostResources<DefaultPacketPool, 1, 3> = HostResources::new();
-    let stack = trouble_host::new(controller, &mut resources).set_random_address(address).build();
+    let stack = trouble_host::new(controller, &mut resources)
+        .set_random_address(address)
+        .build();
     let mut central = stack.central();
     let mut runner = stack.runner();
-    let finder = Finder { found: Cell::new(None) };
+    let finder = Finder {
+        found: Cell::new(None),
+    };
 
     let _ = join(runner.run_with_handler(&finder), async {
         loop {
             PRINT.wait().await;
             with(|s| {
-                for st in [Stage::Scan, Stage::Link, Stage::Gatt, Stage::Send, Stage::Burn] {
+                for st in [
+                    Stage::Scan,
+                    Stage::Link,
+                    Stage::Gatt,
+                    Stage::Send,
+                    Stage::Burn,
+                ] {
                     s.steps[st as usize] = Step::Wait;
                 }
                 s.sent_rows = 0;
@@ -139,15 +151,27 @@ pub async fn run<C: Controller + ControllerCmdSync<LeSetScanParams>>(controller:
 
 type Fail = (Stage, &'static str);
 
-async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(stack: &Stack<'_, C, DefaultPacketPool>, central: &mut Central<'_, C, DefaultPacketPool>, finder: &Finder) -> Result<(), Fail> {
+async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(
+    stack: &Stack<'_, C, DefaultPacketPool>,
+    central: &mut Central<'_, C, DefaultPacketPool>,
+    finder: &Finder,
+) -> Result<(), Fail> {
     // Find it.
     set(Stage::Scan, Step::Run);
     log("ble: scanning for MXW01");
     finder.found.set(None);
     let (target, rssi) = {
         let mut scanner = Scanner::new(central);
-        let config = ScanConfig { active: true, interval: Duration::from_millis(100), window: Duration::from_millis(100), ..Default::default() };
-        let _session = scanner.scan(&config).await.map_err(|_| (Stage::Scan, "ble: scan failed"))?;
+        let config = ScanConfig {
+            active: true,
+            interval: Duration::from_millis(100),
+            window: Duration::from_millis(100),
+            ..Default::default()
+        };
+        let _session = scanner
+            .scan(&config)
+            .await
+            .map_err(|_| (Stage::Scan, "ble: scan failed"))?;
         let t = Instant::now();
         loop {
             if let Some(f) = finder.found.get() {
@@ -162,7 +186,11 @@ async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(stack: &Stack<'
     let a = target.addr.raw();
     with(|s| {
         s.printer.clear();
-        let _ = write!(s.printer, "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}", a[5], a[4], a[3], a[2], a[1], a[0]);
+        let _ = write!(
+            s.printer,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            a[5], a[4], a[3], a[2], a[1], a[0]
+        );
         s.rssi = rssi;
     });
     set(Stage::Scan, Step::Ok);
@@ -179,7 +207,13 @@ async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(stack: &Stack<'
         max_event_length: Duration::from_millis(15),
         supervision_timeout: Duration::from_secs(4),
     };
-    let config = ConnectConfig { scan_config: ScanConfig { filter_accept_list: &[target], ..Default::default() }, connect_params: params };
+    let config = ConnectConfig {
+        scan_config: ScanConfig {
+            filter_accept_list: &[target],
+            ..Default::default()
+        },
+        connect_params: params,
+    };
     let conn = with_timeout(Duration::from_secs(15), central.connect(&config))
         .await
         .map_err(|_| (Stage::Link, "ble: connect timed out"))?
@@ -188,7 +222,9 @@ async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(stack: &Stack<'
     set(Stage::Link, Step::Ok);
 
     set(Stage::Gatt, Step::Run);
-    let client = GattClient::<C, DefaultPacketPool, 4>::new(stack, &conn).await.map_err(|_| (Stage::Gatt, "gatt: no client"))?;
+    let client = GattClient::<C, DefaultPacketPool, 4>::new(stack, &conn)
+        .await
+        .map_err(|_| (Stage::Gatt, "gatt: no client"))?;
     let mtu = conn.att_mtu();
     with(|s| s.mtu = mtu);
     let result = select(client.task(), session(&client, mtu)).await;
@@ -199,17 +235,56 @@ async fn job<C: Controller + ControllerCmdSync<LeSetScanParams>>(stack: &Stack<'
     }
 }
 
-async fn session<C: Controller>(client: &GattClient<'_, C, DefaultPacketPool, 4>, mtu: u16) -> Result<(), Fail> {
+async fn session<C: Controller>(
+    client: &GattClient<'_, C, DefaultPacketPool, 4>,
+    mtu: u16,
+) -> Result<(), Fail> {
     let g = |_| (Stage::Gatt, "gatt: printer service missing");
-    let services = client.services_by_uuid(&Uuid::new_short(SERVICE)).await.map_err(g)?;
-    let svc = services.first().ok_or((Stage::Gatt, "gatt: printer service missing"))?.clone();
-    let control: Characteristic<[u8]> = client.characteristic_by_uuid(&svc, &Uuid::new_short(CONTROL)).await.map_err(g)?;
-    let notify: Characteristic<[u8]> = client.characteristic_by_uuid(&svc, &Uuid::new_short(REPLY)).await.map_err(g)?;
-    let data: Characteristic<[u8]> = client.characteristic_by_uuid(&svc, &Uuid::new_short(DATA)).await.map_err(g)?;
-    let mut replies = client.subscribe(&notify, false).await.map_err(|_| (Stage::Gatt, "gatt: subscribe failed"))?;
+    let services = client
+        .services_by_uuid(&Uuid::new_short(SERVICE))
+        .await
+        .map_err(g)?;
+    let svc = services
+        .first()
+        .ok_or((Stage::Gatt, "gatt: printer service missing"))?
+        .clone();
+    let control: Characteristic<[u8]> = client
+        .characteristic_by_uuid(&svc, &Uuid::new_short(CONTROL))
+        .await
+        .map_err(g)?;
+    let notify: Characteristic<[u8]> = client
+        .characteristic_by_uuid(&svc, &Uuid::new_short(REPLY))
+        .await
+        .map_err(g)?;
+    let data: Characteristic<[u8]> = client
+        .characteristic_by_uuid(&svc, &Uuid::new_short(DATA))
+        .await
+        .map_err(g)?;
+    let mut replies = client
+        .subscribe(&notify, false)
+        .await
+        .map_err(|_| (Stage::Gatt, "gatt: subscribe failed"))?;
 
-    ask(client, &control, &mut replies, SET_INTENSITY, &[INTENSITY], None).await.map_err(|_| (Stage::Gatt, "mxw01: write failed"))?;
-    let status = ask(client, &control, &mut replies, GET_STATUS, &[0], Some(Duration::from_secs(5))).await.map_err(|_| (Stage::Gatt, "mxw01: no status"))?;
+    ask(
+        client,
+        &control,
+        &mut replies,
+        SET_INTENSITY,
+        &[INTENSITY],
+        None,
+    )
+    .await
+    .map_err(|_| (Stage::Gatt, "mxw01: write failed"))?;
+    let status = ask(
+        client,
+        &control,
+        &mut replies,
+        GET_STATUS,
+        &[0],
+        Some(Duration::from_secs(5)),
+    )
+    .await
+    .map_err(|_| (Stage::Gatt, "mxw01: no status"))?;
     if let (Some(&battery), Some(&temp)) = (status.get(3), status.get(4)) {
         with(|s| {
             s.battery = Some(battery);
@@ -221,7 +296,11 @@ async fn session<C: Controller>(client: &GattClient<'_, C, DefaultPacketPool, 4>
     }
     set(Stage::Gatt, Step::Ok);
     let mut line: String<48> = String::new();
-    let _ = write!(line, "mxw01: mtu {mtu}, bat {}%, heat {INTENSITY}", status.get(3).copied().unwrap_or(0));
+    let _ = write!(
+        line,
+        "mxw01: mtu {mtu}, bat {}%, heat {INTENSITY}",
+        status.get(3).copied().unwrap_or(0)
+    );
     log(&line);
 
     // The job.
@@ -229,7 +308,16 @@ async fn session<C: Controller>(client: &GattClient<'_, C, DefaultPacketPool, 4>
     let rows = PAPER.lock(|p| p.borrow().job_rows());
     with(|s| s.job_rows = rows as u16);
     let n = (rows as u16).to_le_bytes();
-    let ack = ask(client, &control, &mut replies, PRINT_CMD, &[n[0], n[1], 0x30, 0x00], Some(Duration::from_secs(5))).await.map_err(|_| (Stage::Send, "mxw01: print refused"))?;
+    let ack = ask(
+        client,
+        &control,
+        &mut replies,
+        PRINT_CMD,
+        &[n[0], n[1], 0x30, 0x00],
+        Some(Duration::from_secs(5)),
+    )
+    .await
+    .map_err(|_| (Stage::Send, "mxw01: print refused"))?;
     if ack.first() != Some(&0) {
         return Err((Stage::Send, "mxw01: print refused"));
     }
@@ -239,17 +327,23 @@ async fn session<C: Controller>(client: &GattClient<'_, C, DefaultPacketPool, 4>
     for y in 0..rows {
         PAPER.lock(|p| row.copy_from_slice(p.borrow().row(y)));
         for part in row.chunks(chunk) {
-            client.write_characteristic_without_response(&data, part).await.map_err(|_| (Stage::Send, "ble: write failed"))?;
+            client
+                .write_characteristic_without_response(&data, part)
+                .await
+                .map_err(|_| (Stage::Send, "ble: write failed"))?;
         }
         if y % 8 == 7 || y + 1 == rows {
             with(|s| s.sent_rows = y as u16 + 1);
         }
+        #[allow(clippy::absurd_extreme_comparisons)] // ROW_GAP_MS is 0 unless set at build time
         if ROW_GAP_MS > 0 {
             Timer::after_millis(ROW_GAP_MS).await;
         }
     }
     info!("sent {} rows in {} ms", rows, t.elapsed().as_millis());
-    ask(client, &control, &mut replies, FLUSH, &[0], None).await.map_err(|_| (Stage::Send, "ble: write failed"))?;
+    ask(client, &control, &mut replies, FLUSH, &[0], None)
+        .await
+        .map_err(|_| (Stage::Send, "ble: write failed"))?;
     set(Stage::Send, Step::Ok);
 
     set(Stage::Burn, Step::Run);
@@ -273,7 +367,10 @@ async fn ask<C: Controller, const M: usize>(
     payload: &[u8],
     wait: Option<Duration>,
 ) -> Result<Vec<u8, 32>, ()> {
-    client.write_characteristic_without_response(control, &frame(cmd, payload)).await.map_err(|_| ())?;
+    client
+        .write_characteristic_without_response(control, &frame(cmd, payload))
+        .await
+        .map_err(|_| ())?;
     match wait {
         Some(wait) => reply(replies, cmd, wait).await,
         None => Ok(Vec::new()),
@@ -281,13 +378,19 @@ async fn ask<C: Controller, const M: usize>(
 }
 
 /// The payload of the next reply to `cmd`.
-async fn reply<const M: usize>(replies: &mut NotificationListener<'_, M>, cmd: u8, wait: Duration) -> Result<Vec<u8, 32>, ()> {
+async fn reply<const M: usize>(
+    replies: &mut NotificationListener<'_, M>,
+    cmd: u8,
+    wait: Duration,
+) -> Result<Vec<u8, 32>, ()> {
     with_timeout(wait, async {
         loop {
             let n = replies.next().await;
             let f = n.as_ref();
             if f.len() >= 6 && f[0] == 0x22 && f[1] == 0x21 && f[2] == cmd {
-                let len = (u16::from_le_bytes([f[4], f[5]]) as usize).min(f.len() - 6).min(32);
+                let len = (u16::from_le_bytes([f[4], f[5]]) as usize)
+                    .min(f.len() - 6)
+                    .min(32);
                 return Vec::from_slice(&f[6..6 + len]).map_err(|_| ());
             }
         }

@@ -3,10 +3,12 @@
 //! ink) plus a few receipt-shaped helpers that move a cursor down the roll.
 use core::convert::Infallible;
 
-use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
+use embedded_graphics::{
+    mono_font::{MonoFont, MonoTextStyle},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    text::{Baseline, Text},
+};
 
 pub const W: i32 = 384;
 pub const ROW_BYTES: usize = 48;
@@ -25,7 +27,11 @@ pub struct Paper {
 
 impl Paper {
     pub const fn new() -> Self {
-        Self { buf: [0; ROW_BYTES * MAX_ROWS], rows: 0, y: 0 }
+        Self {
+            buf: [0; ROW_BYTES * MAX_ROWS],
+            rows: 0,
+            y: 0,
+        }
     }
 
     pub fn clear(&mut self) {
@@ -39,7 +45,11 @@ impl Paper {
     }
 
     pub fn dot(&self, x: i32, y: i32) -> bool {
-        x >= 0 && y >= 0 && x < W && (y as usize) < MAX_ROWS && self.buf[y as usize * ROW_BYTES + x as usize / 8] >> (x % 8) & 1 != 0
+        x >= 0
+            && y >= 0
+            && x < W
+            && (y as usize) < MAX_ROWS
+            && self.buf[y as usize * ROW_BYTES + x as usize / 8] >> (x % 8) & 1 != 0
     }
 
     pub fn set(&mut self, x: i32, y: i32, ink: bool) {
@@ -115,7 +125,16 @@ impl Paper {
     pub fn circle(&mut self, cx: i32, cy: i32, r: i32) {
         let (mut x, mut y, mut d) = (r, 0, 1 - r);
         while x >= y {
-            for (px, py) in [(x, y), (y, x), (-y, x), (-x, y), (-x, -y), (-y, -x), (y, -x), (x, -y)] {
+            for (px, py) in [
+                (x, y),
+                (y, x),
+                (-y, x),
+                (-x, y),
+                (-x, -y),
+                (-y, -x),
+                (y, -x),
+                (x, -y),
+            ] {
                 self.set(cx + px, cy + py, true);
             }
             y += 1;
@@ -138,8 +157,20 @@ impl Paper {
     /// Text with its top-left at (x, y), each font pixel `scale` dots
     /// square. Returns the width.
     pub fn text(&mut self, x: i32, y: i32, s: &str, font: &MonoFont, scale: i32, ink: bool) -> i32 {
-        let style = MonoTextStyle::new(font, if ink { BinaryColor::On } else { BinaryColor::Off });
-        let mut t = Scaled { paper: self, x, y, scale };
+        let style = MonoTextStyle::new(
+            font,
+            if ink {
+                BinaryColor::On
+            } else {
+                BinaryColor::Off
+            },
+        );
+        let mut t = Scaled {
+            paper: self,
+            x,
+            y,
+            scale,
+        };
         let _ = Text::with_baseline(s, Point::zero(), style, Baseline::Top).draw(&mut t);
         text_width(s, font) * scale
     }
@@ -149,7 +180,15 @@ impl Paper {
         self.text((W - w) / 2, y, s, font, scale, ink);
     }
 
-    pub fn text_right(&mut self, right: i32, y: i32, s: &str, font: &MonoFont, scale: i32, ink: bool) {
+    pub fn text_right(
+        &mut self,
+        right: i32,
+        y: i32,
+        s: &str,
+        font: &MonoFont,
+        scale: i32,
+        ink: bool,
+    ) {
         let w = text_width(s, font) * scale;
         self.text(right - w, y, s, font, scale, ink);
     }
@@ -223,7 +262,9 @@ impl Paper {
 
     /// The height the job needs: what was drawn, and at least the minimum.
     pub fn job_rows(&self) -> usize {
-        self.rows.max(self.y.max(0) as usize).clamp(MIN_ROWS, MAX_ROWS)
+        self.rows
+            .max(self.y.max(0) as usize)
+            .clamp(MIN_ROWS, MAX_ROWS)
     }
 }
 
@@ -249,11 +290,15 @@ impl DrawTarget for Scaled<'_> {
     type Color = BinaryColor;
     type Error = Infallible;
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(&mut self, pixels: I) -> Result<(), Infallible> {
+    fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(
+        &mut self,
+        pixels: I,
+    ) -> Result<(), Infallible> {
         // The style has no background, so only glyph pixels come through.
         let s = self.scale;
         for Pixel(p, c) in pixels {
-            self.paper.fill(self.x + p.x * s, self.y + p.y * s, s, s, c.is_on());
+            self.paper
+                .fill(self.x + p.x * s, self.y + p.y * s, s, s, c.is_on());
         }
         Ok(())
     }

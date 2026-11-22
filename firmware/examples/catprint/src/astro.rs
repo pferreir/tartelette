@@ -15,7 +15,8 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 }
 
 pub fn weekday(unix: i64) -> &'static str {
-    ["THU", "FRI", "SAT", "SUN", "MON", "TUE", "WED"][unix.div_euclid(86_400).rem_euclid(7) as usize]
+    ["THU", "FRI", "SAT", "SUN", "MON", "TUE", "WED"]
+        [unix.div_euclid(86_400).rem_euclid(7) as usize]
 }
 
 /// (year, month, day) to days since 1970-01-01.
@@ -51,7 +52,16 @@ pub fn moon_lit(age: f32) -> f32 {
 }
 
 pub fn moon_name(age: f32) -> &'static str {
-    let names = ["NEW MOON", "WAXING CRESCENT", "FIRST QUARTER", "WAXING GIBBOUS", "FULL MOON", "WANING GIBBOUS", "LAST QUARTER", "WANING CRESCENT"];
+    let names = [
+        "NEW MOON",
+        "WAXING CRESCENT",
+        "FIRST QUARTER",
+        "WAXING GIBBOUS",
+        "FULL MOON",
+        "WANING GIBBOUS",
+        "LAST QUARTER",
+        "WANING CRESCENT",
+    ];
     names[((age / SYNODIC * 8.0 + 0.5) as usize) % 8]
 }
 
@@ -77,6 +87,10 @@ pub fn subsolar(unix: i64) -> (f32, f32) {
 pub fn distance_km(a: (f32, f32), b: (f32, f32)) -> f32 {
     let r = PI / 180.0;
     let (dlat, dlon) = ((b.0 - a.0) * r, (b.1 - a.1) * r);
-    let h = libm::sinf(dlat / 2.0) * libm::sinf(dlat / 2.0) + libm::cosf(a.0 * r) * libm::cosf(b.0 * r) * libm::sinf(dlon / 2.0) * libm::sinf(dlon / 2.0);
+    let h = libm::sinf(dlat / 2.0) * libm::sinf(dlat / 2.0)
+        + libm::cosf(a.0 * r)
+            * libm::cosf(b.0 * r)
+            * libm::sinf(dlon / 2.0)
+            * libm::sinf(dlon / 2.0);
     2.0 * 6371.0 * libm::asinf(libm::sqrtf(h).min(1.0))
 }

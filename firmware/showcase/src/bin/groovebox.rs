@@ -15,28 +15,29 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-use core::fmt::Write as _;
+use core::{cell::RefCell, fmt::Write as _};
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::i2c::{self, I2c};
-use embassy_rp::mode::Blocking;
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::pio_programs::rotary_encoder::{Direction, PioEncoder, PioEncoderProgram};
-use embassy_rp::spi::{self, Spi};
-use embassy_rp::uart::{self, UartTx};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex;
+use embassy_rp::{
+    bind_interrupts,
+    gpio::{Input, Level, Output, Pull},
+    i2c::{self, I2c},
+    mode::Blocking,
+    peripherals::{DMA_CH0, PIO0},
+    pio::{InterruptHandler, Pio},
+    pio_programs::rotary_encoder::{Direction, PioEncoder, PioEncoderProgram},
+    spi::{self, Spi},
+    uart::{self, UartTx},
+};
+use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_7X13_BOLD, FONT_9X15_BOLD};
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_7X13_BOLD, FONT_9X15_BOLD, FONT_10X20};
 use heapless::String;
+use panic_probe as _;
 use portable_atomic::{AtomicI32, AtomicU8, Ordering};
-use showcase::{mix, rgb, Canvas, Lcd};
-use {defmt_rtt as _, panic_probe as _};
+use showcase::{Canvas, Lcd, mix, rgb};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -110,7 +111,9 @@ const PRESETS: [Pattern; 3] = [
             steps(b"................"),
         ],
         bass: steps(b"xxxxxxxxxxxxxxxx"),
-        notes: [12, 12, 24, 12, 15, 15, 27, 15, 10, 10, 22, 10, 17, 17, 29, 19],
+        notes: [
+            12, 12, 24, 12, 15, 15, 27, 15, 10, 10, 22, 10, 17, 17, 29, 19,
+        ],
     },
 ];
 
@@ -213,7 +216,13 @@ async fn sequencer(mut i2c: I2c<'static, Blocking>, mut dac: Dac) {
             let (step, pat) = with(|s| {
                 let step = s.step;
                 for t in 0..TRACKS {
-                    let on = if t == BASS { s.pat.bass } else { s.pat.drums[t] } >> step & 1 == 1;
+                    let on = if t == BASS {
+                        s.pat.bass
+                    } else {
+                        s.pat.drums[t]
+                    } >> step
+                        & 1
+                        == 1;
                     if on {
                         s.fired[t] = now;
                     }
@@ -222,8 +231,8 @@ async fn sequencer(mut i2c: I2c<'static, Blocking>, mut dac: Dac) {
                 (step, s.pat)
             });
             let mut g = 0u8;
-            for t in 0..4 {
-                if pat.drums[t] >> step & 1 == 1 {
+            for (t, drum) in pat.drums.iter().enumerate() {
+                if drum >> step & 1 == 1 {
                     g |= 1 << t;
                 }
             }
@@ -250,7 +259,7 @@ async fn sequencer(mut i2c: I2c<'static, Blocking>, mut dac: Dac) {
             shown = gates;
         }
         ms += 1;
-        if ms % 5 == 0 {
+        if ms.is_multiple_of(5) {
             let mut v = [0u8];
             if i2c.blocking_write_read(MCP, &[GPIO], &mut v).is_ok() {
                 KEYS.store((!v[0] >> 5) & 0b111, Ordering::Relaxed);
@@ -297,7 +306,9 @@ fn step_x(i: usize) -> i32 {
     GRID_X + i as i32 * CELL_W + (i as i32 / 4) * 4
 }
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const NOTE_NAMES: [&str; 12] = [
+    "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+];
 
 fn note_name(n: u8) -> String<4> {
     let mut s = String::new();
@@ -312,7 +323,15 @@ struct View {
     editing: bool,
 }
 
-fn draw(cv: &mut Canvas, pat: &Pattern, playing: bool, step: usize, fired: &[Instant; TRACKS], v: &View, now: Instant) {
+fn draw(
+    cv: &mut Canvas,
+    pat: &Pattern,
+    playing: bool,
+    step: usize,
+    fired: &[Instant; TRACKS],
+    v: &View,
+    now: Instant,
+) {
     // Header.
     if cv.rows(0, 30) {
         cv.fill(0, 0, 320, 28, PANEL);
@@ -324,8 +343,8 @@ fn draw(cv: &mut Canvas, pat: &Pattern, playing: bool, step: usize, fired: &[Ins
         // Play / stop symbol.
         let (px, py) = (112, 7);
         if playing {
-            for dy in 0..14 {
-                let w = 7 - (dy as i32 - 7).abs();
+            for dy in 0..14i32 {
+                let w = 7 - (dy - 7).abs();
                 cv.fill(px, py + dy, w * 2, 1, COLORS[2]);
             }
         } else {
@@ -349,13 +368,29 @@ fn draw(cv: &mut Canvas, pat: &Pattern, playing: bool, step: usize, fired: &[Ins
         if selected {
             cv.fill(2, y + 2, 3, ROW_H - 4, COLORS[t]);
         }
-        cv.text(9, y + 7, NAMES[t], &FONT_6X10, if selected { INK } else { DIM });
+        cv.text(
+            9,
+            y + 7,
+            NAMES[t],
+            &FONT_6X10,
+            if selected { INK } else { DIM },
+        );
         for i in 0..STEPS {
             let x = step_x(i);
             let on = bits >> i & 1 == 1;
-            let mut c = if on { COLORS[t] } else if i % 4 == 0 { OFF_BEAT } else { OFF };
+            let mut c = if on {
+                COLORS[t]
+            } else if i % 4 == 0 {
+                OFF_BEAT
+            } else {
+                OFF
+            };
             if playing && i == (step + STEPS - 1) % STEPS {
-                c = if on { mix(c, CURSOR, 140) } else { mix(c, CURSOR, 60) };
+                c = if on {
+                    mix(c, CURSOR, 140)
+                } else {
+                    mix(c, CURSOR, 60)
+                };
             }
             cv.fill(x + 1, y + 3, CELL_W - 3, ROW_H - 6, c);
             if selected && i == v.cursor {
@@ -368,7 +403,13 @@ fn draw(cv: &mut Canvas, pat: &Pattern, playing: bool, step: usize, fired: &[Ins
     let roll_y = GRID_Y + TRACKS as i32 * ROW_H + 6;
     let roll_h = 52;
     if cv.rows(roll_y, roll_h) {
-        cv.fill(step_x(0) - 2, roll_y, step_x(15) + CELL_W - step_x(0) + 2, roll_h, PANEL);
+        cv.fill(
+            step_x(0) - 2,
+            roll_y,
+            step_x(15) + CELL_W - step_x(0) + 2,
+            roll_h,
+            PANEL,
+        );
         cv.text(9, roll_y + 4, "NOTE", &FONT_6X10, DIM);
         let n = pat.notes[v.cursor];
         let name = note_name(n);
@@ -380,7 +421,11 @@ fn draw(cv: &mut Canvas, pat: &Pattern, playing: bool, step: usize, fired: &[Ins
             }
             let x = step_x(i);
             let ny = roll_y + roll_h - 6 - (pat.notes[i] as i32 * (roll_h - 12)) / NOTE_MAX as i32;
-            let c = if i == v.cursor && v.track == BASS { CURSOR } else { COLORS[BASS] };
+            let c = if i == v.cursor && v.track == BASS {
+                CURSOR
+            } else {
+                COLORS[BASS]
+            };
             cv.fill(x + 1, ny - 2, CELL_W - 3, 5, c);
         }
     }
@@ -422,7 +467,9 @@ async fn main(spawner: Spawner) {
     };
     spawner.spawn(sequencer(i2c, dac).unwrap());
 
-    let Pio { mut common, sm0, .. } = Pio::new(p.PIO0, Irqs);
+    let Pio {
+        mut common, sm0, ..
+    } = Pio::new(p.PIO0, Irqs);
     let prg = PioEncoderProgram::new(&mut common);
     spawner.spawn(knob_task(PioEncoder::new(&mut common, sm0, p.PIN_21, p.PIN_22, &prg)).unwrap());
     let push = Input::new(p.PIN_20, Pull::Up);
@@ -430,16 +477,33 @@ async fn main(spawner: Spawner) {
     let mut scfg = spi::Config::default();
     scfg.frequency = embassy_rp::time::Hertz(62_500_000);
     let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg).unwrap();
-    let mut lcd = Lcd::new(spi, Output::new(p.PIN_9, Level::High), Output::new(p.PIN_13, Level::Low));
+    let mut lcd = Lcd::new(
+        spi,
+        Output::new(p.PIN_9, Level::High),
+        Output::new(p.PIN_13, Level::Low),
+    );
     let _bl = Output::new(p.PIN_17, Level::High);
     lcd.init().await;
 
-    let mut v = View { track: 0, cursor: 0, shift: false, editing: false };
+    let mut v = View {
+        track: 0,
+        cursor: 0,
+        shift: false,
+        editing: false,
+    };
     let mut prev_keys = 0u8;
     let mut prev_push = false;
     let mut turned_while_pushed = false;
     let mut knob_seen = KNOB.load(Ordering::Relaxed);
-    let mut drawn = (u32::MAX, usize::MAX, usize::MAX, usize::MAX, false, false, false);
+    let mut drawn = (
+        u32::MAX,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        false,
+        false,
+        false,
+    );
     let mut msg: String<64> = String::new();
     loop {
         // Input.
@@ -479,7 +543,11 @@ async fn main(spawner: Spawner) {
         }
         if !pushed && prev_push && !turned_while_pushed {
             with(|s| {
-                let bits = if v.track == BASS { &mut s.pat.bass } else { &mut s.pat.drums[v.track] };
+                let bits = if v.track == BASS {
+                    &mut s.pat.bass
+                } else {
+                    &mut s.pat.drums[v.track]
+                };
                 *bits ^= 1 << v.cursor;
                 s.version += 1;
             });
@@ -523,11 +591,16 @@ async fn main(spawner: Spawner) {
         // Screen: when something changed, and while tracks are flashing.
         let (pat, _, playing, step, fired, version) = snapshot();
         let now = Instant::now();
-        let flashing = fired.iter().any(|&f| now.saturating_duration_since(f) < Duration::from_millis(140));
-        let state = (version, step, v.track, v.cursor, v.shift, v.editing, playing);
+        let flashing = fired
+            .iter()
+            .any(|&f| now.saturating_duration_since(f) < Duration::from_millis(140));
+        let state = (
+            version, step, v.track, v.cursor, v.shift, v.editing, playing,
+        );
         if state != drawn || flashing {
             // Only the strips that changed go to the panel.
-            lcd.frame(BG, &mut |cv| draw(cv, &pat, playing, step, &fired, &v, now)).await;
+            lcd.frame(BG, &mut |cv| draw(cv, &pat, playing, step, &fired, &v, now))
+                .await;
             drawn = state;
             Timer::after_millis(20).await;
         } else {

@@ -5,14 +5,17 @@
 use cyw43::aligned_bytes;
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::{bind_interrupts, dma};
+use embassy_rp::{
+    bind_interrupts, dma,
+    gpio::{Level, Output},
+    peripherals::{DMA_CH0, DMA_CH1, PIO0},
+    pio::{InterruptHandler, Pio},
+};
 use embassy_time::{Duration, Timer};
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -20,7 +23,13 @@ bind_interrupts!(struct Irqs {
 });
 
 #[embassy_executor::task]
-async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>, cyw43::Cyw43439>) -> ! {
+async fn cyw43_task(
+    runner: cyw43::Runner<
+        'static,
+        cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>,
+        cyw43::Cyw43439,
+    >,
+) -> ! {
     runner.run().await
 }
 
@@ -52,7 +61,9 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(cyw43_task(runner)));
 
     control.init(clm, cyw43::Config::default()).await;
-    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
 
     let delay = Duration::from_secs(1);
     loop {

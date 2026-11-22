@@ -2,17 +2,23 @@
 //! services that still answer on port 80), and a JSON field picker.
 use core::fmt::Write as _;
 
-use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::Stack;
-use embassy_net::udp::UdpSocket;
-use embassy_net::wire::{IpAddr, Ipv4Addr, SocketAddr};
-use embassy_time::{with_timeout, Duration, Instant, Timer};
+use embassy_net::{
+    Stack,
+    dns::DnsQueryType,
+    tcp::TcpSocket,
+    udp::UdpSocket,
+    wire::{IpAddr, Ipv4Addr, SocketAddr},
+};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use embedded_io_async::Write;
 use heapless::String;
 
 pub async fn resolve(stack: Stack<'_>, name: &str) -> Option<Ipv4Addr> {
-    let r = with_timeout(Duration::from_secs(5), stack.dns_query(name, DnsQueryType::A)).await;
+    let r = with_timeout(
+        Duration::from_secs(5),
+        stack.dns_query(name, DnsQueryType::A),
+    )
+    .await;
     match r {
         Ok(Ok(addrs)) => addrs.iter().find_map(|a| match a {
             #[allow(unreachable_patterns)]
@@ -32,8 +38,13 @@ pub async fn ntp(stack: Stack<'_>, server: &str) -> Option<(u64, u32)> {
     let mut pkt = [0u8; 48];
     pkt[0] = 0x1B; // LI 0, version 3, client
     let t = Instant::now();
-    sock.send_to(&pkt, SocketAddr::new(ip.into(), 123)).await.ok()?;
-    let reply = with_timeout(Duration::from_secs(4), sock.recv()).await.ok()?.ok()?;
+    sock.send_to(&pkt, SocketAddr::new(ip.into(), 123))
+        .await
+        .ok()?;
+    let reply = with_timeout(Duration::from_secs(4), sock.recv())
+        .await
+        .ok()?
+        .ok()?;
     let us = t.elapsed().as_micros() as u32;
     let buf: &[u8] = &reply;
     if buf.len() < 48 {
@@ -54,26 +65,59 @@ pub struct Probe {
 
 /// `GET http://host/path` into `buf`. Returns the body's range in `buf`
 /// and the probe record; the body is cut short if `buf` fills up.
-pub async fn get(stack: Stack<'_>, host: &str, path: &str, buf: &mut [u8]) -> (Option<(usize, usize)>, Probe) {
-    let mut probe = Probe { what: String::new(), status: 0, bytes: 0, ms: 0 };
-    let _ = write!(probe.what, "{host}{}", &path[..path.find('?').unwrap_or(path.len())]);
+pub async fn get(
+    stack: Stack<'_>,
+    host: &str,
+    path: &str,
+    buf: &mut [u8],
+) -> (Option<(usize, usize)>, Probe) {
+    let mut probe = Probe {
+        what: String::new(),
+        status: 0,
+        bytes: 0,
+        ms: 0,
+    };
+    let _ = write!(
+        probe.what,
+        "{host}{}",
+        &path[..path.find('?').unwrap_or(path.len())]
+    );
     probe.what.truncate(probe.what.len().min(28));
     let t = Instant::now();
     // One retry: a fresh connection now and then goes nowhere.
     let mut body = None;
     for _ in 0..2 {
-        body = with_timeout(Duration::from_secs(12), fetch(stack, host, path, buf, &mut probe)).await.ok().flatten();
+        body = with_timeout(
+            Duration::from_secs(12),
+            fetch(stack, host, path, buf, &mut probe),
+        )
+        .await
+        .ok()
+        .flatten();
         if body.is_some() {
             break;
         }
         Timer::after_millis(300).await;
     }
     probe.ms = t.elapsed().as_millis() as u32;
-    defmt::info!("GET {=str}{=str}: status {} {} bytes {} ms", host, path, probe.status, probe.bytes, probe.ms);
+    defmt::info!(
+        "GET {=str}{=str}: status {} {} bytes {} ms",
+        host,
+        path,
+        probe.status,
+        probe.bytes,
+        probe.ms
+    );
     (body, probe)
 }
 
-async fn fetch(stack: Stack<'_>, host: &str, path: &str, buf: &mut [u8], probe: &mut Probe) -> Option<(usize, usize)> {
+async fn fetch(
+    stack: Stack<'_>,
+    host: &str,
+    path: &str,
+    buf: &mut [u8],
+    probe: &mut Probe,
+) -> Option<(usize, usize)> {
     let ip = resolve(stack, host).await?;
     let mut rx = [0u8; 1024];
     let mut tx = [0u8; 512];
@@ -81,7 +125,10 @@ async fn fetch(stack: Stack<'_>, host: &str, path: &str, buf: &mut [u8], probe: 
     sock.set_timeout(Some(Duration::from_secs(10)));
     sock.connect(SocketAddr::new(ip.into(), 80)).await.ok()?;
     let mut req: String<384> = String::new();
-    let _ = write!(req, "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: curl/8.5.0 (catprint; pico-w)\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    let _ = write!(
+        req,
+        "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: curl/8.5.0 (catprint; pico-w)\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+    );
     sock.write_all(req.as_bytes()).await.ok()?;
     let mut n = 0;
     while n < buf.len() {
@@ -119,7 +166,9 @@ pub fn json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
 /// The number in `"key": 12.5`.
 pub fn json_num(s: &str, key: &str) -> Option<f32> {
     let rest = after_key(s, key)?;
-    let end = rest.find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c))).unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c)))
+        .unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 

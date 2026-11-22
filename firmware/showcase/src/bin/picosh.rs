@@ -9,24 +9,28 @@
 #![no_std]
 #![no_main]
 
-use core::cell::UnsafeCell;
-use core::fmt::Write as _;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    cell::UnsafeCell,
+    fmt::Write as _,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+};
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::multicore::{spawn_core1, Stack};
-use embassy_rp::peripherals::UART0;
-use embassy_rp::uart::{self, BufferedInterruptHandler, BufferedUart};
-use embassy_rp::bind_interrupts;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
+use embassy_rp::{
+    bind_interrupts,
+    gpio::{Level, Output},
+    multicore::{Stack, spawn_core1},
+    peripherals::UART0,
+    uart::{self, BufferedInterruptHandler, BufferedUart},
+};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Instant, Timer};
 use embedded_io_async::Write;
 use heapless::String;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
@@ -66,7 +70,11 @@ fn mandel_row(row: usize, limit: u32) {
             x = xx - yy + cr;
             n += 1;
         }
-        *cell = if n >= limit { b'@' } else { RAMP[(n as usize * (RAMP.len() - 1)) / limit as usize] };
+        *cell = if n >= limit {
+            b'@'
+        } else {
+            RAMP[(n as usize * (RAMP.len() - 1)) / limit as usize]
+        };
     }
     // SAFETY: each row is written by one core only, and read once both are done.
     unsafe { (*PICTURE.0.get())[row] = out };
@@ -96,7 +104,9 @@ fn mandel(limit: u32, both: bool) -> u64 {
         for row in (0..ROWS).step_by(2) {
             mandel_row(row, limit);
         }
-        while JOB.load(Ordering::Acquire) != 0 {}
+        while JOB.load(Ordering::Acquire) != 0 {
+            core::hint::spin_loop()
+        }
     } else {
         for row in 0..ROWS {
             mandel_row(row, limit);
@@ -180,9 +190,13 @@ fn parse_num(s: &str) -> Option<u32> {
 
 fn readable(addr: u32, len: u32) -> bool {
     let end = addr.saturating_add(len);
-    [(0x0000_0000, 0x0000_4000), (0x1000_0000, 0x1020_0000), (0x2000_0000, 0x2004_2000)]
-        .iter()
-        .any(|&(a, b)| addr >= a && end <= b)
+    [
+        (0x0000_0000, 0x0000_4000),
+        (0x1000_0000, 0x1020_0000),
+        (0x2000_0000, 0x2004_2000),
+    ]
+    .iter()
+    .any(|&(a, b)| addr >= a && end <= b)
 }
 
 async fn run(line: &str, out: &mut Out) {
@@ -276,12 +290,18 @@ async fn run(line: &str, out: &mut Out) {
                             // SAFETY: inside the bootrom, flash or SRAM.
                             let b = unsafe { core::ptr::read_volatile(a as *const u8) };
                             let _ = write!(out, " {b:02x}");
-                            let _ = ascii.push(if (0x20..0x7f).contains(&b) { b as char } else { '.' });
+                            let _ = ascii.push(if (0x20..0x7f).contains(&b) {
+                                b as char
+                            } else {
+                                '.'
+                            });
                         }
                         let _ = write!(out, "  {ascii}\r\n");
                     }
                 }
-                _ => out.push_str("peek ADDR [LEN]: bootrom 0x0, flash 0x10000000, SRAM 0x20000000\r\n").unwrap_or(()),
+                _ => out
+                    .push_str("peek ADDR [LEN]: bootrom 0x0, flash 0x10000000, SRAM 0x20000000\r\n")
+                    .unwrap_or(()),
             }
         }
         "info" => {
@@ -297,7 +317,11 @@ async fn run(line: &str, out: &mut Out) {
                 chip_id.revision().saturating_sub(1),
                 chip_id.part(),
                 embassy_rp::clocks::clk_sys_freq() / 1_000_000,
-                if CORE1_UP.load(Ordering::Acquire) { "running" } else { "stopped" },
+                if CORE1_UP.load(Ordering::Acquire) {
+                    "running"
+                } else {
+                    "stopped"
+                },
                 up / 1000,
                 up % 1000
             );
@@ -317,7 +341,11 @@ static mut CORE1_STACK: Stack<4096> = Stack::new();
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
-    spawn_core1(p.CORE1, unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) }, core1_main);
+    spawn_core1(
+        p.CORE1,
+        unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
+        core1_main,
+    );
     spawner.spawn(led_task(Output::new(p.PIN_25, Level::Low)).unwrap());
 
     static TX: StaticCell<[u8; 1024]> = StaticCell::new();
@@ -341,7 +369,9 @@ async fn main(spawner: Spawner) {
     let _ = uart.write_all(b"> ").await;
     loop {
         let mut buf = [0u8; 16];
-        let Ok(n) = uart.read(&mut buf).await else { continue };
+        let Ok(n) = uart.read(&mut buf).await else {
+            continue;
+        };
         for &c in &buf[..n] {
             match c {
                 b'\n' if last_cr => {}

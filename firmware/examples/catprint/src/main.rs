@@ -20,34 +20,37 @@ mod printer;
 mod receipt;
 mod web;
 
-use core::cell::RefCell;
-use core::fmt::Write as _;
+use core::{cell::RefCell, fmt::Write as _};
 
-use cyw43::{aligned_bytes, Cyw43439, JoinOptions};
+use cyw43::{Cyw43439, JoinOptions, aligned_bytes};
 use cyw43_pio::PioSpi;
 use defmt::{info, unwrap};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::iface::Iface;
-use embassy_net::wire::HardwareAddress;
-use embassy_net::{Stack, StackStorage, StaticPool};
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::spi::{self, Spi};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::signal::Signal;
+use embassy_net::{Stack, StackStorage, StaticPool, iface::Iface, wire::HardwareAddress};
+use embassy_rp::{
+    bind_interrupts, dma,
+    gpio::{Input, Level, Output, Pull},
+    peripherals::{DMA_CH0, DMA_CH1, PIO0},
+    pio::{InterruptHandler, Pio},
+    spi::{self, Spi},
+};
+use embassy_sync::{
+    blocking_mutex::{
+        Mutex,
+        raw::{CriticalSectionRawMutex, ThreadModeRawMutex},
+    },
+    signal::Signal,
+};
 use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_9X15_BOLD};
 use heapless::String;
-use static_cell::StaticCell;
-use trouble_host::prelude::ExternalController;
-use {defmt_rtt as _, panic_probe as _};
-
-use lcd::{mix, rgb, Canvas, Lcd};
+use lcd::{Canvas, Lcd, mix, rgb};
+use panic_probe as _;
 use paper::Paper;
 use receipt::{Crew, Geo, Report, Weather};
+use static_cell::StaticCell;
+use trouble_host::prelude::ExternalController;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -90,7 +93,10 @@ pub enum Stage {
     Burn,
 }
 
-const STAGES: [&str; 13] = ["WIFI", "DHCP", "NTP", "GEOIP", "WTTR", "ISS", "CREW", "RENDER", "SCAN", "LINK", "GATT", "SEND", "BURN"];
+const STAGES: [&str; 13] = [
+    "WIFI", "DHCP", "NTP", "GEOIP", "WTTR", "ISS", "CREW", "RENDER", "SCAN", "LINK", "GATT",
+    "SEND", "BURN",
+];
 
 #[derive(Clone)]
 pub struct State {
@@ -127,7 +133,8 @@ static STATE: Mutex<ThreadModeRawMutex, RefCell<State>> = Mutex::new(RefCell::ne
 
 /// The receipt being printed, shared by the renderer, the printer and the
 /// screen's preview.
-pub static PAPER: Mutex<ThreadModeRawMutex, RefCell<Paper>> = Mutex::new(RefCell::new(Paper::new()));
+pub static PAPER: Mutex<ThreadModeRawMutex, RefCell<Paper>> =
+    Mutex::new(RefCell::new(Paper::new()));
 /// Print what is on the paper.
 pub static PRINT: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 /// Fetch a new edition.
@@ -163,7 +170,14 @@ fn fmt<const N: usize>(args: core::fmt::Arguments) -> String<N> {
 
 async fn gather(stack: Stack<'static>, control: &mut cyw43::Control<'static>, r: &mut Report) {
     control.gpio_set(0, true).await;
-    for st in [Stage::Ntp, Stage::Geo, Stage::Wx, Stage::Iss, Stage::Crew, Stage::Render] {
+    for st in [
+        Stage::Ntp,
+        Stage::Geo,
+        Stage::Wx,
+        Stage::Iss,
+        Stage::Crew,
+        Stage::Render,
+    ] {
         set(st, Step::Wait);
     }
     r.edition += 1;
@@ -179,30 +193,47 @@ async fn gather(stack: Stack<'static>, control: &mut cyw43::Control<'static>, r:
             r.ntp_rtt_us = rtt;
             set(Stage::Ntp, Step::Ok);
         }
-        None => set(Stage::Ntp, if r.clock.is_some() { Step::Ok } else { Step::Fail }),
+        None => set(
+            Stage::Ntp,
+            if r.clock.is_some() {
+                Step::Ok
+            } else {
+                Step::Fail
+            },
+        ),
     }
 
     set(Stage::Geo, Step::Run);
     log("http: ip-api.com");
-    let path = "/json/?fields=status,countryCode,regionName,city,lat,lon,timezone,offset,isp,as,query";
+    let path =
+        "/json/?fields=status,countryCode,regionName,city,lat,lon,timezone,offset,isp,as,query";
     let (body, probe) = web::get(stack, "ip-api.com", path, &mut buf).await;
     let _ = r.probes.push(probe);
-    r.geo = body.and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok()).and_then(|j| {
-        (web::json_str(j, "status")? == "success").then_some(())?;
-        Some(Geo {
-            ip: web::ascii(web::json_str(j, "query")?),
-            city: web::ascii(web::json_str(j, "city").unwrap_or("?")),
-            region: web::ascii(web::json_str(j, "regionName").unwrap_or("")),
-            cc: web::ascii(web::json_str(j, "countryCode").unwrap_or("")),
-            isp: web::ascii(web::json_str(j, "isp").unwrap_or("?")),
-            asn: web::ascii(web::json_str(j, "as").unwrap_or("?")),
-            tz: web::ascii(web::json_str(j, "timezone").unwrap_or("?")),
-            lat: web::json_num(j, "lat")?,
-            lon: web::json_num(j, "lon")?,
-            offset: web::json_num(j, "offset").unwrap_or(0.0) as i32,
-        })
-    });
-    set(Stage::Geo, if r.geo.is_some() { Step::Ok } else { Step::Fail });
+    r.geo = body
+        .and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok())
+        .and_then(|j| {
+            (web::json_str(j, "status")? == "success").then_some(())?;
+            Some(Geo {
+                ip: web::ascii(web::json_str(j, "query")?),
+                city: web::ascii(web::json_str(j, "city").unwrap_or("?")),
+                region: web::ascii(web::json_str(j, "regionName").unwrap_or("")),
+                cc: web::ascii(web::json_str(j, "countryCode").unwrap_or("")),
+                isp: web::ascii(web::json_str(j, "isp").unwrap_or("?")),
+                asn: web::ascii(web::json_str(j, "as").unwrap_or("?")),
+                tz: web::ascii(web::json_str(j, "timezone").unwrap_or("?")),
+                lat: web::json_num(j, "lat")?,
+                lon: web::json_num(j, "lon")?,
+                offset: web::json_num(j, "offset").unwrap_or(0.0) as i32,
+            })
+        });
+    set(
+        Stage::Geo,
+        if r.geo.is_some() {
+            Step::Ok
+        } else {
+            Step::Fail
+        },
+    );
 
     set(Stage::Wx, Step::Run);
     log("http: wttr.in");
@@ -214,43 +245,72 @@ async fn gather(stack: Stack<'static>, control: &mut cyw43::Control<'static>, r:
     };
     let (body, probe) = web::get(stack, "wttr.in", &path, &mut buf).await;
     let _ = r.probes.push(probe);
-    r.wx = body.and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok()).and_then(|t| {
-        let mut fields = heapless::Vec::new();
-        for f in t.trim().split('|') {
-            let _ = fields.push(web::ascii(f.trim()));
-        }
-        (fields.len() == 10).then_some(Weather { fields })
-    });
-    set(Stage::Wx, if r.wx.is_some() { Step::Ok } else { Step::Fail });
+    r.wx = body
+        .and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok())
+        .and_then(|t| {
+            let mut fields = heapless::Vec::new();
+            for f in t.trim().split('|') {
+                let _ = fields.push(web::ascii(f.trim()));
+            }
+            (fields.len() == 10).then_some(Weather { fields })
+        });
+    set(
+        Stage::Wx,
+        if r.wx.is_some() { Step::Ok } else { Step::Fail },
+    );
 
     set(Stage::Iss, Step::Run);
     log("http: iss-now");
     let (body, probe) = web::get(stack, "api.open-notify.org", "/iss-now.json", &mut buf).await;
     let _ = r.probes.push(probe);
-    r.iss = body.and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok()).and_then(|j| {
-        // The coordinates come as strings.
-        let num = |k| web::json_str(j, k).and_then(|v| v.parse().ok()).or_else(|| web::json_num(j, k));
-        Some((num("latitude")?, num("longitude")?))
-    });
-    set(Stage::Iss, if r.iss.is_some() { Step::Ok } else { Step::Fail });
+    r.iss = body
+        .and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok())
+        .and_then(|j| {
+            // The coordinates come as strings.
+            let num = |k| {
+                web::json_str(j, k)
+                    .and_then(|v| v.parse().ok())
+                    .or_else(|| web::json_num(j, k))
+            };
+            Some((num("latitude")?, num("longitude")?))
+        });
+    set(
+        Stage::Iss,
+        if r.iss.is_some() {
+            Step::Ok
+        } else {
+            Step::Fail
+        },
+    );
 
     set(Stage::Crew, Step::Run);
     log("http: astros");
     let (body, probe) = web::get(stack, "api.open-notify.org", "/astros.json", &mut buf).await;
     let _ = r.probes.push(probe);
-    r.crew = body.and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok()).and_then(|j| {
-        let number = web::json_num(j, "number")? as u8;
-        let mut people = heapless::Vec::new();
-        let list = &j[j.find("\"people\"")?..];
-        for obj in list.split('{').skip(1) {
-            let obj = &obj[..obj.find('}').unwrap_or(obj.len())];
-            if let (Some(name), Some(craft)) = (web::json_str(obj, "name"), web::json_str(obj, "craft")) {
-                let _ = people.push((web::ascii(name), web::ascii(craft)));
+    r.crew = body
+        .and_then(|(a, b)| core::str::from_utf8(&buf[a..b]).ok())
+        .and_then(|j| {
+            let number = web::json_num(j, "number")? as u8;
+            let mut people = heapless::Vec::new();
+            let list = &j[j.find("\"people\"")?..];
+            for obj in list.split('{').skip(1) {
+                let obj = &obj[..obj.find('}').unwrap_or(obj.len())];
+                if let (Some(name), Some(craft)) =
+                    (web::json_str(obj, "name"), web::json_str(obj, "craft"))
+                {
+                    let _ = people.push((web::ascii(name), web::ascii(craft)));
+                }
             }
-        }
-        Some(Crew { number, people })
-    });
-    set(Stage::Crew, if r.crew.is_some() { Step::Ok } else { Step::Fail });
+            Some(Crew { number, people })
+        });
+    set(
+        Stage::Crew,
+        if r.crew.is_some() {
+            Step::Ok
+        } else {
+            Step::Fail
+        },
+    );
     control.gpio_set(0, false).await;
 
     set(Stage::Render, Step::Run);
@@ -272,7 +332,13 @@ async fn gather(stack: Stack<'static>, control: &mut cyw43::Control<'static>, r:
 // ----------------------------------------------------------------- tasks ----
 
 #[embassy_executor::task]
-async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>, Cyw43439>) -> ! {
+async fn cyw43_task(
+    runner: cyw43::Runner<
+        'static,
+        cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>,
+        Cyw43439,
+    >,
+) -> ! {
     runner.run().await
 }
 
@@ -287,11 +353,19 @@ async fn ble_task(controller: ExternalController<cyw43::bluetooth::BtDriver<'sta
 }
 
 #[embassy_executor::task]
-async fn app_task(mut control: cyw43::Control<'static>, stack: Stack<'static>, iface: Iface<'static>) {
+async fn app_task(
+    mut control: cyw43::Control<'static>,
+    stack: Stack<'static>,
+    iface: Iface<'static>,
+) {
     set(Stage::Wifi, Step::Run);
     loop {
         log(&fmt::<40>(format_args!("wifi: joining {SSID}")));
-        let opts = if PASS.is_empty() { JoinOptions::new_open() } else { JoinOptions::new(PASS.as_bytes()) };
+        let opts = if PASS.is_empty() {
+            JoinOptions::new_open()
+        } else {
+            JoinOptions::new(PASS.as_bytes())
+        };
         match control.join(SSID, opts).await {
             Ok(()) => break,
             Err(e) => {
@@ -309,7 +383,10 @@ async fn app_task(mut control: cyw43::Control<'static>, stack: Stack<'static>, i
     static REPORT: StaticCell<Report> = StaticCell::new();
     let report = REPORT.init(Report::new(SSID));
     report.lan_ip = fmt(format_args!("{}", lease.address.address()));
-    report.gateway = lease.router.map(|g| fmt(format_args!("{g}"))).unwrap_or_default();
+    report.gateway = lease
+        .router
+        .map(|g| fmt(format_args!("{g}")))
+        .unwrap_or_default();
     #[allow(irrefutable_let_patterns)]
     if let HardwareAddress::Ethernet(mac) = iface.hardware_addr() {
         report.mac = mac.0;
@@ -359,7 +436,19 @@ fn screen(cv: &mut Canvas, st: &State, scroll: i32) {
         let y = 19 + i as i32 * 11;
         let (tag, col) = step_tag(st.steps[i]);
         let bt = i >= Stage::Scan as usize;
-        cv.text(4, y, if bt { "BT" } else if i < 2 { "L2" } else { "NET" }, &FONT_6X10, rgb(40, 80, 60));
+        cv.text(
+            4,
+            y,
+            if bt {
+                "BT"
+            } else if i < 2 {
+                "L2"
+            } else {
+                "NET"
+            },
+            &FONT_6X10,
+            rgb(40, 80, 60),
+        );
         cv.text(28, y, name, &FONT_6X10, DIM);
         cv.text(76, y, tag, &FONT_6X10, col);
     }
@@ -371,8 +460,15 @@ fn screen(cv: &mut Canvas, st: &State, scroll: i32) {
     line(cv, &fmt::<24>(format_args!("ip {}", st.ip)), INK);
     if !st.printer.is_empty() {
         line(cv, &st.printer, rgb(80, 220, 255));
-        let bat = st.battery.map(|b| fmt::<8>(format_args!("{b}%"))).unwrap_or_default();
-        line(cv, &fmt::<24>(format_args!("{}dBm mtu{} {}", st.rssi, st.mtu, bat)), DIM);
+        let bat = st
+            .battery
+            .map(|b| fmt::<8>(format_args!("{b}%")))
+            .unwrap_or_default();
+        line(
+            cv,
+            &fmt::<24>(format_args!("{}dBm mtu{} {}", st.rssi, st.mtu, bat)),
+            DIM,
+        );
     } else {
         line(cv, "printer: -", DIM);
         line(cv, "", DIM);
@@ -380,7 +476,13 @@ fn screen(cv: &mut Canvas, st: &State, scroll: i32) {
     // Progress through the job.
     cv.fill(4, y + 1, 118, 6, rgb(20, 40, 30));
     if st.job_rows > 0 {
-        cv.fill(4, y + 1, 118 * st.sent_rows as i32 / st.job_rows as i32, 6, INK);
+        cv.fill(
+            4,
+            y + 1,
+            118 * st.sent_rows as i32 / st.job_rows as i32,
+            6,
+            INK,
+        );
     }
     let log = &st.log[..st.log.len().min(20)];
     cv.text(4, y + 11, log, &FONT_6X10, WARN);
@@ -402,8 +504,17 @@ fn screen(cv: &mut Canvas, st: &State, scroll: i32) {
             let sent = !st.printing || py < st.sent_rows as i32;
             for sx in PX..lcd::W {
                 let px = (sx - PX) * 2;
-                let n = p.dot(px, py) as u8 + p.dot(px + 1, py) as u8 + p.dot(px, py + 1) as u8 + p.dot(px + 1, py + 1) as u8;
-                let c = if sent { mix(PAPER_RGB, DOT_RGB, n as f32 / 4.0) } else if n >= 2 { faded.1 } else { faded.0 };
+                let n = p.dot(px, py) as u8
+                    + p.dot(px + 1, py) as u8
+                    + p.dot(px, py + 1) as u8
+                    + p.dot(px + 1, py + 1) as u8;
+                let c = if sent {
+                    mix(PAPER_RGB, DOT_RGB, n as f32 / 4.0)
+                } else if n >= 2 {
+                    faded.1
+                } else {
+                    faded.0
+                };
                 cv.px(sx, sy, c);
             }
             if st.printing && (py - st.sent_rows as i32).abs() <= 1 {
@@ -434,7 +545,12 @@ async fn main(spawner: Spawner) {
     };
     let _bl = Output::new(p.PIN_17, Level::High);
     lcd.init().await;
-    let buttons = [Input::new(p.PIN_12, Pull::Up), Input::new(p.PIN_20, Pull::Up), Input::new(p.PIN_14, Pull::Up), Input::new(p.PIN_15, Pull::Up)];
+    let buttons = [
+        Input::new(p.PIN_12, Pull::Up),
+        Input::new(p.PIN_20, Pull::Up),
+        Input::new(p.PIN_14, Pull::Up),
+        Input::new(p.PIN_15, Pull::Up),
+    ];
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
     let cv = CANVAS.init(Canvas::new());
     let st = STATE.lock(|s| s.borrow().clone());
@@ -456,15 +572,19 @@ async fn main(spawner: Spawner) {
         dma::Channel::new(p.DMA_CH1, Irqs),
     );
     static RADIO: StaticCell<cyw43::State> = StaticCell::new();
-    let (net_device, bt_device, mut control, runner) = cyw43::new_with_bluetooth(RADIO.init(cyw43::State::new()), pwr, spi, fw, btfw, nvram).await;
+    let (net_device, bt_device, mut control, runner) =
+        cyw43::new_with_bluetooth(RADIO.init(cyw43::State::new()), pwr, spi, fw, btfw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
     control.init(clm, cyw43::Config::default()).await;
-    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
 
     static STACK: StaticCell<StackStorage<'static>> = StaticCell::new();
     // cyw43 receives each frame, bus headers included, straight into these.
     static POOL: StaticPool<{ cyw43::RX_BUF_SIZE }, 8, { cyw43::RX_BUF_ALIGN }> = StaticPool::new();
-    let (stack, net_runner) = Stack::new(STACK.init(StackStorage::new()), &POOL, 0xca7_f00d_0b17_0001);
+    let (stack, net_runner) =
+        Stack::new(STACK.init(StackStorage::new()), &POOL, 0xca7_f00d_0b17_0001);
     static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
     let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(net_device)).ok());
     unwrap!(iface.set_dhcpv4(Some(Default::default())).ok());

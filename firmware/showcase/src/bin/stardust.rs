@@ -16,21 +16,23 @@
 #![no_std]
 #![no_main]
 
-use core::f32::consts::PI;
-use core::fmt::Write as _;
+use core::{f32::consts::PI, fmt::Write as _};
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::bind_interrupts;
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::DMA_CH0;
-use embassy_rp::spi::{self, Spi};
+use embassy_rp::{
+    bind_interrupts,
+    gpio::{Input, Level, Output, Pull},
+    peripherals::DMA_CH0,
+    spi::{self, Spi},
+};
 use embassy_time::{Duration, Instant, Ticker};
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_6X10, FONT_9X15_BOLD};
+use embedded_graphics::mono_font::ascii::{FONT_6X10, FONT_9X15_BOLD, FONT_10X20};
 use heapless::String;
 use libm::{cosf, sinf, sqrtf};
-use showcase::{mix, rgb, Canvas, Lcd, Rng, H, W};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
+use showcase::{Canvas, H, Lcd, Rng, W, mix, rgb};
 
 bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>;
@@ -119,7 +121,15 @@ fn dist2(a: &Body, b: &Body) -> f32 {
 /// A body on a roughly circular orbit at radius `r`, angle `a`.
 fn orbit(r: f32, a: f32, dir: f32) -> Body {
     let v = sqrtf(GM / r) * dir;
-    Body { x: CX + r * cosf(a), y: CY + r * sinf(a), vx: -v * sinf(a), vy: v * cosf(a), alive: true, k: 0, age: 0 }
+    Body {
+        x: CX + r * cosf(a),
+        y: CY + r * sinf(a),
+        vx: -v * sinf(a),
+        vy: v * cosf(a),
+        alive: true,
+        k: 0,
+        age: 0,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -156,7 +166,11 @@ impl Game {
         let mut rng = Rng(0x5eed_d057);
         let mut stars = [(0i16, 0i16, 0u8); 70];
         for s in stars.iter_mut() {
-            *s = (rng.below(W as u32) as i16, rng.below(H as u32) as i16, rng.below(255) as u8);
+            *s = (
+                rng.below(W as u32) as i16,
+                rng.below(H as u32) as i16,
+                rng.below(255) as u8,
+            );
         }
         let mut g = Game {
             rng,
@@ -214,7 +228,9 @@ impl Game {
     }
 
     fn spawn_comet(&mut self) {
-        let Some(slot) = self.comets.iter().position(|c| !c.alive) else { return };
+        let Some(slot) = self.comets.iter().position(|c| !c.alive) else {
+            return;
+        };
         // In from an edge, roughly towards the star but not quite.
         let side = self.rng.below(4);
         let (x, y) = match side {
@@ -247,7 +263,15 @@ impl Game {
             }
             let a = self.rng.unit() * 2.0 * PI;
             let v = 20.0 + self.rng.unit() * 60.0;
-            *s = Body { x, y, vx: v * cosf(a), vy: v * sinf(a), alive: true, k, age: 0 };
+            *s = Body {
+                x,
+                y,
+                vx: v * cosf(a),
+                vy: v * sinf(a),
+                alive: true,
+                k,
+                age: 0,
+            };
             made += 1;
         }
     }
@@ -256,7 +280,11 @@ impl Game {
         self.burst(self.ship.x, self.ship.y, 24, 1);
         self.flash = 8;
         self.lives = self.lives.saturating_sub(1);
-        self.mode = if self.lives == 0 { Mode::Over(0) } else { Mode::Respawn(0) };
+        self.mode = if self.lives == 0 {
+            Mode::Over(0)
+        } else {
+            Mode::Respawn(0)
+        };
         info!("ship lost, {} left, score {}", self.lives, self.score);
     }
 
@@ -298,7 +326,7 @@ impl Game {
                     self.ship.vx += 90.0 * cosf(self.angle) * DT;
                     self.ship.vy += 90.0 * sinf(self.angle) * DT;
                     self.fuel = (self.fuel - 0.12 * DT).max(0.0);
-                    if self.frame % 2 == 0 {
+                    if self.frame.is_multiple_of(2) {
                         let back = self.angle + PI + (self.rng.unit() - 0.5) * 0.6;
                         if let Some(s) = self.sparks.iter_mut().find(|s| !s.alive) {
                             *s = Body {
@@ -336,14 +364,14 @@ impl Game {
                 let (x, y, k) = (self.motes[i].x, self.motes[i].y, self.motes[i].k);
                 self.burst(x, y, 6, 10 + k);
                 self.spawn_mote(i);
-                if self.motes_got % 10 == 0 {
+                if self.motes_got.is_multiple_of(10) {
                     self.level += 1;
                     said = Some("level up");
                 }
             }
         }
         let comet_every = 220u32.saturating_sub(self.level * 25).max(50);
-        if playing && self.frame % comet_every == 0 {
+        if playing && self.frame.is_multiple_of(comet_every) {
             self.spawn_comet();
         }
         for i in 0..self.comets.len() {
@@ -360,7 +388,11 @@ impl Game {
             }
             if let Some((px, py, pt)) = self.pulse {
                 let pr = pt as f32 * 4.0;
-                let p = Body { x: px, y: py, ..Body::default() };
+                let p = Body {
+                    x: px,
+                    y: py,
+                    ..Body::default()
+                };
                 let d = sqrtf(dist2(c, &p));
                 if (d - pr).abs() < r + 3.0 {
                     let (x, y) = (c.x, c.y);
@@ -403,8 +435,12 @@ impl Game {
             if cv.rows(y as i32, 1) {
                 // In steps: a strip that doesn't change isn't sent again.
                 let tw = (((f / 8).wrapping_mul(24) + ph as u32 * 7) % 256) as i32;
-                let v = 60 + (tw - 128).abs() as u32;
-                cv.px(x as i32, y as i32, rgb(v as u8, v as u8, (v + 40).min(255) as u8));
+                let v = 60 + (tw - 128).unsigned_abs();
+                cv.px(
+                    x as i32,
+                    y as i32,
+                    rgb(v as u8, v as u8, (v + 40).min(255) as u8),
+                );
             }
         }
 
@@ -434,7 +470,7 @@ impl Game {
             }
             let c = DUST[m.k as usize % 3];
             let glow = mix(SPACE, c, 90);
-            let tw = (f / 4 + m.k as u32) % 2 == 0;
+            let tw = (f / 4 + m.k as u32).is_multiple_of(2);
             cv.fill(x - 1, y - 1, 3, 3, glow);
             cv.px(x, y - 2, c);
             cv.px(x, y + 2, c);
@@ -475,13 +511,11 @@ impl Game {
         }
 
         // The ship.
-        let show_ship = match self.mode {
-            Mode::Play => true,
-            _ => false,
-        };
+        let show_ship = matches!(self.mode, Mode::Play);
         if show_ship {
             let (x, y, a) = (self.ship.x, self.ship.y, self.angle);
-            let pt = |r: f32, da: f32| ((x + r * cosf(a + da)) as i32, (y + r * sinf(a + da)) as i32);
+            let pt =
+                |r: f32, da: f32| ((x + r * cosf(a + da)) as i32, (y + r * sinf(a + da)) as i32);
             let nose = pt(8.0, 0.0);
             let l = pt(6.0, 2.4);
             let r = pt(6.0, -2.4);
@@ -490,7 +524,7 @@ impl Game {
             cv.line(nose.0, nose.1, r.0, r.1, SHIP);
             cv.line(l.0, l.1, tail.0, tail.1, SHIP);
             cv.line(r.0, r.1, tail.0, tail.1, SHIP);
-            if self.thrusting && f % 2 == 0 {
+            if self.thrusting && f.is_multiple_of(2) {
                 let fl = pt(7.0 + (f % 3) as f32, PI);
                 cv.line(tail.0, tail.1, fl.0, fl.1, FLAME);
             }
@@ -528,7 +562,7 @@ impl Game {
             Mode::Title => {
                 cv.text_c(160, 60, "S T A R D U S T", &FONT_10X20, SUN);
                 cv.text_c(160, 170, "A/B turn  X thrust  Y pulse", &FONT_6X10, HUD);
-                if (f / 15) % 2 == 0 {
+                if (f / 15).is_multiple_of(2) {
                     cv.text_c(160, 190, "press any button", &FONT_6X10, DUST[0]);
                 }
             }
@@ -537,7 +571,7 @@ impl Game {
                 let mut s: String<24> = String::new();
                 let _ = write!(s, "score {}  level {}", self.score, self.level);
                 cv.text_c(160, 160, &s, &FONT_6X10, HUD);
-                if t > 45 && (f / 15) % 2 == 0 {
+                if t > 45 && (f / 15).is_multiple_of(2) {
                     cv.text_c(160, 180, "Y to fly again", &FONT_6X10, DUST[0]);
                 }
             }
@@ -552,7 +586,11 @@ async fn main(_spawner: Spawner) {
     let mut scfg = spi::Config::default();
     scfg.frequency = embassy_rp::time::Hertz(62_500_000);
     let spi = Spi::new_txonly(p.SPI0, p.PIN_18, p.PIN_19, p.DMA_CH0, Irqs, scfg).unwrap();
-    let mut lcd = Lcd::new(spi, Output::new(p.PIN_9, Level::High), Output::new(p.PIN_13, Level::Low));
+    let mut lcd = Lcd::new(
+        spi,
+        Output::new(p.PIN_9, Level::High),
+        Output::new(p.PIN_13, Level::Low),
+    );
     let _bl = Output::new(p.PIN_17, Level::High);
     lcd.init().await;
     let buttons = [
@@ -569,8 +607,18 @@ async fn main(_spawner: Spawner) {
     let mut slow = 0u32;
     loop {
         let t0 = Instant::now();
-        let keys = [buttons[0].is_low(), buttons[1].is_low(), buttons[2].is_low(), buttons[3].is_low()];
-        let fresh = [keys[0] && !prev[0], keys[1] && !prev[1], keys[2] && !prev[2], keys[3] && !prev[3]];
+        let keys = [
+            buttons[0].is_low(),
+            buttons[1].is_low(),
+            buttons[2].is_low(),
+            buttons[3].is_low(),
+        ];
+        let fresh = [
+            keys[0] && !prev[0],
+            keys[1] && !prev[1],
+            keys[2] && !prev[2],
+            keys[3] && !prev[3],
+        ];
         prev = keys;
         if let Some(what) = game.step(keys, fresh) {
             info!("{} (score {})", what, game.score);

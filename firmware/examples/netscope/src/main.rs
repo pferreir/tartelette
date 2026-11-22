@@ -15,39 +15,47 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-use core::convert::Infallible;
-use core::fmt::Write as _;
+use core::{cell::RefCell, convert::Infallible, fmt::Write as _};
 
 use cyw43::{JoinOptions, aligned_bytes};
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::dns::DnsQueryType;
-use embassy_net::iface::Iface;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::udp::UdpSocket;
-use embassy_net::wire::{IpAddr, Ipv4Addr, SocketAddr};
-use embassy_net::{Stack, StackStorage, StaticPool};
-use embassy_rp::{bind_interrupts, dma};
-use embassy_rp::gpio::{Input, Level, Output, Pull};
-use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
-use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::mode::Blocking;
-use embassy_rp::spi::{self, Spi};
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Instant, Timer};
-use embedded_graphics::mono_font::ascii::{FONT_10X20, FONT_5X8, FONT_6X10, FONT_9X15_BOLD};
-use embedded_graphics::mono_font::{MonoFont, MonoTextStyle};
-use embedded_graphics::pixelcolor::raw::RawU16;
-use embedded_graphics::prelude::*;
-use embedded_graphics::text::{Baseline, Text};
+use embassy_net::{
+    Stack, StackStorage, StaticPool,
+    dns::DnsQueryType,
+    iface::Iface,
+    tcp::TcpSocket,
+    udp::UdpSocket,
+    wire::{IpAddr, Ipv4Addr, SocketAddr},
+};
+use embassy_rp::{
+    bind_interrupts, dma,
+    gpio::{Input, Level, Output, Pull},
+    mode::Blocking,
+    peripherals::{DMA_CH0, DMA_CH1, PIO0},
+    pio::{InterruptHandler, Pio},
+    spi::{self, Spi},
+};
+use embassy_sync::{
+    blocking_mutex::{Mutex, raw::CriticalSectionRawMutex},
+    signal::Signal,
+};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
+use embedded_graphics::{
+    mono_font::{
+        MonoFont, MonoTextStyle,
+        ascii::{FONT_5X8, FONT_6X10, FONT_9X15_BOLD, FONT_10X20},
+    },
+    pixelcolor::raw::RawU16,
+    prelude::*,
+    text::{Baseline, Text},
+};
 use embedded_io_async::Write;
 use heapless::String;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -86,7 +94,15 @@ struct Host {
 }
 
 const fn host(name: &'static str, lit: Option<[u8; 4]>, port: u16) -> Host {
-    Host { name, lit, port, ip: None, dns_us: None, rtt_us: None, step: Step::Wait }
+    Host {
+        name,
+        lit,
+        port,
+        ip: None,
+        dns_us: None,
+        rtt_us: None,
+        step: Step::Wait,
+    }
 }
 
 const NHOST: usize = 6;
@@ -137,7 +153,13 @@ impl State {
                 host("wikipedia.org", None, 443),
                 host("archive.org", None, 443),
             ],
-            log: [String::new(), String::new(), String::new(), String::new(), String::new()],
+            log: [
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+                String::new(),
+            ],
             rounds: 0,
         }
     }
@@ -151,7 +173,8 @@ impl State {
     }
 }
 
-static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> = Mutex::new(RefCell::new(State::new()));
+static STATE: Mutex<CriticalSectionRawMutex, RefCell<State>> =
+    Mutex::new(RefCell::new(State::new()));
 static RETEST: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
@@ -194,7 +217,11 @@ const fn rgb(r: u8, g: u8, b: u8) -> u16 {
 
 fn scale(c: (u8, u8, u8), f: f32) -> u16 {
     let f = f.clamp(0.0, 1.0);
-    rgb((c.0 as f32 * f) as u8, (c.1 as f32 * f) as u8, (c.2 as f32 * f) as u8)
+    rgb(
+        (c.0 as f32 * f) as u8,
+        (c.1 as f32 * f) as u8,
+        (c.2 as f32 * f) as u8,
+    )
 }
 
 const PHOSPHOR: (u8, u8, u8) = (110, 255, 140);
@@ -286,7 +313,16 @@ impl Canvas {
         }
         let (mut x, mut y, mut d) = (r, 0, 1 - r);
         while x >= y {
-            for (px, py) in [(x, y), (y, x), (-y, x), (-x, y), (-x, -y), (-y, -x), (y, -x), (x, -y)] {
+            for (px, py) in [
+                (x, y),
+                (y, x),
+                (-y, x),
+                (-x, y),
+                (-x, -y),
+                (-y, -x),
+                (y, -x),
+                (x, -y),
+            ] {
                 self.px(cx + px, cy + py, c);
             }
             y += 1;
@@ -311,7 +347,10 @@ impl Canvas {
         if y + fh <= self.y0 || y >= self.y0 + self.h || x >= self.x0 + self.w {
             return;
         }
-        let style = MonoTextStyle::new(font, embedded_graphics::pixelcolor::Rgb565::from(RawU16::new(c)));
+        let style = MonoTextStyle::new(
+            font,
+            embedded_graphics::pixelcolor::Rgb565::from(RawU16::new(c)),
+        );
         let _ = Text::with_baseline(s, Point::new(x, y), style, Baseline::Top).draw(self);
     }
 
@@ -331,7 +370,10 @@ impl DrawTarget for Canvas {
     type Color = embedded_graphics::pixelcolor::Rgb565;
     type Error = Infallible;
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<Self::Color>>>(&mut self, pixels: I) -> Result<(), Infallible> {
+    fn draw_iter<I: IntoIterator<Item = Pixel<Self::Color>>>(
+        &mut self,
+        pixels: I,
+    ) -> Result<(), Infallible> {
         for Pixel(p, c) in pixels {
             self.px(p.x, p.y, c.into_storage());
         }
@@ -372,7 +414,15 @@ impl Lcd {
     }
 
     /// Render `scene` into the rectangle, one strip at a time.
-    fn flush(&mut self, cv: &mut Canvas, x: i32, y: i32, w: i32, h: i32, scene: &mut dyn FnMut(&mut Canvas)) {
+    fn flush(
+        &mut self,
+        cv: &mut Canvas,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        scene: &mut dyn FnMut(&mut Canvas),
+    ) {
         let mut yy = y;
         while yy < y + h {
             let rows = STRIP.min(y + h - yy);
@@ -380,7 +430,10 @@ impl Lcd {
             scene(cv);
             let (xe, ye) = (x + w - 1, yy + rows - 1);
             self.cmd(0x2A, &[(x >> 8) as u8, x as u8, (xe >> 8) as u8, xe as u8]);
-            self.cmd(0x2B, &[(yy >> 8) as u8, yy as u8, (ye >> 8) as u8, ye as u8]);
+            self.cmd(
+                0x2B,
+                &[(yy >> 8) as u8, yy as u8, (ye >> 8) as u8, ye as u8],
+            );
             self.cs.set_low();
             self.dc.set_low();
             let _ = self.spi.blocking_write(&[0x2C]);
@@ -451,7 +504,13 @@ fn header(cv: &mut Canvas, st: &State, page: u8) {
 fn footer(cv: &mut Canvas, units_km: bool) {
     cv.fill(0, 226, W, 14, rgb(0, 20, 10));
     cv.text(4, 229, "A retest  B/X page  Y units:", &FONT_6X10, DIM);
-    cv.text(176, 229, if units_km { "reach" } else { "ms" }, &FONT_6X10, COOL);
+    cv.text(
+        176,
+        229,
+        if units_km { "reach" } else { "ms" },
+        &FONT_6X10,
+        COOL,
+    );
 }
 
 fn ring_radius(ms: f32, r_max: f32) -> f32 {
@@ -468,7 +527,10 @@ fn host_angle(i: usize) -> f32 {
 
 fn polar(deg: f32, r: f32) -> (i32, i32) {
     let a = deg * (core::f32::consts::PI / 180.0);
-    (CX + libm::roundf(r * libm::sinf(a)) as i32, CY - libm::roundf(r * libm::cosf(a)) as i32)
+    (
+        CX + libm::roundf(r * libm::sinf(a)) as i32,
+        CY - libm::roundf(r * libm::cosf(a)) as i32,
+    )
 }
 
 fn radar(cv: &mut Canvas, st: &State, t_ms: u64, km: bool) {
@@ -535,31 +597,70 @@ fn side(cv: &mut Canvas, st: &State, km: bool) {
     };
     row(cv, "WIFI", st.wifi, &SSID[..SSID.len().min(11)]);
     row(cv, "DHCP", st.dhcp, &st.ip);
-    let dns = if st.dns == Step::Ok { fmt_ms(st.dns_us) } else { String::new() };
+    let dns = if st.dns == Step::Ok {
+        fmt_ms(st.dns_us)
+    } else {
+        String::new()
+    };
     row(cv, "DNS", st.dns, &dns);
     let ntp = match (st.ntp, st.unix_ms()) {
         (Step::Ok, Some(ms)) => {
             let s = ms / 1000;
-            fmt::<12>(format_args!("{:02}:{:02}:{:02}Z", s / 3600 % 24, s / 60 % 60, s % 60))
+            fmt::<12>(format_args!(
+                "{:02}:{:02}:{:02}Z",
+                s / 3600 % 24,
+                s / 60 % 60,
+                s % 60
+            ))
         }
         _ => String::new(),
     };
     row(cv, "NTP", st.ntp, &ntp);
-    let http = if st.http == Step::Ok { fmt::<14>(format_args!("{} {}", st.http_status, fmt_ms(st.http_us))) } else { String::new() };
+    let http = if st.http == Step::Ok {
+        fmt::<14>(format_args!("{} {}", st.http_status, fmt_ms(st.http_us)))
+    } else {
+        String::new()
+    };
     row(cv, "HTTP", st.http, &http);
-    let tcp = if st.rounds > 0 || st.tcp != Step::Wait { fmt::<12>(format_args!("{}/{}", st.up(), NHOST)) } else { String::new() };
+    let tcp = if st.rounds > 0 || st.tcp != Step::Wait {
+        fmt::<12>(format_args!("{}/{}", st.up(), NHOST))
+    } else {
+        String::new()
+    };
     row(cv, "TCP", st.tcp, &tcp);
 
     y += 8;
-    cv.text(x, y, if km { "# HOST    REACH" } else { "# HOST      RTT" }, &FONT_6X10, rgb(255, 176, 0));
+    cv.text(
+        x,
+        y,
+        if km {
+            "# HOST    REACH"
+        } else {
+            "# HOST      RTT"
+        },
+        &FONT_6X10,
+        rgb(255, 176, 0),
+    );
     y += 12;
     for (i, h) in st.hosts.iter().enumerate() {
         let n = &h.name[..h.name.len().min(9)];
         let l = fmt::<4>(format_args!("{}", i + 1));
         cv.text(x, y, &l, &FONT_6X10, DIM);
-        cv.text(x + 12, y, n, &FONT_6X10, if h.step == Step::Fail { BAD } else { INK });
+        cv.text(
+            x + 12,
+            y,
+            n,
+            &FONT_6X10,
+            if h.step == Step::Fail { BAD } else { INK },
+        );
         let v = match (h.step, h.rtt_us) {
-            (Step::Ok, Some(us)) => if km { fmt_reach(us) } else { fmt_ms(us) },
+            (Step::Ok, Some(us)) => {
+                if km {
+                    fmt_reach(us)
+                } else {
+                    fmt_ms(us)
+                }
+            }
             (Step::Fail, _) => fmt::<10>(format_args!("---")),
             (Step::Run, _) => fmt::<10>(format_args!("...")),
             _ => String::new(),
@@ -604,14 +705,32 @@ fn table_page(cv: &mut Canvas, st: &State, km: bool) {
         cv.text_r(316, y, &reach, &FONT_6X10, if km { WARN } else { COOL });
         y += 12;
     }
-    cv.text(4, y + 2, "REACH: one-way distance light in fibre", &FONT_6X10, rgb(0, 110, 50));
-    cv.text(4, y + 14, "covers during the round trip (200km/ms)", &FONT_6X10, rgb(0, 110, 50));
+    cv.text(
+        4,
+        y + 2,
+        "REACH: one-way distance light in fibre",
+        &FONT_6X10,
+        rgb(0, 110, 50),
+    );
+    cv.text(
+        4,
+        y + 14,
+        "covers during the round trip (200km/ms)",
+        &FONT_6X10,
+        rgb(0, 110, 50),
+    );
     // Console.
     let top = 142;
     cv.fill(4, top, 312, 1, GRID);
     for (i, l) in st.log.iter().enumerate() {
         let c = if i == LOG_LINES - 1 { INK } else { DIM };
-        cv.text(4, top + 6 + 12 * i as i32, "$", &FONT_6X10, rgb(255, 176, 0));
+        cv.text(
+            4,
+            top + 6 + 12 * i as i32,
+            "$",
+            &FONT_6X10,
+            rgb(255, 176, 0),
+        );
         cv.text(14, top + 6 + 12 * i as i32, l, &FONT_6X10, c);
     }
     footer(cv, km);
@@ -620,6 +739,7 @@ fn table_page(cv: &mut Canvas, st: &State, km: bool) {
 const SEGS: [u8; 10] = [0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F];
 
 /// One 7-segment digit; bit 0 = a (top), 1 = b, 2 = c, 3 = d, 4 = e, 5 = f, 6 = g.
+#[allow(clippy::too_many_arguments)]
 fn digit7(cv: &mut Canvas, x: i32, y: i32, w: i32, h: i32, t: i32, d: u8, on: u16, off: u16) {
     let mid = y + (h - t) / 2;
     let vh = (h - t) / 2 - t;
@@ -667,7 +787,11 @@ fn clock_page(cv: &mut Canvas, st: &State, km: bool) {
             x += 44;
         }
         if g < 2 {
-            let c = if t.is_some_and(|t| t[2] % 2 == 0) { on } else { off };
+            let c = if t.is_some_and(|t| t[2] % 2 == 0) {
+                on
+            } else {
+                off
+            };
             cv.fill(x - 2, 40, 7, 7, c);
             cv.fill(x - 2, 64, 7, 7, c);
             x += 12;
@@ -689,7 +813,14 @@ fn clock_page(cv: &mut Canvas, st: &State, km: bool) {
             cv.text(10, 164, "synced via UDP/123", &FONT_6X10, DIM);
             // Binary clock: BCD columns, bit 3 on top.
             let t = t.unwrap();
-            let cols = [t[0] / 10, t[0] % 10, t[1] / 10, t[1] % 10, t[2] / 10, t[2] % 10];
+            let cols = [
+                t[0] / 10,
+                t[0] % 10,
+                t[1] / 10,
+                t[1] % 10,
+                t[2] / 10,
+                t[2] % 10,
+            ];
             let rows = [2, 4, 3, 4, 3, 4];
             let (bx, by) = (186, 130);
             for (c, (v, n)) in cols.iter().zip(rows).enumerate() {
@@ -709,7 +840,13 @@ fn clock_page(cv: &mut Canvas, st: &State, km: bool) {
         }
         None => {
             cv.text(10, 98, "NO TIME SYNC", &FONT_10X20, BAD);
-            cv.text(10, 128, "waiting for NTP over the internet", &FONT_6X10, DIM);
+            cv.text(
+                10,
+                128,
+                "waiting for NTP over the internet",
+                &FONT_6X10,
+                DIM,
+            );
         }
     }
     footer(cv, km);
@@ -719,7 +856,11 @@ fn clock_page(cv: &mut Canvas, st: &State, km: bool) {
 
 async fn resolve(stack: Stack<'static>, name: &str) -> Option<([u8; 4], u32)> {
     let t = Instant::now();
-    let r = with_timeout(Duration::from_secs(4), stack.dns_query(name, DnsQueryType::A)).await;
+    let r = with_timeout(
+        Duration::from_secs(4),
+        stack.dns_query(name, DnsQueryType::A),
+    )
+    .await;
     let us = t.elapsed().as_micros() as u32;
     if let Ok(Ok(addrs)) = r {
         for a in addrs.iter() {
@@ -740,7 +881,11 @@ async fn tcp_rtt(stack: Stack<'static>, ip: [u8; 4], port: u16) -> Option<u32> {
     };
     sock.set_timeout(Some(Duration::from_secs(5)));
     let t = Instant::now();
-    let r = with_timeout(Duration::from_secs(4), sock.connect(SocketAddr::new(Ipv4Addr::from(ip).into(), port))).await;
+    let r = with_timeout(
+        Duration::from_secs(4),
+        sock.connect(SocketAddr::new(Ipv4Addr::from(ip).into(), port)),
+    )
+    .await;
     let us = t.elapsed().as_micros() as u32;
     sock.abort();
     Timer::after_millis(30).await;
@@ -753,15 +898,21 @@ async fn ntp(stack: Stack<'static>, ip: [u8; 4]) -> Option<(u64, u32)> {
     let mut pkt = [0u8; 48];
     pkt[0] = 0x1B; // LI 0, version 3, client
     let t = Instant::now();
-    sock.send_to(&pkt, SocketAddr::new(Ipv4Addr::from(ip).into(), 123)).await.ok()?;
+    sock.send_to(&pkt, SocketAddr::new(Ipv4Addr::from(ip).into(), 123))
+        .await
+        .ok()?;
     let mut buf = [0u8; 64];
-    let (n, _) = with_timeout(Duration::from_secs(4), sock.recv_from(&mut buf)).await.ok()?.ok()?;
+    let (n, _) = with_timeout(Duration::from_secs(4), sock.recv_from(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
     let us = t.elapsed().as_micros() as u32;
     if n < 48 {
         return None;
     }
     let secs = u32::from_be_bytes([buf[40], buf[41], buf[42], buf[43]]) as u64;
-    secs.checked_sub(2_208_988_800).map(|unix| (unix * 1000, us))
+    secs.checked_sub(2_208_988_800)
+        .map(|unix| (unix * 1000, us))
 }
 
 async fn http_status(stack: Stack<'static>, ip: [u8; 4], host: &str) -> Option<(u16, u32)> {
@@ -773,8 +924,12 @@ async fn http_status(stack: Stack<'static>, ip: [u8; 4], host: &str) -> Option<(
     sock.set_timeout(Some(Duration::from_secs(6)));
     let t = Instant::now();
     let go = async {
-        sock.connect(SocketAddr::new(Ipv4Addr::from(ip).into(), 80)).await.ok()?;
-        let req = fmt::<128>(format_args!("GET / HTTP/1.0\r\nHost: {host}\r\nUser-Agent: netscope-pico\r\n\r\n"));
+        sock.connect(SocketAddr::new(Ipv4Addr::from(ip).into(), 80))
+            .await
+            .ok()?;
+        let req = fmt::<128>(format_args!(
+            "GET / HTTP/1.0\r\nHost: {host}\r\nUser-Agent: netscope-pico\r\n\r\n"
+        ));
         sock.write_all(req.as_bytes()).await.ok()?;
         let mut head = [0u8; 16];
         let mut n = 0;
@@ -786,7 +941,10 @@ async fn http_status(stack: Stack<'static>, ip: [u8; 4], host: &str) -> Option<(
             n += k;
         }
         // "HTTP/1.x NNN"
-        let code = core::str::from_utf8(&head[9..12]).ok()?.parse::<u16>().ok()?;
+        let code = core::str::from_utf8(&head[9..12])
+            .ok()?
+            .parse::<u16>()
+            .ok()?;
         Some(code)
     };
     let code = with_timeout(Duration::from_secs(8), go).await.ok()??;
@@ -811,7 +969,14 @@ async fn round(stack: Stack<'static>, control: &mut cyw43::Control<'static>) {
     let time_ip = resolve(stack, "time.cloudflare.com").await;
     match time_ip {
         Some((ip, us)) => {
-            log(&fmt::<48>(format_args!("  -> {}.{}.{}.{} in {}", ip[0], ip[1], ip[2], ip[3], fmt_ms(us))));
+            log(&fmt::<48>(format_args!(
+                "  -> {}.{}.{}.{} in {}",
+                ip[0],
+                ip[1],
+                ip[2],
+                ip[3],
+                fmt_ms(us)
+            )));
             with(|s| {
                 s.dns = Step::Ok;
                 s.dns_us = us;
@@ -827,7 +992,11 @@ async fn round(stack: Stack<'static>, control: &mut cyw43::Control<'static>) {
     log("ntp: asking what time it is");
     match ntp(stack, time_ip.map_or([162, 159, 200, 1], |t| t.0)).await {
         Some((ms, rtt)) => {
-            log(&fmt::<48>(format_args!("  -> unix {} rtt {}", ms / 1000, fmt_ms(rtt))));
+            log(&fmt::<48>(format_args!(
+                "  -> unix {} rtt {}",
+                ms / 1000,
+                fmt_ms(rtt)
+            )));
             with(|s| {
                 s.ntp = Step::Ok;
                 s.ntp_rtt_us = rtt;
@@ -848,7 +1017,11 @@ async fn round(stack: Stack<'static>, control: &mut cyw43::Control<'static>) {
     };
     match web {
         Some((code, us)) => {
-            log(&fmt::<48>(format_args!("  -> HTTP {} in {}", code, fmt_ms(us))));
+            log(&fmt::<48>(format_args!(
+                "  -> HTTP {} in {}",
+                code,
+                fmt_ms(us)
+            )));
             with(|s| {
                 s.http = Step::Ok;
                 s.http_status = code;
@@ -891,7 +1064,11 @@ async fn round(stack: Stack<'static>, control: &mut cyw43::Control<'static>) {
             s.hosts[i].step = if rtt.is_some() { Step::Ok } else { Step::Fail };
         });
         match rtt {
-            Some(us) => log(&fmt::<48>(format_args!("  -> up {} ({}km)", fmt_ms(us), us / 10))),
+            Some(us) => log(&fmt::<48>(format_args!(
+                "  -> up {} ({}km)",
+                fmt_ms(us),
+                us / 10
+            ))),
             None => log("  -> unreachable"),
         }
     }
@@ -905,7 +1082,13 @@ async fn round(stack: Stack<'static>, control: &mut cyw43::Control<'static>) {
 // ----------------------------------------------------------------- tasks ----
 
 #[embassy_executor::task]
-async fn cyw43_task(runner: cyw43::Runner<'static, cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>, cyw43::Cyw43439>) -> ! {
+async fn cyw43_task(
+    runner: cyw43::Runner<
+        'static,
+        cyw43::SpiBus<Output<'static>, PioSpi<'static, PIO0, 0>>,
+        cyw43::Cyw43439,
+    >,
+) -> ! {
     runner.run().await
 }
 
@@ -915,11 +1098,19 @@ async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn diag_task(mut control: cyw43::Control<'static>, stack: Stack<'static>, iface: Iface<'static>) -> ! {
+async fn diag_task(
+    mut control: cyw43::Control<'static>,
+    stack: Stack<'static>,
+    iface: Iface<'static>,
+) -> ! {
     with(|s| s.wifi = Step::Run);
     loop {
         log(&fmt::<48>(format_args!("wifi: joining {SSID}")));
-        let opts = if PASS.is_empty() { JoinOptions::new_open() } else { JoinOptions::new(PASS.as_bytes()) };
+        let opts = if PASS.is_empty() {
+            JoinOptions::new_open()
+        } else {
+            JoinOptions::new(PASS.as_bytes())
+        };
         match control.join(SSID, opts).await {
             Ok(()) => break,
             Err(e) => {
@@ -936,7 +1127,10 @@ async fn diag_task(mut control: cyw43::Control<'static>, stack: Stack<'static>, 
     });
     iface.wait_config_up().await;
     let a = unwrap!(iface.dhcpv4_lease()).address.address().octets();
-    log(&fmt::<48>(format_args!("dhcp: {}.{}.{}.{}", a[0], a[1], a[2], a[3])));
+    log(&fmt::<48>(format_args!(
+        "dhcp: {}.{}.{}.{}",
+        a[0], a[1], a[2], a[3]
+    )));
     with(|s| {
         s.dhcp = Step::Ok;
         s.ip = fmt(format_args!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]));
@@ -995,12 +1189,18 @@ async fn main(spawner: Spawner) {
     let (net_device, mut control, runner) = cyw43::new(state, pwr, spi, fw, nvram).await;
     spawner.spawn(unwrap!(cyw43_task(runner)));
     control.init(clm, cyw43::Config::default()).await;
-    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
+    control
+        .set_power_management(cyw43::PowerManagementMode::PowerSave)
+        .await;
 
     static STORAGE: StaticCell<StackStorage<'static>> = StaticCell::new();
     // cyw43 receives each frame, bus headers included, straight into these.
     static POOL: StaticPool<{ cyw43::RX_BUF_SIZE }, 8, { cyw43::RX_BUF_ALIGN }> = StaticPool::new();
-    let (stack, net_runner) = Stack::new(STORAGE.init(StackStorage::new()), &POOL, 0x5eed_cafe_f00d_0001);
+    let (stack, net_runner) = Stack::new(
+        STORAGE.init(StackStorage::new()),
+        &POOL,
+        0x5eed_cafe_f00d_0001,
+    );
     static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
     let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(net_device)).ok());
     unwrap!(iface.set_dhcpv4(Some(Default::default())).ok());
@@ -1008,7 +1208,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(diag_task(control, stack, iface)));
 
     static CANVAS: StaticCell<Canvas> = StaticCell::new();
-    let cv = CANVAS.init(Canvas { buf: [0; (W * STRIP * 2) as usize], x0: 0, y0: 0, w: 0, h: 0 });
+    let cv = CANVAS.init(Canvas {
+        buf: [0; (W * STRIP * 2) as usize],
+        x0: 0,
+        y0: 0,
+        w: 0,
+        h: 0,
+    });
 
     let mut prev = [false; 4];
     let mut page = 0u8;
