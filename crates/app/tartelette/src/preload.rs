@@ -7,13 +7,15 @@
 //!
 //! `firmware` and `sd` are URLs, relative to the page. `board` and `shield`
 //! (which may be repeated) are a built-in name or else a URL. `sd` goes to
-//! the board's first SD card. `osc` (repeatable) and `drums` patch the test
+//! the board's first SD card. The files a board from a URL names (a `wav`
+//! part's `file`) are fetched relative to it. `osc` (repeatable) and `drums` patch the test
 //! synth as `--osc` and `--drums` do (`drums` takes no value), e.g.
 //! `&drums&osc=saw:dac.A:expander.4`.
 use eframe::{
     wasm_bindgen::{JsCast as _, JsValue},
     web_sys,
 };
+use pcb_devices::wav::Wav;
 use tartelette_runtime::{Source, boards, synth::Patch};
 use wasm_bindgen_futures::JsFuture;
 
@@ -25,6 +27,8 @@ pub struct Preload {
     pub board: Option<Source>,
     pub shields: Vec<Source>,
     pub sd: Option<Source>,
+    /// WAV files for the board's players, by part name.
+    pub wavs: Vec<(String, Source)>,
     pub osc: Vec<Patch>,
     pub drums: bool,
     pub errors: Vec<String>,
@@ -46,6 +50,11 @@ impl Preload {
         }
         if let Some(name) = get("board") {
             p.board = p.take(named(boards::BOARDS, &name).await);
+            if boards::builtin(boards::BOARDS, &name).is_none()
+                && let Some(board) = p.board.clone()
+            {
+                p.board_files(&name, &board).await;
+            }
         }
         for name in params
             .get_all("shield")
@@ -69,6 +78,28 @@ impl Preload {
         p
     }
 
+    /// Fetch the WAV files the board at `url` names, relative to it.
+    async fn board_files(&mut self, url: &str, board: &Source) {
+        let Some(b) = self.take_err(boards::parse_board(Some(board), &[])) else {
+            return;
+        };
+        let dir = url.split(['?', '#']).next().unwrap_or(url);
+        let dir = dir.rfind('/').map_or("", |i| &dir[..=i]);
+        for part in &b.parts {
+            let any: &dyn std::any::Any = &*part.device;
+            let Some(file) = any.downcast_ref::<Wav>().and_then(|w| w.file.as_ref()) else {
+                continue;
+            };
+            if let Some(src) = self.take(fetch(&format!("{dir}{file}")).await) {
+                self.wavs.push((part.name.clone(), src));
+            }
+        }
+    }
+
+    fn take_err<T>(&mut self, r: Result<T, String>) -> Option<T> {
+        r.map_err(|e| self.errors.push(e)).ok()
+    }
+
     fn take(&mut self, r: Result<Source, String>) -> Option<Source> {
         r.map_err(|e| self.errors.push(e)).ok()
     }
@@ -78,6 +109,9 @@ impl Preload {
         app.set_voices(&self.osc, self.drums);
         if let Some(sd) = self.sd {
             app.open(Slot::Sd(String::new()), sd);
+        }
+        for (part, src) in self.wavs {
+            app.open(Slot::Wav(part), src);
         }
         for e in self.errors {
             crate::files::log(&e);

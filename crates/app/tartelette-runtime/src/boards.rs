@@ -60,7 +60,8 @@ pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Board, 
 
 /// Load the files that parts `from..` name, relative to `src`, the file
 /// that declares them (the working directory for a built-in board). The
-/// browser has no files to read: there the front panel loads them.
+/// browser has no files to read: there the page fetches them, or the front
+/// panel loads them.
 #[cfg_attr(target_arch = "wasm32", expect(unused_variables))]
 fn load_files(b: &mut Board, from: usize, src: Option<&Source>) -> Result<(), String> {
     #[cfg(not(target_arch = "wasm32"))]

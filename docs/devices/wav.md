@@ -42,11 +42,12 @@ at any rate it likes, and a run gives the same samples however it is stepped.
 
 `file` is read when the run starts. Natively it is resolved from the board or
 shield file that names it, or from the working directory for a built-in
-board. The browser can't read files from a path: there the file has to be
-loaded from the panel. A file can also be loaded from the panel's **Load**
-button, or by dropping a `.wav` file on the window (it goes to the first
-player). A file loaded that way replaces the board's, and is kept across
-restarts.
+board. In the browser, a page whose `board=` is a URL fetches it relative to
+that URL (see the README's "In the browser"); a board opened from disk there
+can't reach its files, so load the WAV from the panel. A file can also be
+loaded from the panel's **Load** button, or by dropping a `.wav` file on the
+window (it goes to the first player). A file loaded that way replaces the
+board's, and is kept across restarts.
 
 ## Panel
 

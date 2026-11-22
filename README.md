@@ -133,7 +133,9 @@ index.html?firmware=fw.elf&board=my-board.toml&sd=card.img
 ```
 
 `firmware` and `sd` are URLs (`sd` goes to the board's first SD card);
-`board` and `shield` (repeatable) are a built-in name or else a URL. `osc`
+`board` and `shield` (repeatable) are a built-in name or else a URL; the
+files a board from a URL names (a `wav` player's `file`) are fetched relative
+to it. `osc`
 (repeatable) and `drums` patch the test synth as `--osc` and `--drums` do,
 e.g. `&drums&osc=saw:dac.A:expander.4`. Files that fail to load are listed
 under Problems. To publish a firmware this way,
