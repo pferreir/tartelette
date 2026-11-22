@@ -340,7 +340,7 @@ offset my own CO₂ footprint, but I hope you'll understand that opinions can be
 Yes, in a way. On the other hand, you can be much more ambitious in your own engineering
 projects or spend time in other hobbies.
 
-Developing an emulator from scratch isn't my definition of fun, as it's a dependency,
-rather than my "main" project. Hence, I prefer to spend my time developing Eurorack
-modules, playing with the electronics and writing actual firmware (with and without LLM
-help).
+Developing an emulator from scratch isn't my definition of fun (well, it kind of is, but in
+this case, the emulator is a dependency rather than my "main" project). Hence, I prefer to
+spend my time developing Eurorack modules, playing with the electronics and writing actual
+firmware (with or without LLM help).
