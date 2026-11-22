@@ -11,6 +11,8 @@ pub enum Slot {
     Firmware,
     Board,
     Sd(String),
+    /// The `wav` player with this name (empty: the first one).
+    Wav(String),
     /// Dropped onto the window: decided by its name.
     Guess,
 }
@@ -34,6 +36,8 @@ pub fn guess(name: &str) -> Slot {
         Slot::Board
     } else if lower.ends_with(".img") {
         Slot::Sd(String::new()) // the first card on the board
+    } else if lower.ends_with(".wav") {
+        Slot::Wav(String::new())
     } else {
         Slot::Firmware
     }
@@ -58,6 +62,10 @@ fn dialog(slot: &Slot) -> rfd::AsyncFileDialog {
         Slot::Sd(_) => d
             .set_title("Open SD card image")
             .add_filter("Disk image", &["img", "bin"])
+            .add_filter("Any", &["*"]),
+        Slot::Wav(_) => d
+            .set_title("Open WAV file")
+            .add_filter("WAV", &["wav"])
             .add_filter("Any", &["*"]),
         Slot::Guess => d,
     }

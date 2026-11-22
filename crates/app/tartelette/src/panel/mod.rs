@@ -15,6 +15,8 @@
 //! | `dac8165`  | four voltage meters (at the jacks) |                              |
 //! | `sdcard`   | card status, load / save / browse image |                         |
 //! | `cyw43439` | Wi-Fi: LED, link, address, errors |                               |
+//! | `pot`      | knob: drag or scroll, shows volts |                               |
+//! | `wav`      | player: load, rewind / play / stop, position |                    |
 //!
 //! An `mcp23008` item shows a cell per pin. By default each cell follows what
 //! the board file wires to its pin: an LED is shown lit or dark, a switch is
@@ -61,6 +63,7 @@ pub enum Request {
     Input(String, String, i64),
     LoadSd(String),
     SaveSd(String),
+    LoadWav(String),
     BrowseSd(String),
 }
 
@@ -181,6 +184,8 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
                 Widget::Dac => dac(ctx),
                 Widget::SdCard => sdcard(ctx, &mut out),
                 Widget::Wifi => wifi(ctx, st),
+                Widget::Pot => pot(ctx, &mut out),
+                Widget::Wav => wav(ctx, &mut out),
                 Widget::Other => {
                     let kind = &s.sys.board.parts[it.part].kind;
                     ctx.ui.painter_at(body).text(

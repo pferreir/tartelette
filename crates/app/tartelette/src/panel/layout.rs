@@ -41,6 +41,8 @@ pub enum Widget {
     Dac,
     SdCard,
     Wifi,
+    Pot,
+    Wav,
     /// A kind this app has no widget for.
     Other,
 }
@@ -142,7 +144,7 @@ fn auto_span(board: &Board, part: &pcb::Part) -> (u16, u16) {
         }
         "ws2812" | "mcp23008" => (4, 1),
         "dac8165" => (2, 2),
-        "sdcard" => (2, 1),
+        "sdcard" | "wav" => (2, 1),
         "cyw43439" => (3, 2),
         _ => (1, 1),
     }
@@ -182,6 +184,8 @@ fn widget_for<'a>(
         "dac8165" => Widget::Dac,
         "sdcard" => Widget::SdCard,
         "cyw43439" => Widget::Wifi,
+        "pot" => Widget::Pot,
+        "wav" => Widget::Wav,
         _ => Widget::Other,
     };
     let key = |v: &str| Key::from_name(v).ok_or_else(|| format!("unknown key {v:?}"));

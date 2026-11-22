@@ -84,6 +84,8 @@ pub struct App {
     /// SD cards written through to a file (`--sd-live`): part name, file.
     #[cfg(not(target_arch = "wasm32"))]
     sd_files: Vec<(String, std::path::PathBuf)>,
+    /// WAV files loaded from the panel, by player: they outlast a restart.
+    wav_files: Vec<(String, Source)>,
 }
 
 /// The default proportional font lacks arrows and shapes (→, ●, ↻) that the
@@ -128,6 +130,7 @@ impl App {
             sound: Sound::new(Vec::new(), false),
             #[cfg(not(target_arch = "wasm32"))]
             sd_files: Vec::new(),
+            wav_files: Vec::new(),
         };
         app.restart();
         app
@@ -162,6 +165,9 @@ impl App {
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);
                 }
+                // A board without that player any more drops its file.
+                self.wav_files
+                    .retain(|(name, file)| s.load_wav(name, file).unwrap_or(false));
                 #[cfg(not(target_arch = "wasm32"))]
                 self.sd_files
                     .retain(|(name, path)| match s.write_sd_card_to(name, path) {
@@ -272,6 +278,31 @@ impl App {
                     self.sd_files.retain(|(n, _)| *n != name);
                     s.load_sd_card(&name, src.bytes);
                 }
+                Slot::Wav(name) => {
+                    let Some(run) = self.run.clone() else {
+                        continue;
+                    };
+                    let mut g = lock(&run);
+                    let s = &mut g.session;
+                    let name = match name.is_empty() {
+                        false => name,
+                        true => match s.sys.board.devices_mut::<pcb_devices::wav::Wav>().next() {
+                            Some((name, _)) => name.to_string(),
+                            None => {
+                                self.errors
+                                    .push(format!("{}: the board has no WAV player", src.name));
+                                continue;
+                            }
+                        },
+                    };
+                    match s.load_wav(&name, &src) {
+                        Ok(_) => {
+                            self.wav_files.retain(|(n, _)| *n != name);
+                            self.wav_files.push((name, src));
+                        }
+                        Err(e) => self.errors.push(e),
+                    }
+                }
                 Slot::Guess => unreachable!(),
             }
         }
@@ -288,6 +319,7 @@ impl App {
                     s.input(&part, &action, value);
                 }
                 Request::LoadSd(name) => files::pick(Slot::Sd(name), &self.inbox, ctx),
+                Request::LoadWav(name) => files::pick(Slot::Wav(name), &self.inbox, ctx),
                 Request::SaveSd(name) => {
                     if let Some((_, image, _)) = s.take_sd_cards().into_iter().find(|c| c.0 == name)
                     {
