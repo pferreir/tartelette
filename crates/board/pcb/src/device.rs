@@ -6,7 +6,8 @@
 //! * **pins** ([`Device::pin_changed`] + [`Io`]) for anything on a GPIO,
 //! * **buses** ([`I2cDevice`], [`SpiDevice`]) for transaction-level traffic,
 //! * **the host** ([`Device::input`]) for things a user pokes at (buttons, a
-//!   simulated sensor value, ...).
+//!   simulated sensor value, ...),
+//! * **analog levels** ([`Device::analog`]) for voltages the ADC samples.
 //!
 //! Adding a device is: write a type implementing [`Device`] (and a bus trait
 //! if it sits on one), write a `fn(&mut Params) -> Result<Box<dyn Device>, _>`
@@ -152,6 +153,13 @@ pub trait Device: Any + Send {
     /// A wake-up requested with [`Io::wake_at`] has come due; `io.cycles()` is
     /// the cycle that was asked for.
     fn timer(&mut self, _io: &mut Io) {}
+
+    /// The voltage this device puts on `pin` at core cycle `cycles`, if it
+    /// drives that pin with an analog signal. Asked by the chip's ADC when a
+    /// conversion samples the pin; must not depend on how often it is asked.
+    fn analog(&self, _pin: usize, _cycles: u64) -> Option<f32> {
+        None
+    }
 
     /// The I2C face of this device, if it has one.
     fn i2c(&mut self) -> Option<&mut dyn I2cDevice> {

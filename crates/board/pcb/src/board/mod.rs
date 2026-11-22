@@ -804,6 +804,12 @@ impl Board {
         }
     }
 
+    /// The voltage a device puts on `pin` at core cycle `cycles` (the first
+    /// part that drives it, in board order), or None if no device does.
+    pub fn analog(&self, pin: usize, cycles: u64) -> Option<f32> {
+        self.parts.iter().find_map(|p| p.device.analog(pin, cycles))
+    }
+
     /// Press or release a `button`. Returns false if there is no such button.
     pub fn set_button(&mut self, pins: &mut dyn Pins, name: &str, down: bool, cycles: u64) -> bool {
         let action = if down { "press" } else { "release" };

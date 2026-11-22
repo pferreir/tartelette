@@ -9,6 +9,8 @@ example, what its front-panel widget does, the events it logs, the actions
 | [`led`](led.md) | an LED | a GPIO |
 | [`button`](button.md) | a push button | a GPIO |
 | [`encoder`](encoder.md) | a rotary encoder | two GPIOs |
+| [`pot`](pot.md) | a potentiometer | a GPIO, read by the ADC |
+| [`wav`](wav.md) | a WAV file player | a GPIO, read by the ADC |
 | [`mcp23008`](mcp23008.md) | Microchip MCP23008 8-bit port expander | I2C |
 | [`st7789`](st7789.md) | Sitronix ST7789 TFT controller | SPI |
 | [`ws2812`](ws2812.md) | WS2812 / SK6812 LED chain | one GPIO (usually PIO) |

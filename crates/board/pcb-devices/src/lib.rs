@@ -12,6 +12,8 @@
 //! | `ws2812`   | WS2812 / SK6812 LED chain decoded from the data line   |
 //! | `dac8165`  | quad 14-bit DAC on a bit-banged serial link            |
 //! | `encoder`  | rotary encoder (quadrature contacts)                   |
+//! | `pot`      | potentiometer: a voltage between GND and 3V3 for the ADC |
+//! | `wav`      | WAV file player: an audio signal on a pin for the ADC  |
 //! | `sdcard`   | SDHC card in SPI mode over a disk image                |
 //! | `cyw43439` | Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link  |
 #![no_std]
@@ -30,8 +32,10 @@ pub mod hci;
 pub mod led;
 pub mod mcp23008;
 pub mod net;
+pub mod pot;
 pub mod sdcard;
 pub mod st7789;
+pub mod wav;
 pub mod ws2812;
 
 pub use led::is_lit;
@@ -45,6 +49,8 @@ pub fn register_builtin(r: &mut Registry) {
         ws2812::KIND,
         dac8165::KIND,
         encoder::KIND,
+        pot::KIND,
+        wav::KIND,
         sdcard::KIND,
         cyw43439::KIND,
     ] {

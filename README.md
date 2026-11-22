@@ -68,6 +68,8 @@ with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-ha
 | `led` | an LED on a GPIO | [led](docs/devices/led.md) |
 | `button` | a push button | [button](docs/devices/button.md) |
 | `encoder` | a rotary encoder | [encoder](docs/devices/encoder.md) |
+| `pot` | a potentiometer, for the ADC | [pot](docs/devices/pot.md) |
+| `wav` | a WAV file player, for the ADC | [wav](docs/devices/wav.md) |
 | `mcp23008` | Microchip MCP23008 I2C port expander | [mcp23008](docs/devices/mcp23008.md) |
 | `st7789` | Sitronix ST7789 TFT display controller | [st7789](docs/devices/st7789.md) |
 | `ws2812` | WS2812 / SK6812 addressable LEDs | [ws2812](docs/devices/ws2812.md) |
