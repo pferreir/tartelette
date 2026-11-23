@@ -125,12 +125,17 @@ expander low. The actions each device takes are on its page.
 
 ## Flash
 
-The flash chip is 2 MiB and starts erased with the firmware on top. With
-`--flash FILE` (headless) it is kept in a file instead: the run starts from
-the file's contents with the firmware written over them, and the file is
-saved at the end if the firmware wrote to flash. That is how MicroPython's
-filesystem survives from one run to the next. The file is created if it
-doesn't exist.
+The flash chip is 2 MiB and starts erased with the firmware on top. With a
+window, it keeps its contents when the run starts over (the reset button, a
+reloaded file, new firmware), as a real chip does when it is power-cycled or
+reflashed; opening another board starts a fresh chip.
+
+With `--flash FILE` it is kept in a file instead: the run starts from the
+file's contents with the firmware written over them, and the file is saved if
+the firmware wrote to flash, at the end of a headless run or, with a window,
+each time the run starts over and when the window closes. That is how
+MicroPython's filesystem survives from one run to the next. The file is
+created if it doesn't exist.
 
 ## SD cards
 

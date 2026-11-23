@@ -86,6 +86,20 @@ pub struct App {
     sd_files: Vec<(String, std::path::PathBuf)>,
     /// WAV files loaded from the panel, by player: they outlast a restart.
     wav_files: Vec<(String, Source)>,
+    /// What the flash chip held when the last run ended. A restart, or new
+    /// firmware, keeps the rest of the flash, as on the real chip.
+    flash: Option<Vec<u8>>,
+    /// `--flash`: the file the flash chip is kept in.
+    #[cfg(not(target_arch = "wasm32"))]
+    flash_file: Option<FlashFile>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct FlashFile {
+    path: std::path::PathBuf,
+    /// The flash at the start of the current run, to tell whether the
+    /// firmware wrote to it.
+    at_start: Vec<u8>,
 }
 
 /// The default proportional font lacks arrows and shapes (→, ●, ↻) that the
@@ -105,7 +119,42 @@ impl App {
         shields: Vec<Source>,
         links: Links,
     ) -> Self {
-        let mut app = Self {
+        let mut app = Self::stopped(firmware, board, shields, links);
+        app.restart();
+        app
+    }
+
+    /// Like `new`, with the flash chip kept in `path` (`--flash`): it starts
+    /// from the file's contents, if it exists, and is saved back to it on
+    /// each restart and on exit if the firmware wrote to it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_flash_file(
+        firmware: Option<Source>,
+        board: Option<Source>,
+        shields: Vec<Source>,
+        links: Links,
+        path: std::path::PathBuf,
+    ) -> Result<Self, String> {
+        let mut app = Self::stopped(firmware, board, shields, links);
+        if path.exists() {
+            app.flash = Some(std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?);
+        }
+        app.flash_file = Some(FlashFile {
+            path,
+            at_start: app.flash.clone().unwrap_or_default(),
+        });
+        app.restart();
+        Ok(app)
+    }
+
+    /// The app before its first run.
+    fn stopped(
+        firmware: Option<Source>,
+        board: Option<Source>,
+        shields: Vec<Source>,
+        links: Links,
+    ) -> Self {
+        Self {
             logo: None,
             firmware,
             board,
@@ -131,14 +180,43 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             sd_files: Vec::new(),
             wav_files: Vec::new(),
+            flash: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            flash_file: None,
+        }
+    }
+
+    /// Keep what the running firmware left in flash for the next run.
+    fn keep_flash(&mut self) {
+        if let Some(r) = &self.run {
+            self.flash = Some(lock(r).session.sys.bus.flash.data.clone());
+        }
+    }
+
+    /// Write the flash to the `--flash` file if the firmware wrote to it
+    /// (or the file isn't there yet).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_flash(&self) -> Result<(), String> {
+        let (Some(f), Some(data)) = (&self.flash_file, &self.flash) else {
+            return Ok(());
         };
-        app.restart();
-        app
+        if *data != f.at_start || !f.path.exists() {
+            std::fs::write(&f.path, data)
+                .map_err(|e| format!("--flash: {}: {e}", f.path.display()))?;
+        }
+        Ok(())
     }
 
     /// Power-cycle: a fresh run from the current firmware and board. SD
-    /// cards keep their contents.
+    /// cards and the flash keep their contents.
     fn restart(&mut self) {
+        self.keep_flash();
+        self.start();
+    }
+
+    /// Stop the current run, if any, and start one with the flash holding
+    /// `self.flash` (or else the board's `[[flash]]` entries).
+    fn start(&mut self) {
         let old = self.run.take();
         let cards = old
             .as_ref()
@@ -157,11 +235,25 @@ impl App {
         self.errors.clear();
         self.errors_seen = 0;
         #[cfg(not(target_arch = "wasm32"))]
+        if let Err(e) = self.save_flash() {
+            self.errors.push(e);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         self.watch
             .track(self.firmware.iter().chain(&self.board).chain(&self.shields));
         let Some(fw) = &self.firmware else { return };
-        match Session::new(fw, self.board.as_ref(), &self.shields, &self.links) {
+        match Session::with_flash(
+            fw,
+            self.board.as_ref(),
+            &self.shields,
+            &self.links,
+            self.flash.as_deref(),
+        ) {
             Ok(mut s) => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(f) = &mut self.flash_file {
+                    f.at_start = s.sys.bus.flash.data.clone();
+                }
                 for (name, image, _) in cards {
                     s.load_sd_card(&name, image);
                 }
@@ -234,6 +326,7 @@ impl App {
 
     fn take_files(&mut self) {
         let mut restart = false;
+        let mut new_board = false;
         for (slot, src) in self.inbox.take() {
             let slot = if slot == Slot::Guess {
                 files::guess(&src.name)
@@ -247,6 +340,7 @@ impl App {
                 }
                 Slot::Board => {
                     self.board = Some(src);
+                    new_board = true;
                     restart = true;
                 }
                 Slot::Sd(name) => {
@@ -306,7 +400,16 @@ impl App {
                 Slot::Guess => unreachable!(),
             }
         }
-        if restart {
+        #[cfg(not(target_arch = "wasm32"))]
+        let in_file = self.flash_file.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let in_file = false;
+        if new_board && !in_file {
+            // Another board has another flash chip, which starts from the
+            // board's `[[flash]]` entries.
+            self.flash = None;
+            self.start();
+        } else if restart {
             self.restart();
         }
     }
@@ -343,6 +446,16 @@ impl App {
 }
 
 impl eframe::App for App {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.flash_file.is_some() {
+            self.keep_flash();
+            if let Err(e) = self.save_flash() {
+                eprintln!("{e}");
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         files::take_dropped(&ctx, &self.inbox);

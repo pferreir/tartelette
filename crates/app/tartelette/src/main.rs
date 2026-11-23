@@ -71,7 +71,11 @@ fn window(args: &cli::RunArgs) -> Result<(), String> {
         .map(Source::from_file)
         .transpose()?;
     let board = args.board()?;
-    let mut app = app::App::new(firmware, board, args.shields()?, args.links());
+    let (shields, links) = (args.shields()?, args.links());
+    let mut app = match &args.flash {
+        Some(path) => app::App::with_flash_file(firmware, board, shields, links, path.clone())?,
+        None => app::App::new(firmware, board, shields, links),
+    };
     app.set_voices(&args.osc, args.drums);
     for (name, file) in &args.sd {
         if !app.load_sd_card(name, Source::from_file(file)?.bytes) {

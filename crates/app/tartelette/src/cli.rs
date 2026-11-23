@@ -76,6 +76,14 @@ pub struct RunArgs {
     /// runs; with a window, the file otherwise changes only on Save…
     #[arg(long, requires = "sd")]
     pub sd_live: bool,
+    /// Keep the flash chip in FILE: it starts from FILE's contents (if it
+    /// exists, instead of the board's `[[flash]]` entries) with the firmware
+    /// on top, and is saved back if the firmware wrote to it: at the end of
+    /// a headless run, or with a window on each restart and on closing it.
+    /// What the firmware keeps in flash (MicroPython's filesystem, say) then
+    /// lasts from one run to the next
+    #[arg(long, value_name = "FILE")]
+    pub flash: Option<PathBuf>,
     /// What the board's Wi-Fi chips are connected to
     #[arg(long, value_enum, default_value = "user")]
     pub net: NetMode,
@@ -237,13 +245,6 @@ pub struct Headless {
     /// asleep until stdin closes
     #[arg(long, value_name = "usb|uart0|uart1", default_value = "usb", value_parser = ["usb", "uart0", "uart1"], requires = "headless")]
     pub stdin: String,
-    /// Keep the flash chip in FILE: it starts from FILE's contents (if it
-    /// exists, instead of the board's `[[flash]]` entries) with the firmware
-    /// on top, and is saved back at the end if the firmware wrote to it. What
-    /// the firmware keeps in flash (MicroPython's filesystem, say) then lasts
-    /// from one run to the next
-    #[arg(long, value_name = "FILE", requires = "headless")]
-    pub flash: Option<PathBuf>,
     /// Stop when an instruction faults, before the firmware's HardFault
     /// handler runs (which may hide the fault: a reset, a loop). Without it,
     /// each fault is a warning and the handler runs
@@ -489,6 +490,7 @@ mod tests {
         assert!(Cli::try_parse_from(["x", "fw", "--log"]).is_err());
         assert!(Cli::try_parse_from(["x", "--headless"]).is_err());
         assert!(Cli::try_parse_from(["x", "fw", "--board", "b", "--net", "loopback"]).is_ok());
+        assert!(Cli::try_parse_from(["x", "fw", "--flash", "f.bin"]).is_ok());
         let bt = |v: &str| Cli::try_parse_from(["x", "fw", "--bt", v]).map(|c| c.run.bt);
         assert_eq!(bt("hci1").unwrap(), BtMode::Adapter(1));
         assert_eq!(bt("mock").unwrap(), BtMode::Mock);

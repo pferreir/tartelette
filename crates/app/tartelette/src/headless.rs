@@ -28,7 +28,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             .expect("clap requires a firmware with --headless"),
     )?;
     let board = args.board()?;
-    let flash = match &h.flash {
+    let flash = match &args.flash {
         Some(f) if f.exists() => {
             Some(std::fs::read(f).map_err(|e| format!("{}: {e}", f.display()))?)
         }
@@ -42,7 +42,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         flash.as_deref(),
     )?;
     // What the flash holds before the firmware runs, to tell whether it wrote.
-    let flash_at_start = h.flash.as_ref().map(|_| s.sys.bus.flash.data.clone());
+    let flash_at_start = args.flash.as_ref().map(|_| s.sys.bus.flash.data.clone());
     s.sys.stop_on_fault = h.stop_on_fault;
     for (name, file) in &args.sd {
         let image = std::fs::read(file).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -219,7 +219,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             }
         }
     }
-    if let (Some(file), Some(start)) = (&h.flash, &flash_at_start)
+    if let (Some(file), Some(start)) = (&args.flash, &flash_at_start)
         && (s.sys.bus.flash.data != *start || flash.is_none())
     {
         std::fs::write(file, &s.sys.bus.flash.data)

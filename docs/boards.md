@@ -158,9 +158,10 @@ addr = 0x101ff000
 u16 = [63985, 57689, 51389]
 ```
 
-The firmware goes on top, so it wins where they overlap. Headless, a
-`--flash` image replaces these entries (it already has what the firmware
-made of them).
+The firmware goes on top, so it wins where they overlap. They are written to
+a fresh chip: with a window, the flash keeps its contents when the run starts
+over, so changed entries show up when the board is opened again. A `--flash`
+image replaces them (it already has what the firmware made of them).
 
 ## Shields
 
