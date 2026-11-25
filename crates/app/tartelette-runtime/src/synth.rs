@@ -12,6 +12,11 @@
 //!
 //! Patches name parts and outputs (`saw:dac.A:expander.0`, `kick:expander.0`),
 //! so they survive a reset or a reloaded board.
+//!
+//! The board's `speaker` parts play too, whatever the patches: each plays a
+//! DAC output as it is (the firmware streaming samples to the DAC), or the
+//! averaged level of a pin it watches (PWM), held between updates and
+//! through a coupling capacitor's high-pass.
 use std::{collections::VecDeque, fmt, str::FromStr};
 
 use pcb::{Board, BoardEvent};
@@ -19,8 +24,12 @@ use pcb_devices::{
     dac8165::{CvScale, Dac8165},
     led::Led,
     mcp23008::{Mcp23008, Wire},
+    pcm5102::Pcm5102,
+    speaker::{Source, Speaker},
 };
+#[cfg(test)]
 use rp2040_core::system::CYCLES_PER_US;
+use rp2040_core::system::Clock;
 
 /// Sample rate of rendered files.
 pub const WAV_RATE: u32 = 48_000;
@@ -34,6 +43,9 @@ const MIX: f32 = 0.3;
 const DRUM_MIX: f32 = 0.6;
 /// A hit is over after this long.
 const HIT_SECS: f32 = 1.5;
+/// A speaker's coupling capacitor: the high-pass that takes the DAC's DC
+/// level out.
+const SPEAKER_HP_HZ: f32 = 20.0;
 /// How far behind the emulator live sound plays, and how far ahead of the
 /// sound card the emulator may get before it is pulled back.
 const LEAD_SECS: f64 = 0.05;
@@ -248,8 +260,12 @@ fn default_gate(board: &Board) -> String {
         .unwrap_or_else(|| "open".into())
 }
 
-/// The board's default patch: a saw on the first CV output and gate.
+/// The board's default patch: a saw on the first CV output and gate, or
+/// nothing on a board with a speaker, which is heard anyway.
 pub fn default_patches(board: &Board) -> Vec<Patch> {
+    if board.parts.iter().any(|p| p.kind == "speaker") {
+        return Vec::new();
+    }
     let mut p = Patch::default();
     p.complete(board);
     vec![p]
@@ -335,6 +351,143 @@ fn resolve_gate(board: &Board, name: &str) -> Result<Gate, String> {
     Err(format!(
         "gate {name:?}: expected open, EXPANDER.PIN or an LED part"
     ))
+}
+
+/// A `speaker` part, wired to a DAC output or listening to its own pin.
+struct SpeakerOut {
+    part: usize,
+    feed: Feed,
+    /// The DAC code, the pin's level or the sample, as -1..1.
+    x: f32,
+    gain: f32,
+    /// High-pass state: last input, last output.
+    hp: (f32, f32),
+}
+
+/// What a speaker plays, by part index.
+#[derive(Clone, Copy, PartialEq)]
+enum Feed {
+    /// A dac8165 channel (0 = A).
+    Dac(usize, usize),
+    /// A pcm5102's left, right, or both mixed.
+    I2s(usize, I2sChannel),
+    /// The speaker's own pin: it reports the level.
+    Pin,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum I2sChannel {
+    Left,
+    Right,
+    Mix,
+}
+
+impl I2sChannel {
+    /// The channel's sample of a `sample` event, as -1..1.
+    fn take(self, value: i64) -> f32 {
+        let (l, r) = ((value >> 16) as u16 as i16, value as u16 as i16);
+        let s = match self {
+            I2sChannel::Left => l as f32,
+            I2sChannel::Right => r as f32,
+            I2sChannel::Mix => (l as f32 + r as f32) / 2.0,
+        };
+        s / 32768.0
+    }
+}
+
+fn dac_level(code: u16) -> f32 {
+    code as f32 / 8192.0 - 1.0
+}
+
+fn pin_level(level: u16) -> f32 {
+    level as f32 / 32767.5 - 1.0
+}
+
+/// A speaker's `dac` key on `board`: the feed and the level it starts at.
+fn resolve_dac(board: &Board, speaker: &str, key: &str) -> Result<(Feed, f32), String> {
+    // A part's whole name is the mix; else PART.CHANNEL.
+    let (name, ch) = match board.part_index(key) {
+        Some(_) => (key, None),
+        None => match key.rsplit_once('.') {
+            Some((n, c)) => (n, Some(c)),
+            None => (key, None),
+        },
+    };
+    let bad = |what: &str| format!("speaker {speaker}: {key:?}: {what}");
+    let at = board.part_index(name).ok_or_else(|| bad("no such part"))?;
+    if let Some(dac) = board.device::<Dac8165>(name) {
+        let ch = match ch.map(str::to_ascii_uppercase).as_deref() {
+            Some("A") => 0,
+            Some("B") => 1,
+            Some("C") => 2,
+            Some("D") => 3,
+            _ => return Err(bad("a dac8165 takes a channel, A to D (dac.A)")),
+        };
+        return Ok((Feed::Dac(at, ch), dac_level(dac.code(ch))));
+    }
+    if let Some(pcm) = board.device::<Pcm5102>(name) {
+        let ch = match ch.map(str::to_ascii_uppercase).as_deref() {
+            None => I2sChannel::Mix,
+            Some("L") => I2sChannel::Left,
+            Some("R") => I2sChannel::Right,
+            _ => return Err(bad("a pcm5102's channels are L and R")),
+        };
+        let x = ch.take((pcm.left as u16 as i64) << 16 | pcm.right as u16 as i64);
+        return Ok((Feed::I2s(at, ch), x));
+    }
+    Err(bad("not a dac8165 or a pcm5102"))
+}
+
+/// The board's speakers, at the levels and volumes they start from; an
+/// error names a speaker whose `dac` isn't a DAC on the board.
+fn speakers(board: &Board) -> Result<Vec<SpeakerOut>, String> {
+    let mut v = Vec::new();
+    for (part, p) in board.parts.iter().enumerate() {
+        let Some(spk) = board.device::<Speaker>(&p.name) else {
+            continue;
+        };
+        let (feed, x) = match &spk.source {
+            Source::Dac(key) => resolve_dac(board, &p.name, key)?,
+            Source::Pin(pwm) => (Feed::Pin, pin_level(pwm.level)),
+        };
+        v.push(SpeakerOut {
+            part,
+            feed,
+            x,
+            gain: spk.level() as f32 / 100.0,
+            hp: (x, 0.0),
+        });
+    }
+    Ok(v)
+}
+
+impl SpeakerOut {
+    /// The level `e` gives this speaker, if it is about what it plays.
+    fn level_in(&self, e: &BoardEvent) -> Option<f32> {
+        match (self.feed, e.label) {
+            (Feed::Dac(at, ch), "dac") if e.part == at && (e.value >> 16) as usize == ch => {
+                Some(dac_level(e.value as u16))
+            }
+            (Feed::I2s(at, ch), "sample") if e.part == at => Some(ch.take(e.value)),
+            (Feed::Pin, "level") if e.part == self.part => Some(pin_level(e.value as u16)),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `e` is the sound itself (a speaker on a pin reporting its level,
+/// an I2S DAC's samples): tens of thousands a second, not something to log.
+pub fn is_sound(board: &Board, e: &BoardEvent) -> bool {
+    let kind = board.parts[e.part].kind.as_str();
+    matches!(
+        (kind, e.label),
+        ("speaker", "level") | ("pcm5102", "sample")
+    )
+}
+
+/// Check that each speaker on `board` on a DAC names one.
+pub fn check(board: &Board) -> Result<(), String> {
+    speakers(board).map(|_| ())
 }
 
 /// Pitch for a CV.
@@ -453,9 +606,12 @@ impl Voice {
 /// The oscillators, rendering mono samples.
 pub struct Synth {
     voices: Vec<Voice>,
+    speakers: Vec<SpeakerOut>,
     rate: u32,
     /// Samples rendered by [`Synth::feed`] so far.
     pos: u64,
+    /// What turns the events' cycles into time.
+    clock: Clock,
 }
 
 impl Synth {
@@ -490,26 +646,39 @@ impl Synth {
         }
         Ok(Synth {
             voices,
+            speakers: speakers(board)?,
             rate,
             pos: 0,
+            clock: Clock::DEFAULT,
         })
     }
 
-    /// Whether `e` changes a CV or gate an oscillator listens to.
+    /// Whether `e` changes a CV or gate an oscillator listens to, or what a
+    /// speaker plays.
     fn hears(&self, e: &BoardEvent) -> bool {
-        self.voices.iter().any(|v| {
-            v.cv.is_some_and(|cv| {
-                e.label == "dac" && e.part == cv.0 && (e.value >> 16) as usize == cv.1
-            }) || match v.gate {
-                Gate::Open => false,
-                Gate::Pin { part, .. } => e.label == "pins" && e.part == part,
-                Gate::Led { part } => matches!(e.label, "on" | "off") && e.part == part,
-            }
-        })
+        self.speakers
+            .iter()
+            .any(|s| s.level_in(e).is_some() || (e.label == "volume" && e.part == s.part))
+            || self.voices.iter().any(|v| {
+                v.cv.is_some_and(|cv| {
+                    e.label == "dac" && e.part == cv.0 && (e.value >> 16) as usize == cv.1
+                }) || match v.gate {
+                    Gate::Open => false,
+                    Gate::Pin { part, .. } => e.label == "pins" && e.part == part,
+                    Gate::Led { part } => matches!(e.label, "on" | "off") && e.part == part,
+                }
+            })
     }
 
     /// Take a board event into the oscillators' state.
     pub fn apply(&mut self, e: &BoardEvent) {
+        for s in &mut self.speakers {
+            if let Some(x) = s.level_in(e) {
+                s.x = x;
+            } else if e.label == "volume" && e.part == s.part {
+                s.gain = e.value as f32 / 100.0;
+            }
+        }
         for v in &mut self.voices {
             let was_open = v.open;
             match (e.label, &v.gate, v.cv) {
@@ -559,6 +728,15 @@ impl Synth {
                 v.phase = (v.phase + dt).fract();
             }
         }
+        let rc = 1.0 / (std::f32::consts::TAU * SPEAKER_HP_HZ);
+        let a = rc / (rc + 1.0 / rate);
+        for spk in &mut self.speakers {
+            for s in out.iter_mut() {
+                spk.hp.1 = a * (spk.hp.1 + spk.x - spk.hp.0);
+                spk.hp.0 = spk.x;
+                *s += spk.hp.1 * spk.gain;
+            }
+        }
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
@@ -566,10 +744,11 @@ impl Synth {
 
     /// Sample index for emulated time `cycles`.
     fn sample_at(&self, cycles: u64) -> u64 {
-        (cycles as u128 * self.rate as u128 / (CYCLES_PER_US as u128 * 1_000_000)) as u64
+        (self.clock.seconds(cycles) * self.rate as f64).max(0.0) as u64
     }
 
-    /// Render up to emulated time `cycles` onto `out`.
+    /// Render up to emulated time `cycles` (on the clock of the last
+    /// [`feed`](Self::feed)) onto `out`.
     pub fn advance_to(&mut self, cycles: u64, out: &mut Vec<f32>) {
         let end = self.sample_at(cycles);
         if end > self.pos {
@@ -581,7 +760,8 @@ impl Synth {
     }
 
     /// Render up to each event and take it in, in emulated time.
-    pub fn feed(&mut self, events: &[BoardEvent], out: &mut Vec<f32>) {
+    pub fn feed(&mut self, events: &[BoardEvent], clock: Clock, out: &mut Vec<f32>) {
+        self.clock = clock;
         for e in events {
             if self.hears(e) {
                 self.advance_to(e.cycles, out);
@@ -628,7 +808,8 @@ impl Live {
     }
 
     /// Take the events from a stretch of emulation.
-    pub fn push(&mut self, events: &[BoardEvent]) {
+    pub fn push(&mut self, events: &[BoardEvent], clock: Clock) {
+        self.synth.clock = clock;
         let rate = self.synth.rate as f64;
         let (lead, ahead) = ((LEAD_SECS * rate) as i64, (MAX_AHEAD_SECS * rate) as i64);
         let now = self.played as i64;
@@ -751,6 +932,7 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
                 ev(&b, ms(600), "x", "pins", 0),
                 ev(&b, ms(700), "dac", "dac", 0), // channel A: not ours
             ],
+            Clock::DEFAULT,
             &mut out,
         );
         s.advance_to(ms(800), &mut out);
@@ -761,6 +943,120 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
         assert!((pitch(tone, WAV_RATE) - 2.0 * C4_HZ).abs() < 3.0);
         assert!(tone.iter().any(|v| v.abs() > 0.2));
         assert!(silent(48 * 610..48 * 800), "released after the ramp");
+    }
+
+    #[test]
+    fn speakers_on_a_pin_play_its_level() {
+        let text = format!("{BOARD}parts.spk = {{ kind = \"speaker\", gpio = 20 }}\n");
+        let b = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
+        let mut s = Synth::new(&b, &[], WAV_RATE).unwrap();
+        // A 500 Hz tone as PWM duty: 75 % and 25 %, switching each ms. The
+        // DAC's events are someone else's.
+        let ms = |n: u64| n * 1000 * CYCLES_PER_US;
+        let mut events: Vec<_> = (0..100)
+            .map(|n| {
+                ev(
+                    &b,
+                    ms(n),
+                    "spk",
+                    "level",
+                    if n % 2 == 0 { 49151 } else { 16384 },
+                )
+            })
+            .collect();
+        events.push(ev(&b, ms(50), "dac", "dac", 16383));
+        events.sort_by_key(|e| e.cycles);
+        let mut out = Vec::new();
+        s.feed(&events, Clock::DEFAULT, &mut out);
+        s.advance_to(ms(100), &mut out);
+        let tone = &out[48 * 40..48 * 100];
+        assert!((pitch(tone, WAV_RATE) - 500.0).abs() < 20.0);
+        let peak = tone.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!((0.45..0.55).contains(&peak), "{peak}");
+    }
+
+    #[test]
+    fn speakers_play_an_i2s_dacs_samples() {
+        let text = format!(
+            "{BOARD}parts.pcm = {{ kind = \"pcm5102\", bck = 20, lrck = 21, din = 22 }}\n\
+             parts.l = {{ kind = \"speaker\", dac = \"pcm.L\" }}\n\
+             parts.mix = {{ kind = \"speaker\", dac = \"pcm\", volume = 0 }}\n"
+        );
+        let b = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
+        let mut s = Synth::new(&b, &[], WAV_RATE).unwrap();
+        // A 500 Hz square on the left, silence on the right, at 24 kHz.
+        let at = |n: u64| n * 125_000_000 / 24_000;
+        let frame = |l: i16, r: i16| (l as u16 as i64) << 16 | r as u16 as i64;
+        let events: Vec<_> = (0..2400)
+            .map(|n| {
+                let l = if n / 24 % 2 == 0 { 16384 } else { -16384 };
+                ev(&b, at(n), "pcm", "sample", frame(l, 0))
+            })
+            .collect();
+        let mut out = Vec::new();
+        s.feed(&events, Clock::DEFAULT, &mut out);
+        s.advance_to(at(2400), &mut out);
+        let tone = &out[48 * 40..48 * 100];
+        assert!((pitch(tone, WAV_RATE) - 500.0).abs() < 20.0);
+        let peak = tone.iter().fold(0f32, |m, v| m.max(v.abs()));
+        assert!(
+            (0.45..0.6).contains(&peak),
+            "the left half full scale: {peak}"
+        );
+        let bad = |key: &str| {
+            let t = format!(
+                "parts.pcm = {{ kind = \"pcm5102\", bck = 20, lrck = 21, din = 22 }}\n\
+                 parts.s = {{ kind = \"speaker\", dac = \"{key}\" }}\n"
+            );
+            check(&Board::parse_with(&t, &pcb_devices::registry()).unwrap()).unwrap_err()
+        };
+        assert!(bad("pcm.A").contains("channels are L and R"));
+        assert!(bad("nope").contains("no such part"));
+    }
+
+    #[test]
+    fn speakers_play_the_dac_output() {
+        let text =
+            format!("{BOARD}parts.spk = {{ kind = \"speaker\", dac = \"dac.B\", volume = 50 }}\n");
+        let b = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
+        assert!(
+            default_patches(&b).is_empty(),
+            "no default saw with a speaker"
+        );
+        let mut s = Synth::new(&b, &[], WAV_RATE).unwrap();
+        // A 1 kHz square across the whole DAC range, as samples at 8 kHz.
+        let at = |n: u64| n * 125 * CYCLES_PER_US;
+        let mut events: Vec<_> = (0..800)
+            .map(|n| {
+                ev(
+                    &b,
+                    at(n),
+                    "dac",
+                    "dac",
+                    1 << 16 | if n % 8 < 4 { 16383 } else { 0 },
+                )
+            })
+            .collect();
+        events.push(ev(&b, at(400), "dac", "dac", 9000)); // channel A: not ours
+        events.push(ev(&b, at(600), "spk", "volume", 0));
+        events.sort_by_key(|e| e.cycles);
+        let mut out = Vec::new();
+        s.feed(&events, Clock::DEFAULT, &mut out);
+        s.advance_to(at(800), &mut out);
+        // After the step from code 0 at power-up has died away.
+        let tone = &out[48 * 40..48 * 70];
+        assert!((pitch(tone, WAV_RATE) - 1000.0).abs() < 40.0);
+        let peak = tone.iter().fold(0f32, |m, v| m.max(v.abs()));
+        // Half volume, and the high-pass's droop between edges.
+        assert!((0.45..0.55).contains(&peak), "{peak}");
+        assert!(out[48 * 76..].iter().all(|v| v.abs() < 0.01), "muted");
+
+        let text = format!("{BOARD}parts.spk = {{ kind = \"speaker\", dac = \"nope.A\" }}\n");
+        let b = Board::parse_with(&text, &pcb_devices::registry()).unwrap();
+        assert_eq!(
+            check(&b).unwrap_err(),
+            "speaker spk: \"nope.A\": no such part"
+        );
     }
 
     #[test]
@@ -788,7 +1084,7 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
             ev(&b, ms(1000), "x", "pins", 1 << 3),
             ev(&b, ms(1500), "x", "pins", 1 << 3 | 1 << 5),
         ];
-        s.feed(&events, &mut out);
+        s.feed(&events, Clock::DEFAULT, &mut out);
         s.advance_to(ms(2000), &mut out);
         let loud =
             |a: usize, b: usize| out[48 * a..48 * b].iter().fold(0f32, |m, v| m.max(v.abs()));
@@ -807,7 +1103,7 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
                 let next = (s.pos + 997) * 125_000_000 / WAV_RATE as u64;
                 s.advance_to(next, &mut again);
             }
-            s.feed(std::slice::from_ref(e), &mut again);
+            s.feed(std::slice::from_ref(e), Clock::DEFAULT, &mut again);
         }
         s.advance_to(ms(2000), &mut again);
         assert_eq!(again, out);
@@ -830,17 +1126,20 @@ panel.x = [{ at = [0, 0], pins = [4, 5] }, { at = [0, 1], pins = [2, 3], mode = 
         let mut out = vec![0.0; 10];
         live.render(&mut out);
         // An event at emulated 1 s lines the clocks up: it plays LEAD after now.
-        live.push(&[ev(&b, 125_000_000, "dac", "dac", 6554)]);
+        live.push(&[ev(&b, 125_000_000, "dac", "dac", 6554)], Clock::DEFAULT);
         assert_eq!(live.queue[0].0, 10 + 50);
         // A later one keeps the spacing.
-        live.push(&[ev(&b, 125_000_000 + 125_000 * 20, "dac", "dac", 0)]);
+        live.push(
+            &[ev(&b, 125_000_000 + 125_000 * 20, "dac", "dac", 0)],
+            Clock::DEFAULT,
+        );
         assert_eq!(live.queue[1].0, 80);
         let mut out = vec![0.0; 60];
         live.render(&mut out);
         assert_eq!(live.queue.len(), 1);
         assert!((live.synth.voices[0].volts - 1.0).abs() < 0.001);
         // Far behind the sound card: lined up again.
-        live.push(&[ev(&b, 0, "dac", "dac", 1)]);
+        live.push(&[ev(&b, 0, "dac", "dac", 1)], Clock::DEFAULT);
         assert_eq!(live.queue[1].0, 70 + 50);
     }
 

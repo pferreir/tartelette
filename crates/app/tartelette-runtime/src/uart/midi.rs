@@ -1,9 +1,12 @@
-//! A real MIDI input port, for the firmware's MIDI in (a UART receiver).
+//! A real MIDI input port, for the firmware's MIDI in, and where on the
+//! board its bytes go ([`Dest`]): a UART's receiver, or a `midi` part (a
+//! MIDI in jack, on a UART or sending on a pin of its own).
 //!
 //! Native it listens to an ALSA / CoreMIDI / WinMM port, in the browser to a
 //! WebMIDI one (the same `midir` calls; the browser asks for permission the
 //! first time, so there it only starts on [`MidiIn::start`]). What arrives
-//! waits here until a front end [takes](MidiIn::take) it for the UART.
+//! waits here until a front end [takes](MidiIn::take) it to
+//! [`Session::midi`](crate::Session::midi).
 use std::{
     collections::VecDeque,
     sync::{
@@ -13,6 +16,50 @@ use std::{
 };
 
 use midir::{Ignore, MidiInput, MidiInputConnection};
+use pcb::Board;
+use pcb_devices::midi::{Midi, Route};
+
+/// Where a MIDI input's bytes go.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Dest {
+    Uart(usize),
+    /// A `midi` part, by name.
+    Part(String),
+}
+
+impl Dest {
+    /// `UART1`, or a part with where it is: `din (GPIO5)`.
+    pub fn label(&self, board: &Board) -> String {
+        match self {
+            Dest::Uart(n) => format!("UART{n}"),
+            Dest::Part(name) => match board.device::<Midi>(name).map(|m| m.route) {
+                Some(Route::Uart(n)) => format!("{name} (UART{n})"),
+                Some(Route::Pin(p)) => format!("{name} (GPIO{p})"),
+                None => format!("{name} (gone)"),
+            },
+        }
+    }
+}
+
+/// Where MIDI can go on `board`: its `midi` parts, then the UARTs.
+pub fn destinations(board: &Board) -> Vec<Dest> {
+    let parts = board.parts.iter().filter(|p| p.kind == "midi");
+    parts
+        .map(|p| Dest::Part(p.name.clone()))
+        .chain((0..2).map(Dest::Uart))
+        .collect()
+}
+
+/// Where input `n` goes unless told otherwise: the board's `n`th `midi`
+/// part, else UART`n`.
+pub fn default_dest(board: &Board, n: usize) -> Dest {
+    board
+        .parts
+        .iter()
+        .filter(|p| p.kind == "midi")
+        .nth(n)
+        .map_or(Dest::Uart(n.min(1)), |p| Dest::Part(p.name.clone()))
+}
 
 /// Bytes kept while the run is paused or busy; past this the oldest go.
 const KEEP: usize = 4096;
@@ -158,6 +205,21 @@ impl MidiIn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destinations_come_from_the_board() {
+        let b = Board::parse_with(
+            "parts.din = { kind = \"midi\", gpio = 5 }\nparts.trs = { kind = \"midi\", uart = 1 }",
+            &pcb_devices::registry(),
+        )
+        .unwrap();
+        let labels: Vec<_> = destinations(&b).iter().map(|d| d.label(&b)).collect();
+        assert_eq!(labels, ["din (GPIO5)", "trs (UART1)", "UART0", "UART1"]);
+        assert_eq!(default_dest(&b, 1), Dest::Part("trs".into()));
+        let plain = Board::parse_with("", &pcb_devices::registry()).unwrap();
+        assert_eq!(default_dest(&plain, 0), Dest::Uart(0));
+        assert_eq!(default_dest(&plain, 1), Dest::Uart(1));
+    }
 
     #[test]
     fn the_queue_keeps_only_the_newest_bytes() {

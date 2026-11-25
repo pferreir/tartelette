@@ -55,6 +55,7 @@ pub fn parse_board(board: Option<&Source>, shields: &[Source]) -> Result<Board, 
             .map_err(|e| format!("{}:{e}", s.name))?;
         load_files(&mut b, from, Some(s))?;
     }
+    crate::synth::check(&b)?;
     Ok(b)
 }
 

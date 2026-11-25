@@ -163,7 +163,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         }
         let mut o = s.take_output();
         if let Some((synth, samples, _)) = &mut wav {
-            synth.feed(o.events.make_contiguous(), samples);
+            synth.feed(o.events.make_contiguous(), s.sys.clock(), samples);
         }
         print(&s, o, h, &mut uarts, usb_serial.then_some(&mut out));
 

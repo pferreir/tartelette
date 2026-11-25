@@ -5,12 +5,24 @@
 //! deadline, or [`Session::advance`] one stretch at a time) and takes what
 //! it produced with [`Session::take_output`].
 use pcb::BoardEvent;
-use pcb_devices::{sdcard::SdCard, wav::Wav};
-use rp2040_core::system::{CYCLES_PER_US, SRAM_BASE, StopReason, System};
+use pcb_devices::{
+    midi::{Midi, Route},
+    sdcard::SdCard,
+    wav::Wav,
+};
+use rp2040_core::system::{CYCLES_PER_US, Clock, SRAM_BASE, StopReason, System};
 use web_time::Instant;
 
-use crate::{Links, Output, Source, boards::parse_board, network, uart::UartSide, usb::UsbSide};
+use crate::{
+    Links, Output, Source,
+    boards::parse_board,
+    network,
+    uart::{UartSide, midi::Dest},
+    usb::UsbSide,
+};
 
+/// Cycles a second at clk_sys's default 125 MHz (firmware may change it:
+/// see [`System::clock`]).
 pub const CYCLES_PER_SEC: f64 = CYCLES_PER_US as f64 * 1e6;
 
 /// Cycles per `System::run` call in [`Session::step`]: small enough to stay
@@ -25,8 +37,9 @@ pub struct LogEntry {
 }
 
 /// Hears every board event as it is taken out of the emulator, on the thread
-/// that steps the run (a live synth, which must not wait for the UI).
-pub type Listener = Box<dyn FnMut(&[BoardEvent]) + Send>;
+/// that steps the run (a live synth, which must not wait for the UI), with
+/// the clock that turns their cycles into time.
+pub type Listener = Box<dyn FnMut(&[BoardEvent], Clock) + Send>;
 
 pub struct Session {
     pub sys: System,
@@ -132,7 +145,7 @@ impl Session {
 
     /// Emulated seconds since power-up.
     pub fn seconds(&self) -> f64 {
-        self.sys.cycles() as f64 / CYCLES_PER_SEC
+        self.sys.seconds()
     }
 
     /// Put bytes on UART `n`'s line straight away, at the firmware's baud
@@ -142,8 +155,33 @@ impl Session {
         self.sys.send_uart(n, bytes);
     }
 
+    /// Hand MIDI bytes to `dest`: a UART's receiver, or a `midi` part (whose
+    /// own UART, or which sends them on its pin).
+    pub fn midi(&mut self, dest: &Dest, bytes: &[u8]) {
+        match dest {
+            Dest::Uart(n) => self.send(*n, bytes),
+            Dest::Part(name) => match self.sys.board.device::<Midi>(name).map(|m| m.route) {
+                Some(Route::Uart(n)) => self.send(n, bytes),
+                Some(Route::Pin(_)) => {
+                    for &b in bytes {
+                        self.sys.input(name, "byte", b as i64);
+                    }
+                    self.collect();
+                }
+                None => {}
+            },
+        }
+    }
+
     /// Do something to a board part (see each device's docs for actions).
+    /// A MIDI jack on a UART takes `byte` here: the host feeds that UART.
     pub fn input(&mut self, part: &str, action: &str, value: i64) -> bool {
+        if action == "byte"
+            && let Some(Route::Uart(n)) = self.sys.board.device::<Midi>(part).map(|m| m.route)
+        {
+            self.send(n, &[value as u8]);
+            return true;
+        }
         let ok = self.sys.input(part, action, value);
         self.collect();
         ok
@@ -229,20 +267,20 @@ impl Session {
         if let Some(listener) = &mut self.listener
             && !events.is_empty()
         {
-            listener(&events);
+            listener(&events, self.sys.clock());
         }
         self.output.events(events);
         self.output.warnings(self.sys.warnings.drain(..));
         self.output.warnings(self.sys.board.take_warnings());
-        let (usb, output) = (&mut self.usb, &mut self.output);
+        let (usb, output, clock) = (&mut self.usb, &mut self.output, self.sys.clock());
         self.sys
-            .with_usb_host(|h| usb.exchange(h, |cycles| cycles as f64 / CYCLES_PER_SEC, output));
+            .with_usb_host(|h| usb.exchange(h, |cycles| clock.seconds(cycles), output));
         #[cfg(not(target_arch = "wasm32"))]
         self.write_sd_files();
         if let Some(rtt) = self.rtt.as_mut() {
             let mut lines = Vec::new();
             rtt.poll(&mut self.sys.bus.sram.data, SRAM_BASE, &mut lines);
-            let at = self.sys.cycles() as f64 / CYCLES_PER_SEC;
+            let at = self.sys.seconds();
             for line in lines {
                 self.output.log(LogEntry { at, line });
             }
@@ -437,6 +475,61 @@ mod tests {
     }
 
     #[test]
+    fn midi_goes_down_a_jacks_pin() {
+        let board = Source::new(
+            "t.toml",
+            b"parts.din = { kind = \"midi\", gpio = 5 }".to_vec(),
+        );
+        let mut s = Session::new(
+            &firmware("button-led"),
+            Some(&board),
+            &[],
+            &Links::default(),
+        )
+        .unwrap();
+        s.step(1000, far());
+        s.take_output();
+        s.midi(&Dest::Part("din".into()), &[0x90, 0x3C, 0x64]);
+        s.step(125 * 2000, far());
+        let sent: Vec<_> = s
+            .take_output()
+            .events
+            .iter()
+            .filter(|e| e.label == "sent")
+            .map(|e| (e.cycles, e.value))
+            .collect();
+        assert_eq!(
+            sent.iter().map(|e| e.1).collect::<Vec<_>>(),
+            [0x90, 0x3C, 0x64]
+        );
+        // A byte every 10 bits of 32 us.
+        assert_eq!(sent[1].0 - sent[0].0, 125 * 320);
+        assert!(
+            s.sys.bus.gpio.pin_level(5),
+            "idle high after the last stop bit"
+        );
+    }
+
+    #[test]
+    fn midi_into_a_jack_on_a_uart_reaches_the_firmware() {
+        let board = Source::new(
+            "t.toml",
+            b"parts.trs = { kind = \"midi\", uart = 0 }".to_vec(),
+        );
+        let mut s =
+            Session::new(&firmware("uart-echo"), Some(&board), &[], &Links::default()).unwrap();
+        while !s.sys.bus.uart[0].receiving() {
+            s.step(125 * 100, far());
+        }
+        s.take_output();
+        // The echo upper-cases what arrives.
+        s.midi(&Dest::Part("trs".into()), b"ab");
+        s.midi(&Dest::Uart(0), b"c");
+        s.step(125 * 5000, far());
+        assert_eq!(s.take_output().uart[0], b"ABC");
+    }
+
+    #[test]
     fn a_flash_image_goes_under_the_firmware() {
         let fw = firmware("button-led");
         let plain = Session::new(&fw, None, &[], &Links::default()).unwrap();
@@ -603,7 +696,7 @@ mod tests {
         .unwrap();
         let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let h = heard.clone();
-        s.listen(Box::new(move |events: &[BoardEvent]| {
+        s.listen(Box::new(move |events: &[BoardEvent], _| {
             h.lock().unwrap().extend(events.iter().map(|e| e.label));
         }));
         s.step(1000, far());

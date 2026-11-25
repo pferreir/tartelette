@@ -59,7 +59,8 @@ with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-ha
   real pty, its MIDI interface as MIDI ports, its keyboard as a keyboard.
 - Puts the Pico W on your network, through a user-mode NAT, and its
   Bluetooth on mock devices or a real adapter.
-- Lets you listen to CV/gate outputs through test oscillators and drums.
+- Lets you listen to CV/gate outputs through test oscillators and drums,
+  and to audio the firmware plays on a DAC or as PWM through a speaker.
 
 ### Supported devices
 

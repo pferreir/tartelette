@@ -224,7 +224,11 @@ fn readout(ui: &mut egui::Ui, now: Option<(Option<f32>, bool)>) {
 /// Hands the run's board events to the live synth, as they happen.
 fn listener(live: &Arc<Mutex<Live>>) -> Listener {
     let live = live.clone();
-    Box::new(move |events| live.lock().unwrap_or_else(|e| e.into_inner()).push(events))
+    Box::new(move |events, clock| {
+        live.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(events, clock)
+    })
 }
 
 /// Start the sound card playing the voices.

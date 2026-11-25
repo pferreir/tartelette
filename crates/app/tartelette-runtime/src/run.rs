@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use web_time::{Duration, Instant};
 
-use crate::session::{CYCLES_PER_SEC, Session};
+use crate::session::Session;
 
 /// Paces a run against the wall clock.
 pub struct Clock {
@@ -11,11 +11,12 @@ pub struct Clock {
     /// Emulated time per wall-clock time (`f64::INFINITY` = as fast as possible).
     pub speed: f64,
     last: Instant,
-    /// Emulated cycles owed to the run (fractional, so slow speeds work).
+    /// Emulated seconds owed to the run.
     owed: f64,
-    /// Measured speed over the last second, as a ratio to real time.
+    /// Measured speed over the last second, as a ratio to real time, and
+    /// the emulated seconds run since `window.0`.
     measured: f64,
-    window: (Instant, u64),
+    window: (Instant, f64),
 }
 
 /// Host time the emulator may take per UI frame, so the UI stays smooth.
@@ -44,7 +45,7 @@ impl Clock {
             last: now,
             owed: 0.0,
             measured: 0.0,
-            window: (now, 0),
+            window: (now, 0.0),
         }
     }
 
@@ -54,24 +55,26 @@ impl Clock {
         let dt = (now - self.last).as_secs_f64();
         self.last = now;
         let mut done = 0;
+        let before = s.seconds();
         if self.running && s.halted.is_none() {
+            // In cycles at clk_sys as it is now (firmware may change it).
+            let hz = s.sys.sys_hz() as f64;
             let want = if self.speed.is_finite() {
-                self.owed = (self.owed + dt * self.speed * CYCLES_PER_SEC)
-                    .min(MAX_OWED_SECS * self.speed * CYCLES_PER_SEC);
-                self.owed as u64
+                self.owed = (self.owed + dt * self.speed).min(MAX_OWED_SECS * self.speed);
+                (self.owed * hz) as u64
             } else {
                 u64::MAX / 2
             };
             done = s.step(want, now + budget);
-            self.owed = (self.owed - done as f64).max(0.0);
+            self.owed = (self.owed - done as f64 / hz).max(0.0);
         } else {
             self.owed = 0.0;
         }
-        self.window.1 += done;
+        self.window.1 += s.seconds() - before;
         let span = (now - self.window.0).as_secs_f64();
         if span >= 0.5 {
-            self.measured = self.window.1 as f64 / CYCLES_PER_SEC / span;
-            self.window = (now, 0);
+            self.measured = self.window.1 / span;
+            self.window = (now, 0.0);
         }
         done
     }
