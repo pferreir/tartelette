@@ -2182,10 +2182,21 @@ impl System {
                         .map(|t| t.saturating_sub(self.bus.time).max(1)),
                 };
                 let event = earliest(earliest(self.bus.cycles_to_event(), timer), usb);
-                let slice = match (event, self.dma_runnable() || self.pio_active()) {
-                    (None, false) => return StopReason::Sleeping,
-                    (Some(c), false) => c,
-                    (c, true) => c.map_or(DMA_SLICE, |c| c.min(DMA_SLICE)),
+                // A PIO block that runs changes anything only at its ticks,
+                // and runs a stretch of them in one go: to its next tick, or
+                // further while it ticks often. The DMA moves an item a cycle.
+                let pio_tick = self.pio_active().then(|| {
+                    (0..2)
+                        .filter(|&b| !self.bus.resets.in_reset(RESET_PIO[b]))
+                        .filter_map(|b| self.bus.pio[b].cycles_to_tick())
+                        .min()
+                        .map_or(DMA_SLICE, |t| t.max(DMA_SLICE))
+                });
+                let slice = match (event, self.dma_runnable(), pio_tick) {
+                    (c, true, _) => c.map_or(DMA_SLICE, |c| c.min(DMA_SLICE)),
+                    (c, false, Some(t)) => c.map_or(t, |c| c.min(t)),
+                    (Some(c), false, None) => c,
+                    (None, false, None) => return StopReason::Sleeping,
                 };
                 self.advance_to((self.bus.time + slice.max(1)).min(end));
                 continue;
