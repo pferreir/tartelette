@@ -107,6 +107,7 @@ Some widgets take options of their own:
 | Kind | Widget | Options |
 |------|--------|---------|
 | `st7789` | the screen | `rotate = 0 \| 90 \| 180 \| 270` |
+| `ssd1306` | the OLED screen | `rotate = 0 \| 90 \| 180 \| 270` |
 | `led` | a lamp | `color = "red" \| "green" \| "blue" \| "yellow" \| "orange" \| "white"` or a hex `"rrggbb"` |
 | `ws2812` | a row of RGB lamps | |
 | `button` | a push button, held while the mouse is down | `key = "Space"` |
@@ -115,6 +116,9 @@ Some widgets take options of their own:
 | `wav` | file name, position, rewind / play-stop / Load | |
 | `mcp23008` | a cell per pin | see below |
 | `dac8165` | four voltmeters, showing the voltage at the jacks | |
+| `speaker` | a speaker: click to mute, scroll for the volume | |
+| `midi` | where the jack goes, a light for bytes on its pin, and optional piano keys | `keyboard = "C3"`, `channel = 1..16` |
+| `pcm5102` | the sample rate, and a level bar per channel | |
 | `sdcard` | card status, Load / Save / Browse | |
 | `cyw43439` | Wi-Fi LED, network, address and errors | |
 

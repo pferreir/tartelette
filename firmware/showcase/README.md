@@ -41,8 +41,8 @@ cargo run --release --bin stardust -- --headless --log --max-cycles 1000000000
 `./run` (the cargo runner) picks each demo's board and hands over to
 `../examples/run`, so `TARTELETTE_RUNNER=probe-rs` or `picotool` put it on
 a real board instead, and options after `--` go to tartelette. `groovebox`
-also gets its synth patch, `--drums --osc saw:dac.A:expander.bass`: tick
-**Sound** on the Synth tab to hear it.
+also gets its synth patch, `--drums --osc saw:dac.A:expander.bass`. Tick
+**Sound** in the toolbar to hear it, and `groovebox-audio`'s speaker.
 
 ## On the web page
 

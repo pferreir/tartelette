@@ -200,7 +200,7 @@ cd firmware/showcase
 # An arcade game on a Pico with a Display Pack: A/B turn, X thrusts, Y starts
 cargo run --release --bin stardust
 
-# A drum machine and bass sequencer: tick Sound on the Synth tab to hear it
+# A drum machine and bass sequencer: tick Sound in the toolbar to hear it
 cargo run --release --bin groovebox
 ```
 

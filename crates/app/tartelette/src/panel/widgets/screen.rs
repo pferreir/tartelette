@@ -1,4 +1,5 @@
-//! `st7789`: the screen, a texture redrawn when the frame RAM changes.
+//! `st7789` and `ssd1306`: the screen, a texture redrawn when the picture
+//! changes.
 use super::*;
 
 /// An image of `px` texels fitted inside `outer`, centred: a whole number of
@@ -12,11 +13,11 @@ pub(in crate::panel) fn fit_pixels(outer: Rect, px: Vec2, pixels_per_point: f32)
 }
 
 pub(in crate::panel) fn screen(c: Ctx, st: &mut PanelState, rotate: u16) {
-    let Some(lcd) = c.device::<St7789>() else {
+    let Some(lcd) = pcb_devices::glass(&c.s.sys.board, &c.it.name) else {
         return;
     };
     let (w, h) = lcd.size();
-    let stamp = (lcd.total_pixels, lcd.is_showing());
+    let stamp = lcd.stamp();
     let (tw, th) = if rotate.is_multiple_of(180) {
         (w, h)
     } else {
@@ -25,7 +26,7 @@ pub(in crate::panel) fn screen(c: Ctx, st: &mut PanelState, rotate: u16) {
     let make = || {
         let mut dst = vec![Color32::BLACK; w * h];
         let (mut x, mut y) = (0, 0);
-        lcd.for_each_pixel(|_, p| {
+        lcd.for_each_pixel(&mut |_, p| {
             let (dx, dy) = match rotate {
                 90 => (h - 1 - y, x),
                 180 => (w - 1 - x, h - 1 - y),

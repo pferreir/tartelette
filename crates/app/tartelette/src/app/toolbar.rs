@@ -1,5 +1,5 @@
 //! The top bar's controls beside the logo: opening files, running, speed,
-//! MIDI in, and the status line under them.
+//! sound, MIDI in, and the status line under them.
 use egui::RichText;
 use tartelette_runtime::run::Run;
 
@@ -64,7 +64,20 @@ impl App {
                     .on_hover_text("Emulation speed");
             }
             ui.separator();
-            self.midi.ui(ui);
+            self.sound
+                .controls(ui, run.as_deref_mut().map(|r| &mut r.session));
+            ui.separator();
+            let board = run.as_deref().map(|r| &r.session.sys.board);
+            self.midi[0].ui(ui, board);
+            // The second input once the first is in use (or the board
+            // has a second MIDI in jack).
+            let jacks = board.map_or(0, |b| b.parts.iter().filter(|p| p.kind == "midi").count());
+            if self.midi[0].in_use() || self.midi[1].in_use() || jacks > 1 {
+                if !self.midi[1].started() && self.midi[0].started() {
+                    self.midi[1].start();
+                }
+                self.midi[1].ui(ui, board);
+            }
         });
         ui.horizontal_wrapped(|ui| {
             let names: Vec<&str> = self

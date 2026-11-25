@@ -27,8 +27,6 @@ use history::History;
 
 /// Tall enough to read the lettering, as tall as the top bar's two rows.
 const LOGO_HEIGHT: f32 = 64.0;
-/// The UART whose receiver is the firmware's MIDI in.
-const MIDI_UART: usize = 0;
 
 /// A tab of the dock.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +67,8 @@ pub struct App {
     /// How many of `errors` the Problems tab has shown.
     errors_seen: usize,
     inbox: Inbox,
-    midi: MidiInPicker,
+    /// The two MIDI inputs.
+    midi: [MidiInPicker; 2],
     tab: Tab,
     dock: DockSide,
     log_min: rtt::Level,
@@ -167,7 +166,7 @@ impl App {
             errors: Vec::new(),
             errors_seen: 0,
             inbox: Inbox::default(),
-            midi: MidiInPicker::new(),
+            midi: [MidiInPicker::new(0), MidiInPicker::new(1)],
             tab: Tab::Uart(0),
             dock: DockSide::Bottom,
             log_min: rtt::Level::Trace,
@@ -477,12 +476,15 @@ impl eframe::App for App {
             clock.tick(session, run::FRAME_BUDGET);
         }
         // Real MIDI goes to the firmware only while it runs; otherwise it is dropped.
-        let midi = self.midi.take();
-        if let Some(r) = guard
-            .as_deref_mut()
-            .filter(|r| r.clock.running && !midi.is_empty())
-        {
-            r.session.send(MIDI_UART, &midi);
+        for m in &mut self.midi {
+            let bytes = m.take();
+            if let Some(r) = guard
+                .as_deref_mut()
+                .filter(|r| r.clock.running && !bytes.is_empty())
+            {
+                let dest = m.dest(&r.session.sys.board);
+                r.session.midi(&dest, &bytes);
+            }
         }
         if let Some(r) = guard.as_deref_mut() {
             let mut o = r.session.take_output();

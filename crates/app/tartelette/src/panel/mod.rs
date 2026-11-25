@@ -7,6 +7,7 @@
 //! | kind       | widget                          | options                         |
 //! |------------|---------------------------------|---------------------------------|
 //! | `st7789`   | the screen                      | `rotate=0\|90\|180\|270`        |
+//! | `ssd1306`  | the OLED screen                 | `rotate=0\|90\|180\|270`        |
 //! | `led`      | a lamp                          | `color=red\|green\|...\|rrggbb` |
 //! | `ws2812`   | a row/grid of RGB lamps         |                                 |
 //! | `button`   | push button (held while down)   | `key=Space` (egui key name)     |
@@ -17,6 +18,9 @@
 //! | `cyw43439` | Wi-Fi: LED, link, address, errors |                               |
 //! | `pot`      | knob: drag or scroll, shows volts |                               |
 //! | `wav`      | player: load, rewind / play / stop, position |                    |
+//! | `speaker`  | icon: click to mute, scroll for volume |                         |
+//! | `midi`     | where it goes, a light for bytes on its pin |                    |
+//! | `pcm5102`  | sample rate, a level per channel  |                               |
 //!
 //! An `mcp23008` item shows a cell per pin. By default each cell follows what
 //! the board file wires to its pin: an LED is shown lit or dark, a switch is
@@ -186,6 +190,9 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
                 Widget::Wifi => wifi(ctx, st),
                 Widget::Pot => pot(ctx, &mut out),
                 Widget::Wav => wav(ctx, &mut out),
+                Widget::Speaker => speaker(ctx, &mut out),
+                &Widget::Midi { keyboard, channel } => midi(ctx, keyboard, channel, &mut out),
+                Widget::Pcm5102 => pcm5102(ctx),
                 Widget::Other => {
                     let kind = &s.sys.board.parts[it.part].kind;
                     ctx.ui.painter_at(body).text(

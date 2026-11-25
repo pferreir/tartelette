@@ -43,6 +43,14 @@ pub enum Widget {
     Wifi,
     Pot,
     Wav,
+    Speaker,
+    /// A MIDI in jack, with a keyboard from note `keyboard` (if any) that
+    /// plays on `channel` (0..15).
+    Midi {
+        keyboard: Option<u8>,
+        channel: u8,
+    },
+    Pcm5102,
     /// A kind this app has no widget for.
     Other,
 }
@@ -142,9 +150,13 @@ fn auto_span(board: &Board, part: &pcb::Part) -> (u16, u16) {
                 .map_or((240, 320), St7789::size);
             if w > h { (4, 3) } else { (3, 4) }
         }
+        "ssd1306" => match pcb_devices::glass(board, &part.name).map(|g| g.size()) {
+            Some((_, 32)) => (4, 1),
+            _ => (4, 2),
+        },
         "ws2812" | "mcp23008" => (4, 1),
         "dac8165" => (2, 2),
-        "sdcard" | "wav" => (2, 1),
+        "sdcard" | "wav" | "midi" | "pcm5102" => (2, 1),
         "cyw43439" => (3, 2),
         _ => (1, 1),
     }
@@ -173,7 +185,7 @@ fn widget_for<'a>(
     options: &mut dyn Iterator<Item = (&'a str, &'a str)>,
 ) -> Result<Widget, String> {
     let mut w = match kind {
-        "st7789" => Widget::Screen { rotate: 0 },
+        "st7789" | "ssd1306" => Widget::Screen { rotate: 0 },
         "led" => Widget::Led {
             color: Color32::from_rgb(255, 48, 32),
         },
@@ -186,6 +198,12 @@ fn widget_for<'a>(
         "cyw43439" => Widget::Wifi,
         "pot" => Widget::Pot,
         "wav" => Widget::Wav,
+        "speaker" => Widget::Speaker,
+        "midi" => Widget::Midi {
+            keyboard: None,
+            channel: 0,
+        },
+        "pcm5102" => Widget::Pcm5102,
         _ => Widget::Other,
     };
     let key = |v: &str| Key::from_name(v).ok_or_else(|| format!("unknown key {v:?}"));
@@ -234,6 +252,15 @@ fn widget_for<'a>(
                     _ => return Err("active must be low or high".into()),
                 }
             }
+            (Widget::Midi { keyboard, .. }, "keyboard") => {
+                *keyboard = Some(parse_note(v).ok_or("keyboard must be a note, e.g. C3")?)
+            }
+            (Widget::Midi { channel, .. }, "channel") => {
+                *channel = match v.parse::<u8>() {
+                    Ok(n @ 1..=16) => n - 1,
+                    _ => return Err("channel must be 1..16".into()),
+                }
+            }
             _ => return Err(format!("{kind} has no panel option {k:?}")),
         }
     }
@@ -266,6 +293,32 @@ fn parse_color(v: &str) -> Option<Color32> {
     })
 }
 
+/// A MIDI note from its name (`C3`, `F#4`, `Bb2`; C4 is 60) or number.
+fn parse_note(v: &str) -> Option<u8> {
+    if let Ok(n) = v.parse::<u8>() {
+        return (n < 128).then_some(n);
+    }
+    let mut c = v.chars();
+    let base: i32 = match c.next()?.to_ascii_uppercase() {
+        'C' => 0,
+        'D' => 2,
+        'E' => 4,
+        'F' => 5,
+        'G' => 7,
+        'A' => 9,
+        'B' => 11,
+        _ => return None,
+    };
+    let rest = c.as_str();
+    let (shift, octave) = match rest.chars().next()? {
+        '#' => (1, &rest[1..]),
+        'b' => (-1, &rest[1..]),
+        _ => (0, rest),
+    };
+    let n = base + shift + (octave.parse::<i32>().ok()? + 1) * 12;
+    (0..128).contains(&n).then_some(n as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +337,24 @@ mod tests {
         );
         assert!(matches!(l.items[2].widget, Widget::Button { key: None }));
         assert_eq!(warnings, ["panel.b: unknown key \"Nope\" (ignored)"]);
+    }
+
+    #[test]
+    fn the_picodexed_board_lays_out_with_its_keyboard() {
+        let b = test_board(include_str!(
+            "../../../../../firmware/showcase/boards/picodexed.toml"
+        ));
+        let (l, warnings) = Layout::new(&b);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let midi = l.items.iter().find(|i| i.name == "midi").unwrap();
+        assert!(matches!(
+            midi.widget,
+            Widget::Midi {
+                keyboard: Some(48),
+                channel: 0
+            }
+        ));
+        assert_eq!(l.items.len(), b.parts.len());
     }
 
     #[test]
@@ -364,5 +435,16 @@ mod tests {
         assert!(w("led", &[("color", "12345")]).is_err());
         assert!(w("led", &[("color", "pink")]).is_err());
         assert!(matches!(w("custom-thing", &[]), Ok(Widget::Other)));
+    }
+
+    #[test]
+    fn notes_by_name_or_number() {
+        assert_eq!(super::parse_note("C4"), Some(60));
+        assert_eq!(super::parse_note("F#3"), Some(54));
+        assert_eq!(super::parse_note("Bb2"), Some(46));
+        assert_eq!(super::parse_note("36"), Some(36));
+        assert_eq!(super::parse_note("H2"), None);
+        assert_eq!(super::parse_note("G9"), Some(127));
+        assert_eq!(super::parse_note("A9"), None);
     }
 }

@@ -35,7 +35,10 @@ writing your own.
 ## The window
 
 The top bar opens a firmware or board, pauses, resets and sets the speed,
-and under that shows the files, the emulated time and the speed reached. When
+switches the sound on (**🔊 Sound**: the board's speakers and the test
+synth, through the sound card, natively and in the browser) and sets its
+volume, picks the MIDI inputs (see [below](#midi-in)), and under that shows
+the files, the emulated time and the speed reached. When
 something goes wrong it shows **⚠ N new problems**, which opens the Problems
 tab. The front panel in the middle is laid out by the board file's `[panel]`
 section. The tabs at the bottom (**→ Dock right** moves them to the right,
@@ -228,6 +231,26 @@ See [usb.md](usb.md).
 --usb-log
 ```
 
+## MIDI in
+
+The top bar has two MIDI inputs, for real MIDI ports (ALSA, CoreMIDI or
+WinMM natively, WebMIDI in the browser, which asks for permission on the
+first click of **MIDI in…**). The second shows once the first has a port,
+or when the board has two MIDI jacks. Each has a port (**MIDI 1: off**) and
+a destination (**→ UART0**):
+
+- **UART0** or **UART1**: the bytes go to that UART's receiver, as from a
+  MIDI jack on its RX pin. Bytes that arrive while the receiver is off are
+  lost, as on the chip;
+- a [`midi`](devices/midi.md) part on the board, a MIDI in jack: its UART,
+  or 31250-baud serial on its pin, for firmware that reads MIDI with a PIO
+  program or a software UART.
+
+Input 1 goes to the board's first `midi` part, else UART0; input 2 to its
+second, else UART1. A destination picked in the top bar holds while the
+board has it. MIDI only goes in while the firmware runs: paused, it is
+dropped. Headless, `--input JACK:byte=N@US` sends a byte into a jack.
+
 ## Test synth
 
 If the board has CV and gate outputs (a `dac8165`, and `mcp23008` pins or
@@ -239,10 +262,14 @@ what a sequencer is doing:
 - drums (`kick`, `snare`, `hat`, `openhat`, `clap`, all synthesized) play a hit
   on each rising edge of their gate, however short the trigger.
 
-In the window, the **Synth** tab is the patch bay. Tick **Sound** to
-play through the sound card (native and web) and **Drum kit** to put kick,
-snare and hats on the first four gates. Each voice shows its gate, note and
-pitch.
+The board's [`speaker`](devices/speaker.md) parts play along with the
+voices: each plays a DAC channel as it is, for firmware that streams audio
+samples to the DAC, or a GPIO's PWM. A board with a speaker has no default
+voice.
+
+In the window, the **Synth** tab is the patch bay: **Drum kit** puts kick,
+snare and hats on the first four gates, and each voice shows its gate, note
+and pitch. They play while **🔊 Sound** is ticked in the top bar.
 
 On the command line:
 

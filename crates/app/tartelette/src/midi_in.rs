@@ -1,7 +1,9 @@
-//! The toolbar's MIDI input: a chooser for the port that feeds the
-//! firmware's MIDI in (see [`MidiIn`]) and an activity light.
+//! A MIDI input in the toolbar: a chooser for the port (see [`MidiIn`]),
+//! one for where on the board it goes (see [`Dest`]), and an activity
+//! light. There are two, numbered from 0.
 use egui::{Color32, RichText, Ui};
-use tartelette_runtime::uart::midi::MidiIn;
+use pcb::Board;
+use tartelette_runtime::uart::midi::{self, Dest, MidiIn};
 use web_time::{Duration, Instant};
 
 /// How often the list of ports is read again.
@@ -10,7 +12,10 @@ const REFRESH: Duration = Duration::from_secs(1);
 const LIGHT: Duration = Duration::from_millis(120);
 
 pub struct MidiInPicker {
+    n: usize,
     port: MidiIn,
+    /// Where the user sent it, over the board's default.
+    dest: Option<Dest>,
     refreshed: Option<Instant>,
     /// Bytes received as of the last frame, and when the count last moved.
     seen: u64,
@@ -18,9 +23,11 @@ pub struct MidiInPicker {
 }
 
 impl MidiInPicker {
-    pub fn new() -> Self {
+    pub fn new(n: usize) -> Self {
         Self {
+            n,
             port: MidiIn::new(),
+            dest: None,
             refreshed: None,
             seen: 0,
             lit_at: None,
@@ -32,20 +39,45 @@ impl MidiInPicker {
         self.port.take()
     }
 
+    /// Whether a port is chosen.
+    pub fn in_use(&self) -> bool {
+        self.port.selected().is_some()
+    }
+
+    pub fn started(&self) -> bool {
+        self.port.started()
+    }
+
+    /// List the ports (in the browser, this asks for permission).
+    pub fn start(&mut self) {
+        self.refreshed = Some(Instant::now());
+        self.port.start();
+    }
+
+    /// Where the bytes go on `board`: as chosen, if `board` still has it,
+    /// else the board's default for this input.
+    pub fn dest(&self, board: &Board) -> Dest {
+        self.dest
+            .clone()
+            .filter(|d| midi::destinations(board).contains(d))
+            .unwrap_or_else(|| midi::default_dest(board, self.n))
+    }
+
     fn refresh(&mut self) {
         self.refreshed = Some(Instant::now());
         self.port.refresh();
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) {
+    /// The choosers and the light; the destinations are `board`'s, when
+    /// there is one.
+    pub fn ui(&mut self, ui: &mut Ui, board: Option<&Board>) {
         if !self.port.started() {
             if ui
                 .button("MIDI in…")
                 .on_hover_text("Choose a MIDI input port (the browser asks for permission)")
                 .clicked()
             {
-                self.refreshed = Some(Instant::now());
-                self.port.start();
+                self.start();
             }
             return;
         }
@@ -53,11 +85,12 @@ impl MidiInPicker {
             self.refresh();
         }
         let mut choice = None;
-        egui::ComboBox::from_id_salt("midi-in")
+        let n = self.n + 1;
+        egui::ComboBox::from_id_salt(("midi-in", self.n))
             .selected_text(
                 self.port
                     .selected()
-                    .map_or("MIDI in: off".to_string(), |n| format!("MIDI: {n}")),
+                    .map_or(format!("MIDI {n}: off"), |p| format!("MIDI {n}: {p}")),
             )
             .width(150.0)
             .show_ui(ui, |ui| {
@@ -82,6 +115,20 @@ impl MidiInPicker {
         if let Some(name) = choice {
             let ctx = ui.ctx().clone();
             self.port.select(name, move || ctx.request_repaint());
+        }
+        if let Some(board) = board {
+            let now = self.dest(board);
+            egui::ComboBox::from_id_salt(("midi-dest", self.n))
+                .selected_text(format!("→ {}", now.label(board)))
+                .show_ui(ui, |ui| {
+                    for d in midi::destinations(board) {
+                        if ui.selectable_label(d == now, d.label(board)).clicked() {
+                            self.dest = Some(d);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Where on the board this input goes");
         }
         let total = self.port.total();
         if total != self.seen {

@@ -1,5 +1,7 @@
-//! The Synth tab: test oscillators and drums patched into the board's outputs,
-//! played through the sound card (see [`tartelette_runtime::synth`]).
+//! The board's sound through the sound card: its speakers, and the test
+//! oscillators and drums patched into its outputs (see
+//! [`tartelette_runtime::synth`]). The toolbar switches it on and sets the
+//! volume; the Synth tab is the patch bay.
 use std::sync::{Arc, Mutex};
 
 use cpal::{
@@ -89,34 +91,51 @@ impl Sound {
         self.out = None;
     }
 
+    /// The toolbar's switch and volume (`s` is None without a run).
+    pub fn controls(&mut self, ui: &mut egui::Ui, s: Option<&mut Session>) {
+        let mut on = self.out.is_some();
+        let switch = ui
+            .add_enabled(s.is_some(), egui::Checkbox::new(&mut on, "🔊 Sound"))
+            .on_hover_text("Play the board's speakers and the Synth tab's voices");
+        if switch.changed()
+            && let Some(s) = s
+        {
+            if on {
+                self.start(s);
+            } else {
+                self.stop(s);
+            }
+        }
+        ui.spacing_mut().slider_width = 60.0;
+        if ui
+            .add(
+                egui::Slider::new(&mut self.volume, 0.0..=1.0)
+                    .show_value(false)
+                    .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.5 }),
+            )
+            .on_hover_text("Volume")
+            .changed()
+            && let Some(out) = &self.out
+        {
+            out.live.lock().unwrap().volume = self.volume;
+        }
+        if let Some(e) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, "⚠")
+                .on_hover_text(e);
+        }
+    }
+
     /// The Synth tab's contents.
     pub fn ui(&mut self, ui: &mut egui::Ui, s: &mut Session) {
         let mut patches = self.patches(s);
         let before = patches.clone();
-        ui.horizontal(|ui| {
-            let mut on = self.out.is_some();
-            if ui.checkbox(&mut on, "Sound").changed() {
-                if on {
-                    self.start(s);
-                } else {
-                    self.stop(s);
-                }
-            }
-            ui.label("Volume");
-            if ui
-                .add(egui::Slider::new(&mut self.volume, 0.0..=1.0).show_value(false))
-                .changed()
-                && let Some(out) = &self.out
-            {
-                out.live.lock().unwrap().volume = self.volume;
-            }
-        });
         if let Some(e) = &self.error {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
         ui.label(
             RichText::new(
                 "Oscillators: 1 V/octave, 0 V = C4. Drums: a hit per rising gate edge.\n\
+                 Heard with 🔊 Sound in the toolbar, along with the board's speakers.\n\
                  Recorded headless with --osc, --drums and --wav.",
             )
             .weak(),
