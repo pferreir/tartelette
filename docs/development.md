@@ -175,15 +175,17 @@ starts passing.
 `target/pgo/tartelette`, 1.1 to 1.4 times faster than a plain release build.
 It builds an instrumented tartelette, runs it on the repository's firmware,
 and rebuilds with the profile, which takes a few minutes. It's meant for
-release builds in CI.
+release builds in CI, and for running heavy firmware natively: picodexed
+(250 MHz, both cores busy) runs about 16% faster with it.
 
 ```sh
 rustup component add llvm-tools
 scripts/pgo-build.sh
 ```
 
-It needs `llvm-profdata` from rustc's LLVM (`llvm-tools`, or set
-`LLVM_PROFDATA`). `CYW43_FIRMWARE_DIR` adds the Pico W Wi-Fi example to the
+It needs `llvm-profdata` from rustc's LLVM: `llvm-tools`, a system
+`llvm-profdata` of the same major version (found on the `PATH`), or set
+`LLVM_PROFDATA`. `CYW43_FIRMWARE_DIR` adds the Pico W Wi-Fi example to the
 training run, and `PGO_FIRMWARE="a.uf2 b.elf"` any other firmware.
 
 ## Releases

@@ -27,6 +27,16 @@ cd "$root" # rust-toolchain.toml picks the toolchain from here on
 out=$root/target/pgo
 host=$(rustc -vV | sed -n 's/^host: //p')
 profdata=${LLVM_PROFDATA:-$(rustc --print sysroot)/lib/rustlib/$host/bin/llvm-profdata}
+# Without llvm-tools, a system llvm-profdata of the same LLVM major version
+# reads rustc's profiles too.
+if [[ ! -x $profdata && -z ${LLVM_PROFDATA:-} ]]; then
+    want=$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')
+    system=$(command -v llvm-profdata || true)
+    if [[ -n $system ]] &&
+        [[ $("$system" --version | sed -n 's/.*LLVM version \([0-9]*\).*/\1/p') == "$want" ]]; then
+        profdata=$system
+    fi
+fi
 if [[ ! -x $profdata ]]; then
     echo "pgo-build: no llvm-profdata at $profdata" >&2
     echo "  rustup component add llvm-tools   (or set LLVM_PROFDATA)" >&2
