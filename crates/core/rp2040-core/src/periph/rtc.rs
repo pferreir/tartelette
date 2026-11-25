@@ -4,9 +4,11 @@
 //! RTC_1/RTC_0 read the date and time it has counted to since, from the
 //! emulated clock. Alarms (RTC_IRQ) are not modelled: their registers are
 //! stored and read back.
-use super::Peripheral;
+use super::{Peripheral, rebase};
+#[cfg(test)]
 use crate::system::CYCLES_PER_US;
 
+#[cfg(test)]
 const CYCLES_PER_SEC: u64 = CYCLES_PER_US * 1_000_000;
 
 const SETUP_0: u32 = 0x04;
@@ -26,6 +28,8 @@ pub struct Rtc {
     /// last stop).
     base: i64,
     base_cycle: u64,
+    /// clk_sys, which turns cycles into time.
+    hz: u64,
     running: bool,
     /// Device time, set by the bus before each access.
     pub now: u64,
@@ -37,6 +41,7 @@ impl Rtc {
             regs: [0; 0x30 / 4],
             base: 0,
             base_cycle: 0,
+            hz: crate::system::CYCLES_PER_US * 1_000_000,
             running: false,
             now: 0,
         }
@@ -44,10 +49,20 @@ impl Rtc {
 
     fn seconds(&self) -> i64 {
         if self.running {
-            self.base + (self.now.saturating_sub(self.base_cycle) / CYCLES_PER_SEC) as i64
+            self.base + (self.now.saturating_sub(self.base_cycle) / self.hz) as i64
         } else {
             self.base
         }
+    }
+
+    /// clk_sys changed to `hz` at `now`.
+    pub fn set_hz(&mut self, now: u64, hz: u64) {
+        self.now = now;
+        if self.running {
+            let (secs, base) = rebase(now, self.base_cycle, self.hz, hz, 1);
+            (self.base, self.base_cycle) = (self.base + secs as i64, base);
+        }
+        self.hz = hz;
     }
 
     fn load(&mut self) {

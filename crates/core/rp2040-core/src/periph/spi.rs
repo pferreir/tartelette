@@ -22,6 +22,7 @@ pub const OUT_IRQ: u8 = 1;
 pub const OUT_DREQ_TX: u8 = 2;
 pub const OUT_DREQ_RX: u8 = 4;
 /// The emulator's clock, which the wire's times are counted in.
+/// clk_sys at reset, and while it runs from a source the emulator doesn't model.
 const CLK_SYS_HZ: u64 = crate::system::CYCLES_PER_US * 1_000_000;
 
 // SSPCR1
@@ -39,6 +40,8 @@ const INT_LEVEL: u32 = INT_RX | INT_TX;
 pub struct Spi {
     /// clk_peri, which the prescaler divides.
     clk_peri_hz: u64,
+    /// clk_sys, which turns bit times into cycles.
+    clk_sys_hz: u64,
     /// The cycle up to which the wire has been run.
     cycles: u64,
     /// Frames handed to the target but not finished on the wire: when each
@@ -59,6 +62,7 @@ impl Spi {
     pub fn new() -> Self {
         Self {
             clk_peri_hz: CLK_SYS_HZ,
+            clk_sys_hz: CLK_SYS_HZ,
             cycles: 0,
             wire: VecDeque::new(),
             cr0: 0,
@@ -90,6 +94,11 @@ impl Spi {
         self.clk_peri_hz = hz.max(1);
     }
 
+    /// clk_sys, which turns bit times into cycles.
+    pub fn set_clk_sys(&mut self, hz: u64) {
+        self.clk_sys_hz = hz.max(1);
+    }
+
     /// The cycles a frame takes on the wire, or None while no prescaler is
     /// programmed (transfers are then instantaneous).
     fn frame_cycles(&self) -> Option<u64> {
@@ -97,7 +106,7 @@ impl Spi {
         let scr = (self.cr0 >> 8 & 0xFF) as u64;
         let clocks = self.frame_bits() as u64 * cpsdvsr * (1 + scr);
         let per = self.clk_peri_hz;
-        (cpsdvsr != 0).then(|| (clocks * CLK_SYS_HZ + per / 2) / per)
+        (cpsdvsr != 0).then(|| (clocks * self.clk_sys_hz + per / 2) / per)
     }
 
     /// Entries in the TX FIFO: those not handed out yet, and those handed

@@ -17,7 +17,7 @@
 //! endpoints that NAKed again.
 use alloc::{vec, vec::Vec};
 
-use super::Peripheral;
+use super::{Peripheral, rebase};
 use crate::system::CYCLES_PER_US;
 
 pub const DPRAM_SIZE: usize = 0x1000;
@@ -25,6 +25,7 @@ pub const DPRAM_SIZE: usize = 0x1000;
 pub const DPRAM_CONTROL_END: u32 = 0x100;
 /// Where endpoint 0's buffer (shared by IN and OUT) lives.
 const EP0_BUFFER: usize = 0x100;
+#[cfg(test)]
 const CYCLES_PER_FRAME: u64 = 1000 * CYCLES_PER_US;
 
 // Register offsets.
@@ -128,6 +129,10 @@ pub struct Usb {
     /// Cycle of frame 0 (the end of the last reset), and the frame SOF_RD
     /// showed last (DEV_SOF is pending until it is read).
     frame_zero: Option<u64>,
+    /// Frames counted before `frame_zero` (across a clk_sys change), and the
+    /// cycles a 1 ms frame takes.
+    frames_before: u64,
+    cycles_per_frame: u64,
     frame_read: u64,
     now: u64,
     /// Held in reset by RESETS: invisible, and the pull-up is off.
@@ -152,6 +157,8 @@ impl Usb {
             vbus_changed: false,
             connected: false,
             frame_zero: None,
+            frames_before: 0,
+            cycles_per_frame: 1000 * CYCLES_PER_US,
             frame_read: 0,
             now: 0,
             held: true,
@@ -186,9 +193,9 @@ impl Usb {
     }
 
     fn frame(&self) -> u64 {
-        self.frame_zero
-            .filter(|_| self.pulled_up())
-            .map_or(0, |t| self.now.saturating_sub(t) / CYCLES_PER_FRAME)
+        self.frame_zero.filter(|_| self.pulled_up()).map_or(0, |t| {
+            self.frames_before + self.now.saturating_sub(t) / self.cycles_per_frame
+        })
     }
 
     /// The next cycle a SOF interrupt can fire, if one is enabled.
@@ -197,7 +204,19 @@ impl Usb {
             return None;
         }
         let zero = self.frame_zero?;
-        Some(zero + (self.frame() + 1) * CYCLES_PER_FRAME)
+        let into = self.frame() + 1 - self.frames_before;
+        Some(zero + into * self.cycles_per_frame)
+    }
+
+    /// clk_sys changed to `hz` at `now`.
+    pub fn set_hz(&mut self, now: u64, hz: u64) {
+        self.now = now;
+        let new = hz / 1000;
+        if let Some(zero) = self.frame_zero {
+            let (frames, base) = rebase(now, zero, self.cycles_per_frame, new, 1);
+            (self.frames_before, self.frame_zero) = (self.frames_before + frames, Some(base));
+        }
+        self.cycles_per_frame = new;
     }
 
     fn pulled_up(&self) -> bool {
@@ -416,6 +435,7 @@ impl usbhost::DevicePort for Usb {
             self.conn_changed = true;
         }
         self.frame_zero = Some(self.now);
+        self.frames_before = 0;
         self.frame_read = 0;
     }
 

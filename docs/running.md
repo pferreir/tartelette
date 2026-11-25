@@ -97,8 +97,9 @@ Each device's page in [devices/](devices/) lists the events it emits.
 
 ### Stopping
 
-`--max-cycles N` stops after N cycles. The clock is fixed at 125 MHz, so one
-second is 125000000 cycles. Without it, a headless run goes on until you
+`--max-cycles N` stops after N cycles of clk_sys: one second is 125000000
+cycles at the default 125 MHz, and twice that for firmware that overclocks
+to 250 MHz (see [rp2040.md](rp2040.md#time)). Without it, a headless run goes on until you
 interrupt it or the firmware executes a `bkpt`.
 
 ### Scripting inputs

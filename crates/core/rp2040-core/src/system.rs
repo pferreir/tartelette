@@ -156,6 +156,8 @@ const PLL_FBDIV_INT: u32 = 0x8;
 const PLL_PRIM: u32 = 0xC;
 const XOSC_HZ: u64 = 12_000_000;
 /// CLOCKS: clk_peri's control (ENABLE, AUXSRC in bits 7:5; no divider).
+const CLK_SYS_CTRL: u32 = 0x3C;
+const CLK_SYS_DIV: u32 = 0x40;
 const CLK_PERI_CTRL: u32 = 0x48;
 /// CLOCKS: clk_adc's control (AUXSRC in bits 7:5) and divider (INT in 9:8).
 const CLK_ADC_CTRL: u32 = 0x60;
@@ -232,6 +234,10 @@ pub struct SystemBus {
     /// steps add to it, and it is applied before anything that could change
     /// which machines run (a PIO or RESETS access) and before a full sync.
     pio_owed: u64,
+    /// clk_sys, the rate the cycles count at; and whether it changed since
+    /// [`System`] last looked (the board and the USB host follow it).
+    sys_hz: u64,
+    clock_changed: bool,
     /// Device time: the cycle up to which peripherals have been brought
     /// current. Each core keeps its own clock; this one follows the earliest
     /// core that is still running.
@@ -292,6 +298,8 @@ impl SystemBus {
             touched: true,
             stream: None,
             pio_owed: 0,
+            sys_hz: CYCLES_PER_US * 1_000_000,
+            clock_changed: false,
             time: 0,
             now: 0,
         }
@@ -873,14 +881,65 @@ impl SystemBus {
     /// sources the emulator doesn't model (the ring oscillator, GPIN pins),
     /// and PLLs not set up yet, count as clk_sys.
     fn clk_peri_hz(&mut self) -> u64 {
-        const CLK_SYS_HZ: u64 = CYCLES_PER_US * 1_000_000;
         let hz = match self.clocks.read(CLK_PERI_CTRL) >> 5 & 7 {
             1 => self.pll_hz(APB_PLL_SYS),
             2 => self.pll_hz(APB_PLL_USB),
             4 => XOSC_HZ,
-            _ => CLK_SYS_HZ,
+            _ => self.sys_hz,
         };
-        if hz == 0 { CLK_SYS_HZ } else { hz }
+        if hz == 0 { self.sys_hz } else { hz }
+    }
+
+    /// clk_sys's frequency: a PLL's output through clk_sys's divider, when
+    /// it runs from one. The sources the emulator doesn't model (the ring
+    /// oscillator and clk_ref, which start-up code runs from while it sets
+    /// the PLLs up, and the GPIN pins), and PLLs not set up yet, count as
+    /// 125 MHz, so firmware that doesn't overclock runs as it always has.
+    fn clk_sys_hz(&mut self) -> u64 {
+        const DEFAULT: u64 = CYCLES_PER_US * 1_000_000;
+        let ctrl = self.clocks.read(CLK_SYS_CTRL);
+        let pll = match (ctrl & 1, ctrl >> 5 & 7) {
+            (1, 0) => self.pll_hz(APB_PLL_SYS),
+            (1, 1) => self.pll_hz(APB_PLL_USB),
+            _ => 0,
+        };
+        // DIV is INT.FRAC in 24.8 bits; 0 divides by 1.
+        let div = match self.clocks.read(CLK_SYS_DIV) as u64 {
+            0 => 256,
+            d => d,
+        };
+        match pll * 256 / div {
+            0 => DEFAULT,
+            hz => hz,
+        }
+    }
+
+    /// clk_sys is now `hz`: what turns cycles into time follows, from now
+    /// on (each first catches up to now at the old rate).
+    fn set_sys_hz(&mut self, hz: u64) {
+        let now = self.time;
+        self.timer.update(now);
+        self.timer.set_hz(hz);
+        self.rtc.set_hz(now, hz);
+        for ppb in &mut self.ppb {
+            ppb.set_cycles_per_us(hz / 1_000_000);
+        }
+        for u in &mut self.uart {
+            u.set_clk_sys(hz);
+        }
+        for s in self.spi.iter_mut() {
+            s.set_clk_sys(hz);
+        }
+        self.adc.set_clk_sys(hz);
+        self.usb.set_hz(now, hz);
+        self.sys_hz = hz;
+        self.clock_changed = true;
+        self.lines_dirty = true;
+    }
+
+    /// clk_sys: the rate the cycles count at.
+    pub fn sys_hz(&self) -> u64 {
+        self.sys_hz
     }
 
     /// clk_adc's frequency, from its mux, its divider and the PLL it may run
@@ -948,6 +1007,10 @@ impl SystemBus {
                 .set_pwm_outputs(self.pwm.pin_levels(), self.pwm.pin_enables());
         }
         if matches!(rel >> 14, APB_CLOCKS | APB_PLL_SYS | APB_PLL_USB) {
+            let hz = self.clk_sys_hz();
+            if hz != self.sys_hz {
+                self.set_sys_hz(hz);
+            }
             let hz = self.clk_peri_hz();
             for u in &mut self.uart {
                 u.set_clk_peri(hz);
@@ -1271,6 +1334,40 @@ pub struct System {
     usb_host: usbhost::Host,
     /// When the host wants to be polled next.
     usb_wake: Option<u64>,
+    /// Each clk_sys rate the run has had: the cycle it started at, the
+    /// emulated seconds by then, and the rate.
+    clock_log: Vec<(u64, f64, u64)>,
+}
+
+/// clk_sys from some cycle on: its rate, the cycle it took it at, and the
+/// emulated seconds by then. A copy turns cycles into time without the
+/// [`System`], for cycles from `at` on (or a little before: the rate is the
+/// same back to the change before).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clock {
+    pub at: u64,
+    pub secs: f64,
+    pub hz: u64,
+}
+
+impl Clock {
+    /// The clock of a run that never changed it.
+    pub const DEFAULT: Clock = Clock {
+        at: 0,
+        secs: 0.0,
+        hz: CYCLES_PER_US * 1_000_000,
+    };
+
+    /// Emulated seconds at `cycles`.
+    pub fn seconds(&self, cycles: u64) -> f64 {
+        self.secs + (cycles as f64 - self.at as f64) / self.hz as f64
+    }
+
+    /// The cycle at which `secs` emulated seconds will have passed.
+    pub fn cycle(&self, secs: f64) -> u64 {
+        let c = self.at as f64 + (secs - self.secs) * self.hz as f64;
+        (c.max(0.0) + 0.5) as u64
+    }
 }
 
 impl System {
@@ -1291,6 +1388,7 @@ impl System {
             bkpt_at: None,
             usb_host: usbhost::Host::new(CYCLES_PER_US),
             usb_wake: None,
+            clock_log: alloc::vec![(0, 0.0, CYCLES_PER_US * 1_000_000)],
         };
         sys.reset_core1();
         sys
@@ -1299,6 +1397,43 @@ impl System {
     /// Current device time in core clock cycles.
     pub fn cycles(&self) -> u64 {
         self.bus.time
+    }
+
+    /// Emulated seconds at cycle `cycles`, through the clk_sys rates the run
+    /// has had (cycles before the last change are taken at their rate).
+    pub fn seconds_at(&self, cycles: u64) -> f64 {
+        let i = self.clock_log.partition_point(|c| c.0 <= cycles).max(1) - 1;
+        let (at, secs, hz) = self.clock_log[i];
+        secs + cycles.saturating_sub(at) as f64 / hz as f64
+    }
+
+    /// Emulated seconds since power-up.
+    pub fn seconds(&self) -> f64 {
+        self.seconds_at(self.cycles())
+    }
+
+    /// clk_sys as it is now, to turn cycles into time and back.
+    pub fn clock(&self) -> Clock {
+        let &(at, secs, hz) = self.clock_log.last().unwrap();
+        Clock { at, secs, hz }
+    }
+
+    /// clk_sys: the rate the cycles count at now.
+    pub fn sys_hz(&self) -> u64 {
+        self.bus.sys_hz
+    }
+
+    /// Bring what lives outside the bus (the USB host, the board) to a new
+    /// clk_sys, and note when it changed.
+    #[cold]
+    #[inline(never)]
+    fn follow_clock(&mut self) {
+        self.bus.clock_changed = false;
+        let (now, hz) = (self.bus.time, self.bus.sys_hz);
+        let secs = self.seconds_at(now);
+        self.clock_log.push((now, secs, hz));
+        self.usb_host.set_cycles_per_us(hz / 1_000_000);
+        self.board.set_clock(now, hz);
     }
 
     /// Hold a core in reset (as the PSM does) or release it. Releasing core 1
@@ -1312,7 +1447,7 @@ impl System {
 
     /// Restart core 1 from the bootrom's reset vector.
     fn reset_core1(&mut self) {
-        self.bus.ppb[1] = Ppb::new(CYCLES_PER_US);
+        self.bus.ppb[1] = Ppb::new(self.bus.sys_hz / 1_000_000);
         self.bus.vtor[1] = 0;
         self.cores[1] = Cpu::new();
         self.cores[1].reset_from_vector_table(&mut self.bus, BOOTROM_BASE);
@@ -1410,6 +1545,7 @@ impl System {
 
     /// Plug a PCB into the pins, replacing any previous one.
     pub fn set_board(&mut self, mut board: Board) {
+        board.set_clock(self.bus.time, self.bus.sys_hz);
         board.attach(&mut self.bus.gpio);
         self.bus.gpio.take_changes();
         self.board = board;
@@ -1632,6 +1768,9 @@ impl System {
     /// device asked to be woken so its action lands at the right time for
     /// everything running (PIO sampling its pins, DMA, the cores).
     fn advance_to(&mut self, to: u64) {
+        if self.bus.clock_changed {
+            self.follow_clock();
+        }
         loop {
             let board = self.board.next_timer().filter(|&t| t <= to);
             let usb = self.usb_wake.filter(|&t| t <= to);
@@ -2808,6 +2947,35 @@ mod tests {
         assert_eq!(sys.bus.irq_lines(0) & 1, 1); // the 10 us alarm fired while idle
         sys.idle_until(now); // not in the future: ignored
         assert_eq!(sys.cores[0].cycles, now + 5000);
+    }
+
+    #[test]
+    fn an_overclocked_clk_sys_gets_its_cycles() {
+        const CLOCKS: u32 = APB_BASE + 0x8000;
+        const PLL_SYS: u32 = APB_BASE + 0x28000;
+        const TIMERAWL: u32 = APB_BASE + 0x54000 + 0x28;
+        let mut sys = boot(&[SPIN]);
+        sys.run(125_000);
+        assert_eq!(sys.bus.read32(TIMERAWL), 1000, "125 MHz to start with");
+        // As pico-sdk's set_sys_clock_khz(250000) leaves it: 12 MHz x 125
+        // / (6 x 1) from PLL_SYS, clk_sys on its aux source.
+        sys.bus.write32(PLL_SYS, 1); // CS: REFDIV 1
+        sys.bus.write32(PLL_SYS + 0x8, 125); // FBDIV_INT
+        sys.bus.write32(PLL_SYS + 0xC, 6 << 16 | 1 << 12); // PRIM: POSTDIV1, POSTDIV2
+        sys.bus.write32(CLOCKS + 0x3C, 1); // CLK_SYS_CTRL: SRC aux, AUXSRC PLL_SYS
+        assert_eq!(sys.sys_hz(), 250_000_000);
+        sys.run(250_000);
+        assert_eq!(
+            sys.bus.read32(TIMERAWL),
+            2000,
+            "a millisecond is 250000 cycles now"
+        );
+        assert!((sys.seconds() - 0.002).abs() < 1e-9, "{}", sys.seconds());
+        assert!((sys.seconds_at(125_000) - 0.001).abs() < 1e-9);
+        // Back on clk_ref (as start-up code does while it sets PLLs up): the
+        // emulator takes the unmodelled source as 125 MHz.
+        sys.bus.write32(CLOCKS + 0x3C, 0);
+        assert_eq!(sys.sys_hz(), 125_000_000);
     }
 
     #[test]

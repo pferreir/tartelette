@@ -58,6 +58,7 @@ pub const VREF: f32 = 3.3;
 const TEMP_SENSOR_V: f32 = 0.706;
 /// clk_adc when nothing better is known: the SDK's 48 MHz from PLL_USB.
 pub const DEFAULT_CLK_HZ: u64 = 48_000_000;
+/// clk_sys at reset, and while it runs from a source the emulator doesn't model.
 const CLK_SYS_HZ: u64 = CYCLES_PER_US * 1_000_000;
 
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +86,7 @@ pub struct Adc {
     origin: u64,
     paced: u64,
     clk_hz: u64,
+    clk_sys_hz: u64,
     /// Device time, set by the bus before each access.
     pub now: u64,
 }
@@ -104,6 +106,7 @@ impl Adc {
             origin: 0,
             paced: 0,
             clk_hz: DEFAULT_CLK_HZ,
+            clk_sys_hz: CLK_SYS_HZ,
             now: 0,
         }
     }
@@ -112,6 +115,7 @@ impl Adc {
     pub fn reset(&mut self) {
         *self = Self {
             clk_hz: self.clk_hz,
+            clk_sys_hz: self.clk_sys_hz,
             now: self.now,
             ..Self::new()
         };
@@ -122,9 +126,14 @@ impl Adc {
         self.clk_hz = hz.max(1);
     }
 
+    /// clk_sys, which turns clk_adc cycles into core cycles.
+    pub fn set_clk_sys(&mut self, hz: u64) {
+        self.clk_sys_hz = hz.max(1);
+    }
+
     /// Core cycles for `ticks` clk_adc cycles in units of 1/256.
     fn cycles(&self, ticks: u64) -> u64 {
-        (ticks as u128 * CLK_SYS_HZ as u128 / (self.clk_hz as u128 * 256)) as u64
+        (ticks as u128 * self.clk_sys_hz as u128 / (self.clk_hz as u128 * 256)) as u64
     }
 
     /// The pacing period in 1/256 clk_adc cycles: DIV's 1 + INT + FRAC/256,

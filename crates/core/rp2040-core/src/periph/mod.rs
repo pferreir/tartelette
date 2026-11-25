@@ -20,6 +20,18 @@ pub mod timer;
 pub mod uart;
 pub mod usb;
 
+/// `per_sec` units a second counted since cycle `base`, on a clock that
+/// goes from `old` to `new` Hz at cycle `now`: how many whole units passed
+/// by `now`, and the base cycle from which the new clock counts on, the
+/// part of a unit under way carried over.
+pub(crate) fn rebase(now: u64, base: u64, old: u64, new: u64, per_sec: u64) -> (u64, u64) {
+    let elapsed = now.saturating_sub(base) as u128;
+    let units = elapsed * per_sec as u128 / old as u128;
+    let started = (units * old as u128).div_ceil(per_sec as u128);
+    let into = (elapsed - started) * new as u128 / old as u128;
+    (units as u64, now - (into as u64).min(now))
+}
+
 pub trait Peripheral {
     /// Read the 32-bit register at byte offset `off` (0..0x1000).
     fn read(&mut self, off: u32) -> u32;

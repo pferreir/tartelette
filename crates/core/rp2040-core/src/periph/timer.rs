@@ -1,11 +1,13 @@
 //! TIMER: free-running 64-bit microsecond counter with four alarms.
 //!
-//! Time is derived from the core's cycle count (125 cycles = 1 µs), so it is
-//! deterministic. The 1 MHz tick is assumed to be running (the SDK starts it
+//! Time is derived from the core's cycle count at clk_sys's rate (125 cycles
+//! a µs at 125 MHz), so it is deterministic. The 1 MHz tick is assumed to be running (the SDK starts it
 //! from the watchdog TICK block during init; that block is not modelled).
 //! Alarm IRQs are TIMER_IRQ_0..3 = NVIC lines 0..3.
-use super::Peripheral;
+use super::{Peripheral, rebase};
 use crate::system::CYCLES_PER_US;
+
+const US_PER_SEC: u64 = 1_000_000;
 
 #[derive(Debug)]
 pub struct Timer {
@@ -14,6 +16,10 @@ pub struct Timer {
     /// Counter value at `base_cycle`.
     base_us: u64,
     base_cycle: u64,
+    /// clk_sys, which turns cycles into time, and the cycles a µs takes
+    /// when that's a whole number (0 otherwise: then the slow way).
+    hz: u64,
+    per_us: u64,
     paused: bool,
     /// Low 32 bits of the counter at the last update (for alarm matching).
     last_lo: u32,
@@ -34,6 +40,8 @@ impl Timer {
             cycles: 0,
             base_us: 0,
             base_cycle: 0,
+            hz: CYCLES_PER_US * US_PER_SEC,
+            per_us: CYCLES_PER_US,
             paused: false,
             last_lo: 0,
             read_hi: 0,
@@ -52,8 +60,32 @@ impl Timer {
         if self.paused {
             self.base_us
         } else {
-            self.base_us + (self.cycles - self.base_cycle) / CYCLES_PER_US
+            self.base_us + self.us_since_base(self.cycles)
         }
+    }
+
+    fn us_since_base(&self, cycles: u64) -> u64 {
+        let c = cycles - self.base_cycle;
+        match self.per_us {
+            // The default rate, divided by a constant (a multiply).
+            CYCLES_PER_US => c / CYCLES_PER_US,
+            0 => (c as u128 * US_PER_SEC as u128 / self.hz as u128) as u64,
+            n => c / n,
+        }
+    }
+
+    /// clk_sys changed to `hz` (as of the last update).
+    pub fn set_hz(&mut self, hz: u64) {
+        if !self.paused {
+            let (us, base) = rebase(self.cycles, self.base_cycle, self.hz, hz, US_PER_SEC);
+            (self.base_us, self.base_cycle) = (self.base_us + us, base);
+        }
+        self.hz = hz;
+        self.per_us = if hz.is_multiple_of(US_PER_SEC) {
+            hz / US_PER_SEC
+        } else {
+            0
+        };
     }
 
     /// Move time forward to core cycle count `cycles` and fire due alarms.
@@ -86,8 +118,8 @@ impl Timer {
         if self.paused {
             return None;
         }
-        let now = self.now_us() as u32;
-        let phase = (self.cycles - self.base_cycle) % CYCLES_PER_US;
+        let now_us = self.now_us();
+        let now = now_us as u32;
         (0..4)
             .filter(|i| self.armed >> i & 1 != 0)
             .map(|i| {
@@ -96,7 +128,13 @@ impl Timer {
                     0 => 1 << 32,
                     d => d as u64,
                 };
-                (d * CYCLES_PER_US).saturating_sub(phase)
+                // The first cycle the counter reads now + d.
+                let us = now_us + d - self.base_us;
+                let at = match self.per_us {
+                    0 => (us as u128 * self.hz as u128).div_ceil(US_PER_SEC as u128) as u64,
+                    n => us * n,
+                };
+                self.base_cycle + at - self.cycles
             })
             .min()
     }

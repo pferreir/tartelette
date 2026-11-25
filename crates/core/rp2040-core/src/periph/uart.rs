@@ -50,11 +50,14 @@ const FIFO_DEPTH: usize = 32;
 const RT_BITS: u64 = 32;
 
 /// The emulator's clock, which the line's times are counted in.
+/// clk_sys at reset, and while it runs from a source the emulator doesn't model.
 const CLK_SYS_HZ: u64 = crate::system::CYCLES_PER_US * 1_000_000;
 
 pub struct Uart {
     /// clk_peri, which the baud rate divisors divide.
     clk_peri_hz: u64,
+    /// clk_sys, which turns bit times into cycles.
+    clk_sys_hz: u64,
     /// Bytes transmitted since the host last took them.
     pub tx: Vec<u8>,
     tx_fifo: VecDeque<u8>,
@@ -87,6 +90,7 @@ impl Uart {
     pub fn new() -> Self {
         Self {
             clk_peri_hz: CLK_SYS_HZ,
+            clk_sys_hz: CLK_SYS_HZ,
             tx: Vec::new(),
             tx_fifo: VecDeque::new(),
             tx_shift: None,
@@ -227,6 +231,11 @@ impl Uart {
         self.clk_peri_hz = hz.max(1);
     }
 
+    /// clk_sys, which turns bit times into cycles.
+    pub fn set_clk_sys(&mut self, hz: u64) {
+        self.clk_sys_hz = hz.max(1);
+    }
+
     /// The data bits of a character (all 8 on an untimed line, which has
     /// not been set up).
     fn data_mask(&self) -> u8 {
@@ -245,7 +254,7 @@ impl Uart {
         let fbrd = if self.ibrd == 0xFFFF { 0 } else { self.fbrd };
         let div64 = (self.ibrd as u64) << 6 | fbrd as u64;
         let per = 4 * self.clk_peri_hz;
-        (self.ibrd != 0).then(|| (div64 * bits * CLK_SYS_HZ + per / 2) / per)
+        (self.ibrd != 0).then(|| (div64 * bits * self.clk_sys_hz + per / 2) / per)
     }
 
     /// Cycles one character takes on the line.
