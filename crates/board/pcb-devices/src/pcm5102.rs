@@ -61,7 +61,7 @@ pub const KIND: Kind = Kind {
 impl Pcm5102 {
     /// The sample rate, from the time between frames.
     pub fn rate(&self) -> Option<f64> {
-        (self.frame_cycles > 0).then(|| self.hz as f64 / self.frame_cycles as f64)
+        (self.frame_cycles > 0).then_some(self.hz as f64 / self.frame_cycles as f64)
     }
 
     /// A finished word of `bits` bits, as its top 16.
