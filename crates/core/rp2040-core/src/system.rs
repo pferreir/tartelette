@@ -1799,7 +1799,7 @@ impl System {
     fn advance_segment(&mut self, to: u64) {
         self.bus.stream_catch_up(to, &mut self.board);
         let from = self.bus.time;
-        if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() {
+        if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() && !self.pio_active() {
             if to > from {
                 self.bus.time = to;
                 self.bus.pio_owed += to - from;
@@ -1836,8 +1836,11 @@ impl System {
                         board: &mut self.board,
                         block,
                     };
-                    self.bus.pio[block].advance(from, to - from, &mut env);
-                    if core::mem::take(&mut self.bus.pio[block].ticked) {
+                    let pio = &mut self.bus.pio[block];
+                    let lines = (pio.irq(0), pio.irq(1));
+                    pio.advance(from, to - from, &mut env);
+                    // Only the block's interrupt outputs reach the NVIC.
+                    if core::mem::take(&mut pio.ticked) && (pio.irq(0), pio.irq(1)) != lines {
                         self.bus.lines_dirty = true;
                     }
                 }
@@ -1921,8 +1924,13 @@ impl System {
         !self.bus.gpio.has_changes()
             && !self.dma_runnable()
             && (0..2).all(|b| {
+                // A block that runs is quiet until its next tick (an event):
+                // once its synchronizer has the pads, only its dividers move
+                // before then.
+                let (pio, pads) = (&self.bus.pio[b], self.bus.gpio.pad_inputs());
                 self.bus.resets.in_reset(RESET_PIO[b])
-                    || self.bus.pio[b].parked(self.bus.gpio.pad_inputs())
+                    || pio.parked(pads)
+                    || pio.settled_inputs(pads)
             })
             && (0..2).all(|n| !self.bus.i2c[n].has_work() && !self.bus.spi[n].has_work())
     }
@@ -2016,7 +2024,16 @@ impl System {
 
     /// The cycle at which a device next changes state on its own.
     fn batch_limit(&self) -> u64 {
-        let event = self.bus.cycles_to_event().map(|c| self.bus.time + c);
+        let mut event = self.bus.cycles_to_event();
+        // A PIO block that runs is quiet only until its next tick, which a
+        // full sync steps (while the cores sleep, the PIO runs its stretch
+        // in one go instead).
+        for block in 0..2 {
+            if !self.bus.resets.in_reset(RESET_PIO[block]) {
+                event = earliest(event, self.bus.pio[block].cycles_to_tick());
+            }
+        }
+        let event = event.map(|c| self.bus.time + c);
         let timer = self.board.next_timer();
         earliest(earliest(event, timer), self.usb_wake).unwrap_or(u64::MAX)
     }

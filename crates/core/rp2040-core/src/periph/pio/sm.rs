@@ -15,6 +15,9 @@ pub(super) struct Shared {
     pub(super) fdebug: u32,
     /// Something observable changed during the current step.
     pub(super) dirty: bool,
+    /// The pads the instructions run by OUT EXEC and MOV EXEC have read
+    /// (bit n = GPIO n): what a program's memory doesn't show.
+    pub(super) exec_reads: u32,
 }
 
 impl Shared {
@@ -267,6 +270,100 @@ impl Sm {
         self.pinctrl >> 29 & 7
     }
 
+    /// The pads the instruction at `addr` of `imem` can read when this
+    /// machine runs it: as [`reads`](Self::reads), but a `MOV OSR, PINS`
+    /// counts only the pins whose bits the program shifts out of OSR before
+    /// it writes OSR again (a polling loop that reads all the pins and keeps
+    /// two, as a quadrature decoder does).
+    pub(super) fn reads_at(&self, imem: &[u16; 32], addr: usize) -> u32 {
+        let w = imem[addr] as u32;
+        let (op, src, dest, mov_op) = (w >> 13, w & 7, w >> 5 & 7, w >> 3 & 3);
+        if op != 5 || src != 0 || dest != 7 || mov_op == 3 {
+            return self.reads(imem[addr]);
+        }
+        let bits = self.osr_bits_used(imem, addr);
+        let used = match (bits, self.shiftctrl & SHIFT_OUT_RIGHT != 0) {
+            (32.., _) => !0,
+            (n, true) => (1u32 << n) - 1,
+            (n, false) => !(!0u32 >> n),
+        };
+        // OSR bit k is pin IN_BASE + k (bit-reversed by MOV's `::`).
+        let used = if mov_op == 2 {
+            used.reverse_bits()
+        } else {
+            used
+        };
+        used.rotate_left(self.in_base())
+    }
+
+    /// How many bits of OSR, written by the instruction at `from`, the
+    /// program can shift out with OUT before it writes OSR again (32 for
+    /// anything it can't follow: autopull, OSR read whole, EXEC).
+    fn osr_bits_used(&self, imem: &[u16; 32], from: usize) -> u32 {
+        if self.shiftctrl & SHIFT_AUTOPULL != 0 {
+            return 32;
+        }
+        let next = |pc: usize| match pc as u8 == self.wrap_top() {
+            true => self.wrap_bottom() as usize,
+            false => (pc + 1) % 32,
+        };
+        let mut most = 0;
+        let mut seen = alloc::collections::BTreeSet::new();
+        let mut todo = alloc::vec![(next(from), 0u32)];
+        while let Some((pc, used)) = todo.pop() {
+            if used >= 32 {
+                return 32;
+            }
+            if !seen.insert((pc, used)) {
+                continue;
+            }
+            most = most.max(used);
+            let w = imem[pc] as u32;
+            let (op, a, b) = (w >> 13, w >> 5 & 7, w & 0x1F);
+            match op {
+                // JMP: both ways unless unconditional.
+                0 => {
+                    if a != 0 {
+                        todo.push((next(pc), used));
+                    }
+                    todo.push((b as usize, used));
+                }
+                3 if a == 7 => return 32,
+                3 => todo.push((next(pc), used + if b == 0 { 32 } else { b })),
+                // PULL rewrites OSR: this path is done.
+                4 if w & 0x80 != 0 => {}
+                5 if w & 7 == 7 || a == 4 => return 32,
+                5 if a == 7 => {}
+                _ => todo.push((next(pc), used)),
+            }
+        }
+        most
+    }
+
+    /// The pads instruction `w` can read when this machine runs it (bit n =
+    /// GPIO n): WAIT GPIO and PIN, JMP PIN, IN PINS and MOV from PINS. What
+    /// OUT EXEC and MOV EXEC run is counted when they run it (see
+    /// [`Shared::exec_reads`]).
+    pub(super) fn reads(&self, w: u16) -> u32 {
+        let w = w as u32;
+        let (op, arg) = (w >> 13, w & 0x1F);
+        let from_in = |count: u32| match count {
+            0 | 32.. => !0,
+            c => ((1u32 << c) - 1).rotate_left(self.in_base()),
+        };
+        match op {
+            0 if w >> 5 & 7 == 6 => 1 << (self.execctrl >> 24 & 0x1F),
+            1 => match w >> 5 & 3 {
+                0 => 1 << arg,
+                1 => 1 << ((self.in_base() + arg) & 31),
+                _ => 0,
+            },
+            2 if w >> 5 & 7 == 0 => from_in(arg),
+            5 if w & 7 == 0 => !0,
+            _ => 0,
+        }
+    }
+
     /// The pads as seen from `IN_BASE` (rotated so IN_BASE is bit 0).
     pub(super) fn pins_in(&self, inputs: u32) -> u32 {
         inputs.rotate_right(self.in_base())
@@ -475,7 +572,10 @@ impl Sm {
                         self.isr = data;
                         self.isr_count = bits as u8;
                     }
-                    7 => self.forced_after = Some(data as u16),
+                    7 => {
+                        self.forced_after = Some(data as u16);
+                        shared.exec_reads |= self.reads(data as u16);
+                    }
                     _ => {}
                 }
                 // Autopull refills the OSR as soon as the OUT has emptied it.
@@ -556,7 +656,10 @@ impl Sm {
                     0 => shared.write_pins(self.out_base(), self.out_count(), val, false),
                     1 => self.x = val,
                     2 => self.y = val,
-                    4 => self.forced_after = Some(val as u16),
+                    4 => {
+                        self.forced_after = Some(val as u16);
+                        shared.exec_reads |= self.reads(val as u16);
+                    }
                     5 => {
                         self.pc = (val & 0x1F) as u8;
                         return Outcome::Jumped;

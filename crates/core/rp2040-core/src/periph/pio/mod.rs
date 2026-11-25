@@ -75,6 +75,9 @@ pub struct Pio {
     bypass: u32,
     /// Synchronizer stages and the pads they last saw.
     pipe: [u32; 2],
+    /// Pads some running machine's instructions can read (bit n = GPIO n):
+    /// a change anywhere else can't concern the block.
+    observed: u32,
     /// Machines that have re-evaluated their stall since anything last changed.
     settled: u8,
     /// Machines found going round a loop with no effect outside themselves,
@@ -130,6 +133,7 @@ impl Pio {
             intf: [0; 2],
             bypass: 0,
             pipe: [0; 2],
+            observed: 0,
             settled: 0,
             looping: 0,
             lap: [0; NUM_SM],
@@ -184,6 +188,9 @@ impl Pio {
     /// anything outside itself: is it back in a state it was in before?
     #[inline(never)]
     fn look_for_loop(&mut self, n: usize, at: u64) {
+        if let Search::GaveUp = self.search[n] {
+            return;
+        }
         let now = self.sm[n].snapshot();
         self.search[n] = match self.search[n] {
             Search::Fresh => Search::Looking {
@@ -262,8 +269,62 @@ impl Pio {
     /// is parked and has already seen the current pad levels.
     pub fn parked(&self, pads: u32) -> bool {
         let running = self.running();
-        running & !self.idle_machines() == 0
-            && (running == 0 || (self.pipe == [pads, pads] && self.shared.inputs == pads))
+        running & !self.idle_machines() == 0 && (running == 0 || self.caught_up(pads))
+    }
+
+    /// The synchronizer and the machines have seen `pads`, as far as the
+    /// machines can tell.
+    fn caught_up(&self, pads: u32) -> bool {
+        let obs = self.observed;
+        (self.pipe[0] ^ pads) & obs == 0
+            && (self.pipe[1] ^ pads) & obs == 0
+            && (self.shared.inputs ^ pads) & obs == 0
+    }
+
+    /// Work out [`observed`](Self::observed) after the program, the pin
+    /// mapping or which machines run changed.
+    fn find_observed(&mut self) {
+        let running = self.running();
+        self.observed = 0;
+        for (n, sm) in self.sm.iter().enumerate() {
+            if running >> n & 1 == 0 {
+                continue;
+            }
+            // Any instruction of the block's memory may be jumped to.
+            for addr in 0..IMEM_WORDS {
+                self.observed |= sm.reads_at(&self.imem, addr);
+            }
+            if let Some(w) = sm.forced {
+                self.observed |= sm.reads(w);
+            }
+            self.observed |= self.shared.exec_reads;
+        }
+    }
+
+    /// Cycles until the next clock tick of a machine that may do something
+    /// (none while every running machine is parked). Between ticks only
+    /// the dividers move, so the cycles before it can pass unstepped once
+    /// the synchronizer has the pads ([`settled_inputs`](Self::settled_inputs)).
+    pub fn cycles_to_tick(&self) -> Option<u64> {
+        let busy = self.running() & !self.idle_machines();
+        (0..NUM_SM)
+            .filter(|&n| busy >> n & 1 != 0)
+            .map(|n| {
+                let sm = &self.sm[n];
+                match sm.exec_pending() {
+                    true => 1,
+                    false => (sm.div256().saturating_sub(sm.acc) as u64)
+                        .div_ceil(256)
+                        .max(1),
+                }
+            })
+            .min()
+    }
+
+    /// The synchronizer and the machines have seen `pads`, as far as the
+    /// programs can tell.
+    pub fn settled_inputs(&self, pads: u32) -> bool {
+        self.caught_up(pads)
     }
 
     /// Some machine is running and not parked on an external condition.
@@ -292,11 +353,13 @@ impl Pio {
                 self.skip(cycles - done);
                 return;
             }
-            let caught_up = self.pipe == [pads, pads] && self.shared.inputs == pads;
+            let caught_up = self.caught_up(pads);
             // Everything is parked, the synchronizer has caught up, and the
             // machines last looked at exactly these pad levels: nothing can
             // happen until the outside world acts, so skip the rest.
             if caught_up && running & !self.idle_machines() == 0 {
+                // The pads no machine reads catch up unseen.
+                (self.pipe, self.shared.inputs) = ([pads, pads], pads);
                 self.skip(cycles - done);
                 return;
             }
@@ -331,7 +394,7 @@ impl Pio {
             }
             // Two flip-flops: the pad level from two cycles ago, unless bypassed.
             let inputs = self.bypass & pads | !self.bypass & self.pipe[1];
-            let moved = inputs != self.shared.inputs;
+            let moved = (inputs ^ self.shared.inputs) & self.observed != 0;
             self.shared.inputs = inputs;
             if moved {
                 // A parked machine has to look again at what it waits on.
@@ -357,10 +420,19 @@ impl Pio {
                 self.ticked = true;
                 forced_ran |= !self.sm[n].enabled;
                 let before = self.seen(n);
+                let exec_reads = self.shared.exec_reads;
                 let progressed = self.sm[n].tick(n, &self.imem, &mut self.shared);
+                if self.shared.exec_reads != exec_reads {
+                    // An EXEC'd instruction reads pads the program didn't show.
+                    self.observed |= self.shared.exec_reads;
+                    self.unsettle();
+                }
                 if self.seen(n) != before {
                     // Every machine may react to that, this one included.
                     self.unsettle();
+                    // It isn't going round a loop that changes nothing, so
+                    // it needn't look for one until something else moves.
+                    self.search[n] = Search::GaveUp;
                 } else if progressed {
                     // Only this machine's own state moved, which the others
                     // can't see.
@@ -492,6 +564,7 @@ impl Pio {
     fn sm_write(&mut self, n: usize, reg: u32, val: u32) {
         self.settle_dividers();
         self.sm_write_reg(n, reg, val);
+        self.find_observed();
         self.unsettle();
     }
 
@@ -529,8 +602,12 @@ impl Default for Pio {
 impl Peripheral for Pio {
     fn read(&mut self, off: u32) -> u32 {
         let v = self.read_reg(off);
-        // Anything the firmware looks at or changes may unpark a machine.
-        self.unsettle();
+        // Popping an RX FIFO makes room a stalled PUSH may be waiting for;
+        // other reads change nothing a machine can see (firmware polling
+        // FSTAT or a FIFO level mustn't keep the machines from parking).
+        if (0x020..=0x02C).contains(&off) {
+            self.unsettle();
+        }
         v
     }
 
@@ -538,6 +615,7 @@ impl Peripheral for Pio {
         // Which machines run may change: the stopped ones catch up first.
         self.settle_dividers();
         self.write_reg(off, val);
+        self.find_observed();
         self.unsettle();
     }
 }

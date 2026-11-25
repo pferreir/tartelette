@@ -1628,3 +1628,83 @@ fn a_stall_on_one_pin_holds_when_another_moves() {
     r.run(3);
     assert!(!r.pio.parked(r.env.pads));
 }
+
+#[test]
+fn pads_no_program_reads_dont_unpark_the_block() {
+    let mut r = Rig::new();
+    r.load(0, &[wait(1, 0, 3)]); // wait for GPIO3 high
+    r.enable(1);
+    r.run(100);
+    assert!(r.pio.parked(0));
+    // GPIO5 is no concern of the program's: parked at once, no stepping.
+    assert!(r.pio.parked(1 << 5));
+    r.env.pads = 1 << 5;
+    r.run(1);
+    assert!(r.pio.parked(1 << 5));
+    assert!(!r.pio.parked(1 << 5 | 1 << 3), "GPIO3 is");
+}
+
+#[test]
+fn what_each_instruction_reads() {
+    let mut sm = Sm::new();
+    sm.pinctrl = 30 << 15; // IN_BASE 30
+    sm.execctrl = 7 << 24; // JMP_PIN 7
+    assert_eq!(sm.reads(wait(1, 0, 4)), 1 << 4, "WAIT GPIO");
+    assert_eq!(
+        sm.reads(wait(1, 1, 3)),
+        1 << 1,
+        "WAIT PIN, from IN_BASE round to 1"
+    );
+    assert_eq!(sm.reads(jmp(JMP_PIN, 0)), 1 << 7, "JMP PIN");
+    assert_eq!(sm.reads(in_(0, 3)), 1 << 30 | 1 << 31 | 1, "IN PINS, 3");
+    assert_eq!(sm.reads(mov(1, 0, 0)), !0, "MOV X, PINS");
+    assert_eq!(sm.reads(out(7, 32)), 0, "OUT EXEC: counted when it runs");
+    assert_eq!(sm.reads(in_(1, 32)), 0, "IN X");
+}
+
+#[test]
+fn a_loop_reading_all_pins_for_two_only_watches_those_two() {
+    // A quadrature decoder's idle loop: read every pin into OSR, shift two
+    // out, go round while both are high.
+    let mut r = Rig::new();
+    r.load(0, &[mov(7, 1, 0), out(1, 2), jmp(1, 0)]); // MOV OSR, ~PINS; OUT X, 2; JMP !X 0
+    r.pinctrl(0, 6 << 15); // IN_BASE 6
+    let mut sm = Sm::new();
+    sm.pinctrl = 6 << 15;
+    assert_eq!(sm.reads_at(&r.pio.imem, 0), 0b11 << 6, "GPIO6 and 7");
+    r.env.pads = 0b11 << 6;
+    r.enable(1);
+    r.run(2000);
+    assert!(r.pio.parked(r.env.pads), "the loop parks");
+    // I2S on GPIO9..11 is no concern of the loop's.
+    assert!(r.pio.parked(r.env.pads | 0b111 << 9));
+    assert!(!r.pio.parked(1 << 6), "GPIO6 is");
+    // Shifting left, OUT takes OSR's top bits: IN_BASE + 30 and 31.
+    sm.shiftctrl = 0;
+    assert_eq!(sm.reads_at(&r.pio.imem, 0), (0b11u32 << 30).rotate_left(6));
+}
+
+#[test]
+fn what_exec_runs_counts_when_it_runs() {
+    // A jump table through MOV EXEC, as picodexed's encoder decodes: the
+    // program's memory shows no pin reads beyond IN; what Y holds runs.
+    let run_with = |y: u16| {
+        let mut r = Rig::new();
+        r.load(0, &[in_(0, 2), mov(4, 0, 2), jmp(JMP_ALWAYS, 0)]); // IN PINS 2; MOV EXEC Y; JMP 0
+        r.pinctrl(0, 6 << 15); // IN_BASE 6
+        r.pio.sm[0].y = y as u32;
+        r.env.pads = 1 << 12;
+        r.enable(1);
+        r.run(100);
+        r
+    };
+    assert_eq!(
+        run_with(jmp(JMP_ALWAYS, 0)).pio.observed,
+        0b11 << 6,
+        "JMP 0 reads nothing"
+    );
+    let r = run_with(wait(1, 0, 12));
+    assert_eq!(r.pio.observed, 0b11 << 6 | 1 << 12, "WAIT 1 GPIO 12 does");
+    assert!(r.pio.parked(1 << 12));
+    assert!(!r.pio.parked(0), "and the loop watches it");
+}
