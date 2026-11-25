@@ -262,8 +262,8 @@ runs natively and in WebAssembly. More in
 ## Status
 
 tartelette runs everything I have thrown at it so far, but it is a young
-project and parts of the chip are missing. Most notably ADC, PWM, the
-watchdog and the interpolators are not modelled, and nothing is
+project and parts of the chip are missing. Most notably the watchdog and
+the interpolators are not modelled, and nothing is
 cycle-accurate with respect to bus contention. If your firmware does
 something the emulator gets wrong, a minimal firmware that shows it is the
 most useful bug report.

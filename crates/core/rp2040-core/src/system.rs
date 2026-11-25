@@ -24,6 +24,7 @@ use crate::{
         i2c::I2c,
         pio::{Pio, PioEnv},
         psm::Psm,
+        pwm::Pwm,
         resets::Resets,
         rtc::Rtc,
         sio::Sio,
@@ -83,6 +84,7 @@ const APB_ROSC: u32 = 24;
 const APB_PLL_SYS: u32 = 10;
 const APB_PLL_USB: u32 = 11;
 const APB_ADC: u32 = 19;
+const APB_PWM: u32 = 20;
 const APB_TIMER: u32 = 21;
 const APB_RTC: u32 = 23;
 const APB_UART0: u32 = 13;
@@ -91,6 +93,7 @@ const APB_SPI1: u32 = 16;
 const APB_I2C0: u32 = 17;
 const APB_I2C1: u32 = 18;
 const APB_UART1: u32 = 14;
+pub const IRQ_PWM_WRAP: u32 = 4;
 pub const IRQ_USBCTRL: u32 = 5;
 pub const IRQ_PIO0_0: u32 = 7;
 pub const IRQ_PIO0_1: u32 = 8;
@@ -112,6 +115,7 @@ const APB_BLOCKS: usize = 32;
 /// RESETS bits of the ADC and the DMA controller.
 const RESET_ADC: u32 = 0;
 const RESET_DMA: u32 = 2;
+const RESET_PWM: u32 = 14;
 /// RESETS bits of PIO0 and PIO1.
 const RESET_PIO: [u32; 2] = [10, 11];
 const RESET_USBCTRL: u32 = 24;
@@ -206,6 +210,7 @@ pub struct SystemBus {
     pub clocks: Clocks,
     pub rtc: Rtc,
     pub adc: Adc,
+    pub pwm: Pwm,
     pub usb: Usb,
     /// Each core has its own NVIC/SysTick/SCB.
     pub ppb: [Ppb; 2],
@@ -277,6 +282,7 @@ impl SystemBus {
             clocks: Clocks::new(),
             rtc: Rtc::new(),
             adc: Adc::new(),
+            pwm: Pwm::new(),
             usb: Usb::new(),
             ppb: [Ppb::new(CYCLES_PER_US), Ppb::new(CYCLES_PER_US)],
             stubs,
@@ -750,6 +756,7 @@ impl SystemBus {
             | (self.pio[1].irq(1) as u32) << IRQ_PIO1_1
             | (self.usb.irq() as u32) << IRQ_USBCTRL
             | (self.adc.irq() as u32) << IRQ_ADC_FIFO
+            | (self.pwm.irq() as u32) << IRQ_PWM_WRAP
     }
 
     /// Current level of every DMA request in `needed` (bit n = TREQ n).
@@ -768,6 +775,7 @@ impl SystemBus {
             21 => self.uart[0].dreq_rx(),
             22 => self.uart[1].dreq_tx(),
             23 => self.uart[1].dreq_rx(),
+            24..=31 => self.pwm.dreq(n as usize - 24),
             32 => self.i2c[0].dreq_tx(),
             33 => self.i2c[0].dreq_rx(),
             34 => self.i2c[1].dreq_tx(),
@@ -804,6 +812,7 @@ impl SystemBus {
             e = earliest(e, until(next));
         }
         e = earliest(e, until(self.usb.next_event()));
+        e = earliest(e, until(self.pwm.next_event()));
         earliest(e, until(self.adc.next_event()))
     }
 
@@ -843,6 +852,18 @@ impl SystemBus {
             APB_ADC => {
                 self.adc.now = self.time;
                 f(&mut self.adc, off)
+            }
+            APB_PWM => {
+                // Events due by now are the system's to run, with the board
+                // seeing their edges; one left over only moves the outputs.
+                let time = self.time;
+                if self.pwm.update(time, |_, _| {}) {
+                    self.lines_dirty = true;
+                }
+                self.gpio
+                    .set_pwm_outputs(self.pwm.pin_levels(), self.pwm.pin_enables());
+                self.pwm.now = time;
+                f(&mut self.pwm, off)
             }
             b => f(&mut self.stubs[b as usize], off),
         })
@@ -918,6 +939,13 @@ impl SystemBus {
             if self.resets.in_reset(RESET_ADC) {
                 self.adc.reset();
             }
+            if self.resets.in_reset(RESET_PWM) {
+                self.pwm.reset();
+            }
+        }
+        if matches!(rel >> 14, APB_RESETS | APB_PWM) {
+            self.gpio
+                .set_pwm_outputs(self.pwm.pin_levels(), self.pwm.pin_enables());
         }
         if matches!(rel >> 14, APB_CLOCKS | APB_PLL_SYS | APB_PLL_USB) {
             let hz = self.clk_peri_hz();
@@ -1537,6 +1565,10 @@ impl System {
             let Some(t) = self.bus.dma.pick(dreq) else {
                 break;
             };
+            // A wrap is one request: the transfer it paces serves it.
+            if let pwm @ 24..=31 = self.bus.dma.view(t.channel).treq {
+                self.bus.pwm.served(pwm as usize - 24);
+            }
             let mut v = match t.bytes {
                 1 => self.bus.read8(t.read) as u32,
                 2 => self.bus.read16(t.read) as u32,
@@ -1692,6 +1724,7 @@ impl System {
         self.bus.update_uarts(to);
         self.bus.update_usb(to);
         self.update_adc(to);
+        self.update_pwm(to);
         // A sleeping core's clock keeps pace with real time.
         for (cpu, held) in self.cores.iter_mut().zip(self.held) {
             if cpu.sleeping && !held {
@@ -1715,6 +1748,29 @@ impl System {
                 .unwrap_or(if gpio.pin_level(pin) { adc::VREF } else { 0.0 })
         };
         if self.bus.adc.update(to, sample) {
+            self.bus.lines_dirty = true;
+            self.bus.touched = true;
+        }
+    }
+
+    /// Run the PWM slices' edges and wraps due by `to`, each at its own
+    /// cycle: the pins change then, and the board hears of it then.
+    fn update_pwm(&mut self, to: u64) {
+        if self.bus.pwm.next_event().is_none_or(|t| t > to) {
+            return;
+        }
+        let (gpio, board) = (&mut self.bus.gpio, &mut self.board);
+        let wrapped = self.bus.pwm.update(to, |pwm, cycle| {
+            gpio.set_pwm_outputs(pwm.pin_levels(), pwm.pin_enables());
+            for _ in 0..8 {
+                let changed = gpio.take_changes();
+                if changed == 0 {
+                    break;
+                }
+                board.service(gpio, changed, cycle);
+            }
+        });
+        if wrapped {
             self.bus.lines_dirty = true;
             self.bus.touched = true;
         }
@@ -3192,6 +3248,52 @@ mod tests {
         assert!(
             sys.cores[1].sleeping && sys.cores[1].wfe,
             "and parked again"
+        );
+    }
+
+    #[test]
+    fn pwm_drives_its_pin_and_wrap_paced_dma_sets_each_period() {
+        const PWM: u32 = 0x4005_0000;
+        let mut sys = boot(&[WFI, SPIN]);
+        sys.bus.write32(APB_BASE + 0x1_4000 + 16 * 8 + 4, 4); // GPIO16: PWM (slice 0 A)
+        let src = SRAM_BASE + 0x1000;
+        let levels: alloc::vec::Vec<u8> = [10u32, 20, 30]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        sys.bus.load(src, &levels);
+        sys.bus.write32(PWM + 0x10, 99); // TOP: 100 cycles a period
+        sys.bus.write32(PWM + 0xA8, 1); // INTE: slice 0
+        // Word items from memory into CC, one per wrap (DREQ_PWM_WRAP0).
+        dma_start(
+            &mut sys,
+            0,
+            src,
+            PWM + 0x0C,
+            3,
+            1 | 2 << 2 | 1 << 4 | 24 << 15,
+        );
+        sys.bus.write32(PWM, 1); // CSR: EN
+        let level_at = |sys: &mut System, t: u64| {
+            sys.run(t - sys.bus.time);
+            sys.bus.gpio.pin_level(16)
+        };
+        // CC is 0 for the first period; the DMA writes 10 at its wrap, which
+        // the next wrap takes: high for 10 cycles from 200, 20 from 300.
+        assert!(!level_at(&mut sys, 150));
+        assert!(level_at(&mut sys, 205));
+        assert!(!level_at(&mut sys, 212));
+        assert!(level_at(&mut sys, 318));
+        assert!(!level_at(&mut sys, 322));
+        assert!(level_at(&mut sys, 428));
+        assert!(!level_at(&mut sys, 432));
+        assert_eq!(sys.bus.read32(PWM + 0x0C), 30, "the last item");
+        assert_eq!(sys.bus.read32(DMA_BASE + 0x400), 1, "the DMA finished");
+        assert_eq!(sys.bus.read32(PWM + 0xB0), 1, "INTS: wrapped");
+        assert_eq!(
+            sys.bus.read32(PWM + 0x08),
+            32,
+            "CTR: 32 cycles after the wrap at 400"
         );
     }
 

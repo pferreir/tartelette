@@ -10,6 +10,7 @@ pub mod gpio;
 pub mod i2c;
 pub mod pio;
 pub mod psm;
+pub mod pwm;
 pub mod resets;
 pub mod rtc;
 pub mod sio;

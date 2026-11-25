@@ -10,14 +10,15 @@
 //! settings are folded into when they change ([`Masks`]): PIO programs
 //! change their outputs every few cycles, and each change is a refresh.
 //!
-//! SIO (funcsel 5) and the two PIO blocks (funcsel 6 and 7) drive pins. Other
-//! functions leave the pin undriven until the UART/SPI/I2C/PWM models feed
-//! their outputs in, though the IO_BANK0 overrides can still force a pin.
+//! SIO (funcsel 5), the two PIO blocks (funcsel 6 and 7) and the PWM slices
+//! (funcsel 4) drive pins. Other functions leave the pin undriven, though
+//! the IO_BANK0 overrides can still force a pin.
 use super::Peripheral;
 
 pub const NUM_PINS: usize = 30;
 pub const PIN_MASK: u32 = (1 << NUM_PINS) - 1;
 
+pub const FUNCSEL_PWM: u32 = 4;
 pub const FUNCSEL_SIO: u32 = 5;
 /// FUNCSEL of PIO0 and PIO1 (`FUNCSEL_PIO0 + block`).
 pub const FUNCSEL_PIO0: u32 = 6;
@@ -50,6 +51,9 @@ pub struct Gpio {
     /// What each PIO block drives onto the pads it owns (funcsel 6 / 7).
     pio_out: [u32; 2],
     pio_oe: [u32; 2],
+    /// What the PWM slices drive onto the pads that select them (funcsel 4).
+    pwm_out: u32,
+    pwm_oe: u32,
     ctrl: [u32; NUM_PINS],
     pads: [u32; NUM_PINS],
     voltage_select: u32,
@@ -73,9 +77,10 @@ pub struct Gpio {
 /// The per-pin settings of IO_BANK0 and PADS_BANK0 as one bit per pin.
 #[derive(Clone, Copy, Default)]
 struct Masks {
-    /// Pins whose function is SIO, PIO0 and PIO1.
+    /// Pins whose function is SIO, PIO0, PIO1 and PWM.
     sio: u32,
     pio: [u32; 2],
+    pwm: u32,
     /// An override (OUTOVER, OEOVER, INOVER): `inv` inverts the value, `force`
     /// replaces it with `high` (set: high, clear: low).
     out_inv: u32,
@@ -108,6 +113,7 @@ impl Masks {
             set(&mut m.sio, func == FUNCSEL_SIO);
             set(&mut m.pio[0], func == FUNCSEL_PIO0);
             set(&mut m.pio[1], func == FUNCSEL_PIO0 + 1);
+            set(&mut m.pwm, func == FUNCSEL_PWM);
             // Override fields: 0 as is, 1 inverted, 2 low, 3 high.
             for (shift, inv, force, high) in [
                 (8, &mut m.out_inv, &mut m.out_force, &mut m.out_high),
@@ -144,6 +150,8 @@ impl Gpio {
             sio_oe: 0,
             pio_out: [0; 2],
             pio_oe: [0; 2],
+            pwm_out: 0,
+            pwm_oe: 0,
             ctrl: [CTRL_RESET; NUM_PINS],
             pads: [PAD_RESET; NUM_PINS],
             voltage_select: 0,
@@ -188,6 +196,15 @@ impl Gpio {
     pub fn set_pio_outputs(&mut self, block: usize, out: u32, oe: u32) {
         if self.pio_out[block] != out || self.pio_oe[block] != oe {
             (self.pio_out[block], self.pio_oe[block]) = (out, oe);
+            self.refresh();
+        }
+    }
+
+    /// Set what the PWM slices drive (bit n = GPIO n); it only reaches pads
+    /// whose function select is PWM.
+    pub fn set_pwm_outputs(&mut self, out: u32, oe: u32) {
+        if self.pwm_out != out || self.pwm_oe != oe {
+            (self.pwm_out, self.pwm_oe) = (out, oe);
             self.refresh();
         }
     }
@@ -242,6 +259,8 @@ impl Gpio {
                 self.pio_out[block] & bit != 0,
                 self.pio_oe[block] & bit != 0,
             );
+        } else if func == FUNCSEL_PWM {
+            (out_from_func, oe_from_func) = (self.pwm_out & bit != 0, self.pwm_oe & bit != 0);
         }
         let out = match c >> 8 & 3 {
             0 => out_from_func,
@@ -273,9 +292,14 @@ impl Gpio {
         let m = &self.masks;
         let (old_pad, old_in) = (self.pad_level, self.in_level);
         let over = |v: u32, inv: u32, force: u32, high: u32| (v ^ inv) & !force | high;
-        let func_out =
-            self.sio_out & m.sio | self.pio_out[0] & m.pio[0] | self.pio_out[1] & m.pio[1];
-        let func_oe = self.sio_oe & m.sio | self.pio_oe[0] & m.pio[0] | self.pio_oe[1] & m.pio[1];
+        let func_out = self.sio_out & m.sio
+            | self.pio_out[0] & m.pio[0]
+            | self.pio_out[1] & m.pio[1]
+            | self.pwm_out & m.pwm;
+        let func_oe = self.sio_oe & m.sio
+            | self.pio_oe[0] & m.pio[0]
+            | self.pio_oe[1] & m.pio[1]
+            | self.pwm_oe & m.pwm;
         let out = over(func_out, m.out_inv, m.out_force, m.out_high);
         let oe = over(func_oe, m.oe_inv, m.oe_force, m.oe_high);
         // The chip drives the pad, else the board does, else the pulls; with
