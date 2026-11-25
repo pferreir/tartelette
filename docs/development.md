@@ -130,7 +130,9 @@ firmware's side; this is how it does it, in
 Three flags decide how much of that a step needs:
 
 - `quiet` (`System`): only the timer, SysTick and PIO dividers move on
-  their own. Recomputed by `is_quiet` after each full sync.
+  their own. Recomputed by `is_quiet` after each full sync. A running PIO
+  block keeps a segment on the quiet path only up to its next tick
+  (`pio_cycles_to_tick`, which counts `pio_owed`).
 - `touched` (`SystemBus`): an access may have started work in a device the
   quiet path doesn't advance (`needs_sync`: DMA, PIO, buses, GPIO,
   RESETS). It forces a full sync.

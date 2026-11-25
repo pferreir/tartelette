@@ -518,6 +518,16 @@ impl SystemBus {
             | ((needed & 2 != 0) as u8 * spi::OUT_DREQ_RX)
     }
 
+    /// Cycles from `time` to the next tick of a running PIO block, counting
+    /// the cycles its dividers are still owed.
+    fn pio_cycles_to_tick(&self) -> Option<u64> {
+        (0..2)
+            .filter(|&b| !self.resets.in_reset(RESET_PIO[b]))
+            .filter_map(|b| self.pio[b].cycles_to_tick())
+            .min()
+            .map(|t| t.saturating_sub(self.pio_owed))
+    }
+
     /// Let the PIO dividers catch up with the quiet steps taken so far.
     fn flush_pio(&mut self) {
         let cycles = core::mem::take(&mut self.pio_owed);
@@ -1962,7 +1972,16 @@ impl System {
     fn advance_segment(&mut self, to: u64) {
         self.bus.stream_catch_up(to, &mut self.board);
         let from = self.bus.time;
-        if self.quiet && !self.bus.touched && !self.bus.gpio.has_changes() && !self.pio_active() {
+        // A running PIO block only moves its dividers between ticks: they
+        // build up in `pio_owed` as long as no tick falls in the segment.
+        if self.quiet
+            && !self.bus.touched
+            && !self.bus.gpio.has_changes()
+            && self
+                .bus
+                .pio_cycles_to_tick()
+                .is_none_or(|t| to.saturating_sub(from) < t)
+        {
             if to > from {
                 self.bus.time = to;
                 self.bus.pio_owed += to - from;
@@ -2414,11 +2433,7 @@ impl System {
         // A PIO block that runs is quiet only until its next tick, which a
         // full sync steps (while the cores sleep, the PIO runs its stretch
         // in one go instead).
-        for block in 0..2 {
-            if !self.bus.resets.in_reset(RESET_PIO[block]) {
-                event = earliest(event, self.bus.pio[block].cycles_to_tick());
-            }
-        }
+        event = earliest(event, self.bus.pio_cycles_to_tick());
         let event = event.map(|c| self.bus.time + c);
         let timer = self.board.next_timer();
         earliest(earliest(event, timer), self.usb_wake).unwrap_or(u64::MAX)
@@ -2576,10 +2591,8 @@ impl System {
                 // and runs a stretch of them in one go: to its next tick, or
                 // further while it ticks often. The DMA moves an item a cycle.
                 let pio_tick = self.pio_active().then(|| {
-                    (0..2)
-                        .filter(|&b| !self.bus.resets.in_reset(RESET_PIO[b]))
-                        .filter_map(|b| self.bus.pio[b].cycles_to_tick())
-                        .min()
+                    self.bus
+                        .pio_cycles_to_tick()
                         .map_or(DMA_SLICE, |t| t.max(DMA_SLICE))
                 });
                 let slice = match (event, self.dma_runnable(), pio_tick) {
