@@ -175,6 +175,12 @@ pub struct Host {
 }
 
 impl Host {
+    /// The device's clock changed: now `cycles_per_us`.
+    pub fn set_cycles_per_us(&mut self, cycles_per_us: u64) {
+        self.cycles_per_us = cycles_per_us.max(1);
+        self.cycles_per_ms = self.cycles_per_us * 1000;
+    }
+
     /// A host whose clock runs at `cycles_per_us`.
     pub fn new(cycles_per_us: u64) -> Self {
         Self {
