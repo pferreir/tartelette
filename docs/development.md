@@ -37,7 +37,10 @@ touches the outside world (files, sockets, sound, MIDI, the pty) is in
 `tartelette-runtime` has no UI: what the front panel, the headless runner and
 tests share (a `Session` and its clock, board loading, the far ends of the
 USB cable and UART lines) lives there, and `tartelette` adds the command
-line, the window and the sound card. A `Session` hands what the firmware
+line, the window and the sound card. Front ends drive a `Session` with
+`step` (up to a number of cycles, in `System::run` chunks of 250 000, until
+a wall-clock deadline: the window paces it with `run::Clock`) or `advance`
+(one `System::run`, as headless does). A `Session` hands what the firmware
 produced (serial bytes, board events, the defmt log, warnings) to its front
 end as an `Output` after each step: the front panel keeps a capped history
 of it for the dock, headless prints it. Anything that must hear board events
@@ -69,6 +72,121 @@ For it to show on the front panel, give it a widget: a `Widget` variant,
 picked for its kind in `crates/app/tartelette/src/panel/layout.rs`, and a
 file in `panel/widgets/` that draws it.
 
+## How a run advances
+
+[rp2040.md](rp2040.md#fast-paths) says what the scheduler does from the
+firmware's side; this is how it does it, in
+`crates/core/rp2040-core/src/system.rs`.
+
+`System::run(max_cycles)` loops until device time reaches the end:
+
+1. `next_core` wakes sleeping cores that have an interrupt or event, and
+   picks the running core with the lowest cycle count (core 0 on a tie).
+2. If `can_batch`, `run_batch` runs that core's instructions back to back
+   (`Cpu::run_threaded`) until the next device event (`batch_limit`), the
+   other core's turn, or an access that needs the system. Otherwise
+   `step_core` runs one instruction, or takes a pending exception.
+3. `advance_to` brings the devices up to the earliest running core,
+   stopping at each board part's timer and each USB host poll on the way.
+   `advance_segment` does the work between those: the bus transfers the
+   firmware queued, one DMA item a cycle, the PIO blocks, then
+   `advance_clocks` (timer, SysTick, UARTs, SPI wires, USB frames, ADC,
+   PWM). Board parts hear of pin changes in `sync_board`, and the cores'
+   NVIC inputs are recomputed in `refresh_core_views`.
+4. With every core asleep, it skips to the next event (`cycles_to_event`,
+   board timers, the USB host), in `DMA_SLICE` steps while the DMA can move
+   something and to a running PIO block's next tick otherwise; it stops
+   with `StopReason::Sleeping` when there is no next event.
+
+```text
+  System::run(max_cycles)
+      |
+      v
+  next_core ---- no core running ----> skip ahead (advance_to) to the next
+      |                                event, or stop with Sleeping
+      | the running core with the
+      | lowest cycle count
+      v
+  can_batch? --yes--> run_batch, then try_spin -----+
+      |                                             |
+      no                                            |
+      v                                             |
+  step_core: one instruction or exception ----------+
+                                                    |
+                                                    v
+                          advance_to(earliest running core)
+                              | stops at board timers and USB polls
+                              v
+                          advance_segment
+                              quiet: advance_clocks
+                              else:  buses, DMA, PIO, advance_clocks,
+                                     refresh_core_views, sync_board
+                              |
+      +-----------------------+
+      v
+  bkpt, fault, or the end reached? stop; else back to next_core
+```
+
+Three flags decide how much of that a step needs:
+
+- `quiet` (`System`): only the timer, SysTick and PIO dividers move on
+  their own. Recomputed by `is_quiet` after each full sync.
+- `touched` (`SystemBus`): an access may have started work in a device the
+  quiet path doesn't advance (`needs_sync`: DMA, PIO, buses, GPIO,
+  RESETS). It forces a full sync.
+- `lines_dirty` (`SystemBus`): an interrupt line may have moved, so the
+  NVIC inputs need recomputing. Every MMIO write sets it, and the reads
+  with side effects (`read_moves_lines`).
+
+During a batch, devices are behind the core: `SystemBus::now` is the cycle
+the current instruction starts on, `time` the cycle the devices were
+brought to. `sync_to_now` catches up the timer, SysTick, UARTs and USB
+before an access that could see them, and PIO dividers build up in
+`pio_owed` until a PIO, DMA or RESETS access (`flush_pio_for`) or a full
+sync:
+
+```text
+  An instruction in a batch is about to access a register:
+
+  devices   ----------|                         time
+  core 0    ----------+-+-+-+-+-+-+-+-+-+-+-+-|  now: where it starts
+
+  sync_to_now: the timer, SysTick, UARTs, SPI wires and USB catch up
+
+  devices   ----------------------------------|  time = now
+  PIO       ----------|<------ pio_owed ----->|  applied on a PIO, DMA or
+                                                 RESETS access, or a sync
+```
+
+The other two fast paths sit on top: `Stream` (a DMA channel feeding a
+timed SPI, which `find_stream` sets up for one batch, and which catches up
+through `StreamBus` before any access that could see it), and spinning
+(`try_spin`, `try_lap` on a `DryBus`, `materialize` to bring the core
+back; the comment above `try_spin` has the rules).
+
+### A peripheral that keeps time
+
+A block that changes state on its own (a timed FIFO, a counter, a
+conversion) has to take part in all of this, or batches will run past its
+events:
+
+- report its next event in `SystemBus::cycles_to_event`;
+- catch up in `advance_clocks`, and in `sync_to_now` if the cores read it
+  often;
+- set `lines_dirty` when its interrupt changes, and `touched` when it
+  raises a DMA request or needs the DMA or a board part to act;
+- add its DREQs to `dreq_mask` and its interrupt to `irq_lines`;
+- make sure `needs_sync` and `read_moves_lines` cover its registers;
+- follow clk_sys changes in `SystemBus::set_sys_hz` if it counts in
+  cycles;
+- add firmware that uses it to
+  `crates/app/tartelette/tests/batch_equivalence.rs`, which runs it with
+  `batching` off (every device synced after every instruction) and on, and
+  compares the two cycle by cycle.
+
+For performance-sensitive changes there, compare `firmware/tests/cpu-bench`
+before and after.
+
 ## Tests
 
 ```sh
@@ -85,7 +203,8 @@ from `CYW43_FIRMWARE_DIR` or the newest Embassy checkout in Cargo's git cache.
 To check that the core still builds for the browser:
 
 ```sh
-cargo build -p armv6m -p pcb -p pcb-devices -p rp2040-core -p tartelette --target wasm32-unknown-unknown
+cargo build -p armv6m -p pcb -p pcb-devices -p sdimage -p rp2040-core \
+    -p tartelette-runtime -p tartelette --target wasm32-unknown-unknown
 ```
 
 `.github/workflows/ci.yml` runs both, along with `cargo fmt --check` and

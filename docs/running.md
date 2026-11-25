@@ -58,11 +58,22 @@ and the edge between them and the panel resizes them) are:
 Firmware, board and shield files are watched; save one and tartelette reloads
 it and starts over.
 
+The speed (0.01× to 4×, or **max**, as fast as the host can) is emulated
+time per real second. When the host can't keep up, the emulation runs
+slower than asked and the speed shown in the top bar drops: nothing inside
+it is dropped or hurried: the firmware still gets every cycle, only later
+in real time. After a stall (the window dragged, the tab in the background) it
+makes up at most a tenth of a second of real time, and lets the rest go,
+so the run doesn't race ahead to make up for it.
+
 ## Headless
 
 `--headless` runs without a window, as fast as it can unless `--speed` paces
 it (`--speed 1` is real time; useful when the firmware talks to a real network
-or Bluetooth device).
+or Bluetooth device). Pacing only holds the run back: emulated time never
+gets ahead of real time times the speed, and a host too slow for it just
+falls behind. Either way the run is the same, except for input from outside
+the emulator (see [rp2040.md](rp2040.md#determinism)).
 
 Output:
 
@@ -103,7 +114,23 @@ Each device's page in [devices/](devices/) lists the events it emits.
 `--max-cycles N` stops after N cycles of clk_sys: one second is 125000000
 cycles at the default 125 MHz, and twice that for firmware that overclocks
 to 250 MHz (see [rp2040.md](rp2040.md#time)). Without it, a headless run goes on until you
-interrupt it or the firmware executes a `bkpt`.
+interrupt it, or until:
+
+- a core executes a `bkpt`;
+- an instruction faults, with `--stop-on-fault` (see [Faults](#faults));
+- both cores are asleep (`WFI`, `WFE`, or core 1 still waiting in the
+  bootrom) and nothing can wake them: no interrupt is coming from a timer
+  or another peripheral, and no part has anything scheduled.
+
+The run doesn't stop for that last reason while something from outside can
+still wake the firmware. A `--press` or `--input` still to come: emulated
+time skips ahead to it. Bytes on their way into a UART: they arrive. Stdin
+still open (to a UART, or to the USB serial port once the firmware is a USB
+device), or a UART or USB bridge: emulated time goes on in 1 ms steps, at
+about real time, waiting for the other side.
+
+A line on stderr at the end says why the run stopped and after how many cycles,
+for example `[stopped: asleep, nothing can wake it after 1250431 cycles]`.
 
 ### Scripting inputs
 

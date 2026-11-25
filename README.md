@@ -52,7 +52,8 @@ with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-ha
 - Emulates the parts on the board from a [board file](docs/boards.md). The
   ones available today are listed below.
 - Is deterministic: the same firmware and inputs give the same run, to the
-  cycle. That's what makes the headless mode useful for tests.
+  cycle. That's what makes the headless mode useful for tests (see
+  [what counts as the same inputs](docs/rp2040.md#determinism)).
 - Runs natively (Linux, macOS, Windows) or in the browser (WebAssembly).
 - Reads the firmware's defmt log over RTT, as a debug probe would.
 - Bridges the emulated USB device to your computer: its serial port as a

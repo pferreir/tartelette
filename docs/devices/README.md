@@ -30,6 +30,14 @@ the code.
 **Pins** are GPIO numbers, 0 to 29. A pin belongs to one part, except where a
 page says it can be shared.
 
+**Timing**: a part reacts to a pin change on the cycle it happens. If its
+reaction moves a pin another part watches, that part reacts on the same
+cycle, and so on for up to eight rounds; whatever is still changing after
+that carries on at the next instruction. A part that does something later
+(a WS2812 chain latching its frame, an expander's switch bouncing)
+schedules it in cycles, so
+it lands on the same cycle on every run.
+
 **Buses**: parts with a `bus` key sit on an SPI or I2C controller declared
 under `[buses]`. A part with no `bus` is on the board but connected to
 nothing, which is occasionally useful while you are wiring up a board file.
