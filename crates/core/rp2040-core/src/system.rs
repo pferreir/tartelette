@@ -46,7 +46,9 @@ const MAX_LAP: u64 = 5_000;
 /// Cycles a core waits before trying again after a loop didn't qualify.
 const SPIN_BACKOFF: u64 = 200_000;
 
-/// clk_sys is fixed at the SDK default of 125 MHz.
+/// clk_sys at reset and whenever it runs from a source that isn't modelled
+/// (the ring oscillator, clk_ref): the SDK default of 125 MHz. Firmware may
+/// run it from a PLL at another rate: see [`System::sys_hz`].
 pub const CYCLES_PER_US: u64 = 125;
 
 pub const BOOTROM_BASE: u32 = 0x0000_0000;

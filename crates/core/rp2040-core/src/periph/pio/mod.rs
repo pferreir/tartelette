@@ -17,10 +17,12 @@
 //! it then stalls, the pad merge lets the highest-numbered machine win a
 //! cycle, inputs pass a two-cycle synchronizer unless bypassed, and
 //! instructions written to `SMx_INSTR` (or run by `OUT/MOV EXEC`) do not
-//! advance the program counter. Not modelled: `OUT_STICKY`, `INLINE_OUT_EN`
-//! (stored only), the `IRQ` flags' routing to the system IRQs 4-7 (they are
-//! machine-visible only), and exact behaviour of simultaneous cross-machine
-//! reads (a machine sees the effects of lower-numbered ones in the same cycle).
+//! advance the program counter. IRQ flags 0-3 show in INTR and reach the
+//! block's two system interrupt lines through INTE/INTF; flags 4-7 are
+//! machine-visible only, as on the chip. Not modelled: `OUT_STICKY`,
+//! `INLINE_OUT_EN` (stored only), and exact behaviour of simultaneous
+//! cross-machine reads (a machine sees the effects of lower-numbered ones in
+//! the same cycle).
 use sm::{Shared, Sm, Snapshot};
 
 use super::Peripheral;
