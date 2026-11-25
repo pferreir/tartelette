@@ -12,7 +12,8 @@
 #
 # MICROPYTHON_UF2 adds the MicroPython demo from that file; MICROPYTHON=fetch
 # downloads it (RPI_PICO, the version below) instead. Without either, the
-# page leaves the MicroPython card out. REPO_URL is where the page's source
+# page leaves the MicroPython card out. PICODEXED_UF2 and PICODEXED=fetch do
+# the same for picodexed (its prebuilt UF2, at the commit below). REPO_URL is where the page's source
 # links go (in GitHub Actions, the repository the workflow runs in).
 #
 # Needs: the nightly toolchain with thumbv6m-none-eabi and
@@ -23,6 +24,8 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 out=$(realpath -m "${1:-$root/target/site}")
 MICROPYTHON_VERSION=${MICROPYTHON_VERSION:-20260824-v1.29.0}
+PICODEXED_COMMIT=${PICODEXED_COMMIT:-affa9df018e8eaa88450db329a12f6350779480d}
+PICODEXED_FILE=${PICODEXED_FILE:-picodexed-v0.03.uf2}
 
 if [[ -z ${REPO_URL:-} && -n ${GITHUB_REPOSITORY:-} ]]; then
     REPO_URL=${GITHUB_SERVER_URL:-https://github.com}/$GITHUB_REPOSITORY
@@ -42,7 +45,7 @@ rm -f "$out/emu/.trunk-lock"
 echo "build-site: the demo firmware" >&2
 (cd "$root/firmware/showcase" && env -u RUSTFLAGS cargo build --release --bins)
 bins=$root/target/firmware/showcase/thumbv6m-none-eabi/release
-for demo in picosh lumen groovebox stardust spectra; do
+for demo in picosh lumen groovebox groovebox-audio stardust spectra; do
     # Debug info off, the defmt symbols kept: the log still decodes.
     "$objcopy" --strip-debug "$bins/$demo" "$out/demos/$demo.elf"
 done
@@ -61,6 +64,17 @@ elif [[ ${MICROPYTHON:-} == fetch ]]; then
     micropython=1
 fi
 
+picodexed=
+if [[ -n ${PICODEXED_UF2:-} ]]; then
+    cp "$PICODEXED_UF2" "$out/demos/picodexed.uf2"
+    picodexed=1
+elif [[ ${PICODEXED:-} == fetch ]]; then
+    echo "build-site: picodexed $PICODEXED_FILE" >&2
+    curl -fsSL -o "$out/demos/picodexed.uf2" \
+        "https://github.com/diyelectromusic/picodexed/raw/$PICODEXED_COMMIT/build/$PICODEXED_FILE"
+    picodexed=1
+fi
+
 echo "build-site: the landing page and the documentation" >&2
 # site/index.md and docs/ become HTML (tools/sitedocs); the rest of site/
 # (the screenshots) is copied as is.
@@ -70,6 +84,7 @@ cp "$root/assets/tartelette.png" "$out/img/logo.png"
 sitedocs=(--var "MICROPYTHON_VERSION=${MICROPYTHON_VERSION#*-}")
 # Without MicroPython, drop its entry from the page.
 [[ -n $micropython ]] || sitedocs+=(--drop micropython)
+[[ -n $picodexed ]] || sitedocs+=(--drop picodexed)
 (cd "$root" && env -u RUSTFLAGS cargo run -q -p sitedocs -- . "$out" "${REPO_URL%/}" "${sitedocs[@]}")
 
 touch "$out/.nojekyll"

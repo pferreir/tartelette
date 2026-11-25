@@ -118,7 +118,10 @@ flag it still works, about 20% slower.
 landing page, the web app under `emu/`, the `firmware/showcase` demos under
 `demos/`, and the documentation under `docs/`. `MICROPYTHON=fetch` adds the
 official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
-one. Look at it with `python3 -m http.server -d target/site`.
+one; `PICODEXED=fetch` and `PICODEXED_UF2=FILE` do the same for
+[picodexed](https://github.com/diyelectromusic/picodexed)'s prebuilt UF2
+(on `firmware/showcase/boards/picodexed.toml`). Without them, the page leaves
+those cards out. Look at it with `python3 -m http.server -d target/site`.
 
 The landing page's text is `site/index.md`, and the documentation is the
 Markdown in `docs/`. `tools/sitedocs` (pulldown-cmark) turns both into HTML,

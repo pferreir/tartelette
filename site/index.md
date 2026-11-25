@@ -17,8 +17,8 @@ The demo site's landing page. tools/sitedocs turns it into index.html
   right. A quote in it is shown as small print.
 - What follows the closing horizontal rule is the footer.
 - `{{NAME}}` is replaced by the build (REPO_URL, MICROPYTHON_VERSION), and
-  an entry between the micropython comments is dropped when the build
-  has no MicroPython.
+  an entry between the micropython (or picodexed) comments is dropped when
+  the build has no MicroPython (or picodexed).
 
 Links are written relative to this file, so they work on GitHub too.
 -->
@@ -48,7 +48,7 @@ To try your own firmware, read about [board files](../docs/boards.md) and
 Drum machine and bass line, 16 steps. The gates and the pitch CV come out of
 the board as voltages, and tartelette's test synth turns them back into sound:
 kick, snare and hats from the expander, a saw wave tracking the DAC. Switch
-**Sound** on in the Synth tab.
+**Sound** on in the toolbar.
 
 - Board: custom: ST7789, MCP23008, DAC8165, encoder
 - Uses: I2C · SPI+DMA · PIO encoder · bit&#8209;banged DAC · 2 async tasks
@@ -141,6 +141,27 @@ Pin(25, Pin.OUT).on()
 [micropython.org](https://micropython.org)
 <!-- /micropython -->
 
+<!-- picodexed -->
+### picodexed
+
+![picodexed: its OLED showing the voice, a MIDI keyboard, the I2S DAC and the speaker](img/picodexed.png)
+
+[picodexed](https://github.com/diyelectromusic/picodexed), a DX7-style FM
+synth on the Dexed engine, as its author builds it: the prebuilt UF2,
+downloaded as is. It overclocks to 250 MHz, plays 16 voices at 24 kHz into a
+PCM5102 over PIO I2S, and shows the voice on an SSD1306 OLED. Switch
+**Sound** on in the toolbar, give it about five seconds to start, then play
+the keys, or a MIDI keyboard through **MIDI in…**. The knob picks the voice.
+
+- Board: custom: SSD1306, PCM5102, MIDI in, encoder
+- Uses: overclocking · PIO I2S + DMA · both cores · I2C · UART MIDI
+- Keys: click the keyboard; `←` `→` voice
+
+[Run](emu/?firmware=../demos/picodexed.uf2&board=../demos/picodexed.toml)
+[picodexed.toml](../firmware/showcase/boards/picodexed.toml)
+[github.com/diyelectromusic/picodexed](https://github.com/diyelectromusic/picodexed)
+<!-- /picodexed -->
+
 ## Running locally
 
 The native build can do a few things a browser can't: put the Pico W on your
@@ -154,7 +175,7 @@ up as a MIDI device. [How to run it](../docs/running.md).
 ```sh
 cargo install --locked --path crates/app/tartelette
 cd firmware/showcase
-cargo run --release --bin groovebox    # stardust, lumen, spectra, picosh
+cargo run --release --bin groovebox    # groovebox-audio, stardust, lumen, spectra, picosh
 cargo run --release --bin stardust -- \
     --headless --log --max-cycles 1000000000
 ```
