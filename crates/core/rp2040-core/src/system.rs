@@ -2439,15 +2439,42 @@ impl System {
         earliest(earliest(event, timer), self.usb_wake).unwrap_or(u64::MAX)
     }
 
-    /// Like `step_core`, but keeps executing `core` while the devices can
-    /// be left alone: it stays the earliest core, no device event is due,
-    /// and no register access needs a full sync. Timer, SysTick and PIO
-    /// dividers are brought up to date by the bus when an access looks at
-    /// them, and everything else catches up once at the end.
-    fn run_batch(&mut self, core: usize, end: u64) {
-        let other = 1 - core;
+    /// Like `step_core`, but keeps executing while the devices can be left
+    /// alone: no device event is due, and no register access needs a full
+    /// sync. Timer, SysTick and PIO dividers are brought up to date by the
+    /// bus when an access looks at them, and everything else catches up
+    /// once at the end. When both cores run, they take turns within the
+    /// batch as they would from one batch to the next, the devices left
+    /// behind meanwhile. Returns the core that ran last.
+    fn run_batch(&mut self, mut core: usize, end: u64) -> usize {
         self.bus.stream = self.bus.find_stream();
         let mut limit = self.batch_limit();
+        // (The SPI stream catches up in time order: one core at a time.)
+        while self.run_turn(core, end, &mut limit) && self.bus.stream.is_none() {
+            core = 1 - core;
+        }
+        self.bus.core = 0;
+        let running = (0..2)
+            .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
+            .map(|i| self.cores[i].cycles)
+            .min();
+        self.advance_to(
+            running
+                .unwrap_or(self.cores[core].cycles)
+                .max(self.bus.time),
+        );
+        // Caught up to the devices' time: from here the SPI is followed
+        // frame by frame again.
+        self.bus.stream = None;
+        core
+    }
+
+    /// Run `core` in a batch while it stays the earliest core. Returns
+    /// whether it stopped only because the other core's turn came, before
+    /// `limit` and `end`.
+    #[inline]
+    fn run_turn(&mut self, core: usize, end: u64, limit: &mut u64) -> bool {
+        let other = 1 - core;
         self.bus.core = core;
         loop {
             let cpu = &mut self.cores[core];
@@ -2476,7 +2503,7 @@ impl System {
                         false => u64::MAX,
                     };
                     let cpu = &mut self.cores[core];
-                    let until = limit.min(end).min(turn);
+                    let until = (*limit).min(end).min(turn);
                     if self.bus.stream.is_some() {
                         let mut bus = StreamBus {
                             bus: &mut self.bus,
@@ -2503,8 +2530,8 @@ impl System {
             if !rare {
                 let o = &self.cores[other];
                 let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
-                if c >= limit || c >= end || other_first {
-                    break;
+                if c >= *limit || c >= end || other_first {
+                    return other_first && c < *limit && c < end;
                 }
                 continue;
             }
@@ -2523,27 +2550,16 @@ impl System {
                 stop = o.sleeping
                     && !self.held[other]
                     && (self.bus.ppb[other].wakes_core() || (o.wfe && o.event));
-                limit = self.batch_limit();
+                *limit = self.batch_limit();
+            }
+            if stop || c >= *limit || c >= end {
+                return false;
             }
             let o = &self.cores[other];
-            let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
-            if stop || c >= limit || c >= end || other_first {
-                break;
+            if !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core) {
+                return true;
             }
         }
-        self.bus.core = 0;
-        let running = (0..2)
-            .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
-            .map(|i| self.cores[i].cycles)
-            .min();
-        self.advance_to(
-            running
-                .unwrap_or(self.cores[core].cycles)
-                .max(self.bus.time),
-        );
-        // Caught up to the devices' time: from here the SPI is followed
-        // frame by frame again.
-        self.bus.stream = None;
     }
 
     /// Advance the system by one instruction of whichever core is next, or
@@ -2604,12 +2620,17 @@ impl System {
                 self.advance_to((self.bus.time + slice.max(1)).min(end));
                 continue;
             };
-            if self.can_batch() {
-                self.run_batch(core, end);
-                self.try_spin(core);
-            } else {
-                self.step_core(core);
-            }
+            let core = match self.can_batch() {
+                true => {
+                    let core = self.run_batch(core, end);
+                    self.try_spin(core);
+                    core
+                }
+                false => {
+                    self.step_core(core);
+                    core
+                }
+            };
             if let Some(n) = self.cores[core].bkpt.take() {
                 self.bkpt_at = Some((core, self.cores[core].pc.wrapping_sub(2)));
                 self.materialize_all();

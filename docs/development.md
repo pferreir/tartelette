@@ -83,9 +83,11 @@ firmware's side; this is how it does it, in
 1. `next_core` wakes sleeping cores that have an interrupt or event, and
    picks the running core with the lowest cycle count (core 0 on a tie).
 2. If `can_batch`, `run_batch` runs that core's instructions back to back
-   (`Cpu::run_threaded`) until the next device event (`batch_limit`), the
-   other core's turn, or an access that needs the system. Otherwise
-   `step_core` runs one instruction, or takes a pending exception.
+   (`Cpu::run_threaded`) until the next device event (`batch_limit`) or an
+   access that needs the system. On the other core's turn, `run_turn`
+   returns and the batch carries on with that core, without syncing the
+   devices in between. Otherwise `step_core` runs one instruction, or takes
+   a pending exception.
 3. `advance_to` brings the devices up to the earliest running core,
    stopping at each board part's timer and each USB host poll on the way.
    `advance_segment` does the work between those: the bus transfers the
