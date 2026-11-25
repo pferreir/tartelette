@@ -119,6 +119,7 @@ unexpected exceptions, register and UART0 helpers), `tests/link.ld` and
 | `io-test`         | SIO outputs, pad pulls, input loopback, edge interrupts | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `irq-timer`       | TIMER alarms, SysTick, PendSV, WFI | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `batch-timer`     | interrupts landing on the exact cycle while the core spins | `tests/batch_equivalence.rs` |
+| `spin-test`       | polling loops the emulator skips ahead through, ended by a timer interrupt (polling under a spinlock with interrupts masked), a DMA write fed by PIO and core 1 waking, each on the exact cycle | `tests/batch_equivalence.rs` |
 | `i2c-test`        | I2C1 against an MCP23008 and its interrupt line | `tests/uart_hello.rs` |
 | `spi-dma-test`    | SPI0 and DMA against an ST7789 | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `sd-test`         | an SD card on SPI1 with DMA and CRCs | `tests/uart_hello.rs` |

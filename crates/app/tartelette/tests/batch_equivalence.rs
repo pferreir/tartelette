@@ -135,6 +135,15 @@ fn alarms_rearmed_while_spinning_match_unbatched() {
     compare("batch-timer", 200_000, &[1_000_000]);
 }
 
+/// Core 0 polls memory while core 1 sleeps, which batched runs skip ahead
+/// through: a timer interrupt, a DMA write and core 1 waking must each find
+/// it where it would have been.
+#[test]
+fn polling_loops_skipped_match_unbatched() {
+    compare("spin-test", 130_000, SPACING);
+    compare("spin-test", 130_000, &[1_000_000]);
+}
+
 /// With a display on the bus, the DMA streams of `spi-dma-test` run the
 /// frames on their own during batches (see `System`'s DMA streams): the
 /// display must get the same pixels, and report them at the same cycles, as

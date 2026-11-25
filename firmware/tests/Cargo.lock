@@ -80,6 +80,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin-test"
+version = "0.1.0"
+dependencies = [
+ "testrt",
+]
+
+[[package]]
 name = "testrt"
 version = "0.1.0"
 
