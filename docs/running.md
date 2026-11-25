@@ -120,7 +120,7 @@ expander low. The actions each device takes are on its page.
   or PPM depending on the extension.
 - `--dump-paper NAME=FILE` saves what the mock cat printer printed (with `--bt
   mock`), PNG or PBM.
-- `--wav FILE` records the test synth (see below).
+- `--wav FILE` records the test synth and the board's speakers (see below).
 - `--wifi-trace NAME` prints the last 1024 bus transactions with the Wi-Fi
   chip at the end, for debugging drivers.
 
@@ -250,7 +250,7 @@ On the command line:
 --osc WAVE[:CV[:GATE]]   # e.g. saw:dac.A:expander.0
 --osc DRUM[:GATE]        # e.g. kick:expander.0
 --drums                  # kick, snare, closed and open hat on the first four gates
---wav out.wav            # headless: record the voices, 48 kHz mono
+--wav out.wav            # headless: record the voices and speakers, 48 kHz mono
 ```
 
 CV is a DAC channel (`dac.A` .. `dac.D`). GATE is an expander pin, by

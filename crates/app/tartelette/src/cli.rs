@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-use rp2040_core::system::CYCLES_PER_US;
 use tartelette_runtime::{
     BtMode, Links, NetMode, Source,
     boards::{self, BOARDS, SHIELDS},
@@ -276,8 +275,8 @@ pub struct Headless {
     #[arg(long, requires = "headless")]
     pub usb_log: bool,
     /// Record the `--osc` and `--drums` voices (by default a saw on the
-    /// board's first CV output and gate) to FILE, a 48 kHz mono WAV, in
-    /// emulated time
+    /// board's first CV output and gate, or none on a board with a speaker)
+    /// and the board's speakers to FILE, a 48 kHz mono WAV, in emulated time
     #[arg(long, value_name = "FILE", requires = "headless")]
     pub wav: Option<PathBuf>,
 }
@@ -288,21 +287,21 @@ impl Headless {
     pub fn inputs(&self) -> Vec<Input> {
         let mut v = self.input.clone();
         for p in &self.press {
-            let at = |cycle| Input {
-                cycle,
+            let at = |ns| Input {
+                ns,
                 part: p.part.clone(),
                 action: "press".into(),
                 value: 0,
             };
-            v.push(at(p.cycle));
+            v.push(at(p.ns));
             if let Some(hold) = p.hold {
                 v.push(Input {
                     action: "release".into(),
-                    ..at(p.cycle + hold)
+                    ..at(p.ns + hold)
                 });
             }
         }
-        v.sort_by_key(|i| i.cycle);
+        v.sort_by_key(|i| i.ns);
         v
     }
 }
@@ -333,24 +332,26 @@ pub struct MkdiskArgs {
 #[derive(Clone, Debug)]
 pub struct Press {
     part: String,
-    cycle: u64,
+    /// When, and for how long: emulated nanoseconds.
+    ns: u64,
     hold: Option<u64>,
 }
 
 /// A scheduled device action.
 #[derive(Clone, Debug)]
 pub struct Input {
-    pub cycle: u64,
+    /// When: emulated nanoseconds since power-up.
+    pub ns: u64,
     pub part: String,
     pub action: String,
     pub value: i64,
 }
 
-fn us_to_cycles(s: &str) -> Result<u64, String> {
+fn us_to_ns(s: &str) -> Result<u64, String> {
     s.parse::<f64>()
         .ok()
         .filter(|v| *v >= 0.0)
-        .map(|v| (v * CYCLES_PER_US as f64) as u64)
+        .map(|v| (v * 1000.0).round() as u64)
         .ok_or_else(|| format!("{s:?} is not a time in microseconds"))
 }
 
@@ -410,12 +411,12 @@ fn port_pair(s: &str) -> Result<(u16, u16), String> {
 fn press(s: &str) -> Result<Press, String> {
     let (part, when) = s.split_once('@').ok_or("expected NAME@US[+HOLD]")?;
     let (at, hold) = match when.split_once('+') {
-        Some((a, h)) => (a, Some(us_to_cycles(h)?)),
+        Some((a, h)) => (a, Some(us_to_ns(h)?)),
         None => (when, None),
     };
     Ok(Press {
         part: part.into(),
-        cycle: us_to_cycles(at)?,
+        ns: us_to_ns(at)?,
         hold,
     })
 }
@@ -439,7 +440,7 @@ fn input(s: &str) -> Result<Input, String> {
         None => (action, 0),
     };
     Ok(Input {
-        cycle: us_to_cycles(when)?,
+        ns: us_to_ns(when)?,
         part: part.into(),
         action: action.into(),
         value,
@@ -473,14 +474,14 @@ mod tests {
             .headless_opts
             .inputs()
             .into_iter()
-            .map(|i| (i.cycle, i.action, i.value))
+            .map(|i| (i.ns, i.action, i.value))
             .collect();
         assert_eq!(
             v,
             [
-                (12_500, "press".into(), 0),
-                (15_000, "turn".into(), -1),
-                (18_750, "release".into(), 0)
+                (100_000, "press".into(), 0),
+                (120_000, "turn".into(), -1),
+                (150_000, "release".into(), 0)
             ]
         );
     }

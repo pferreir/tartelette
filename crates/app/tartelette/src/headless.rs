@@ -5,8 +5,8 @@
 //! firmware's log and the USB log go to stderr.
 use std::{io::Write, path::Path};
 
-use pcb_devices::{cyw43439::Cyw43439, sdcard::SdCard, st7789::St7789};
-use rp2040_core::system::{CYCLES_PER_US, StopReason};
+use pcb_devices::{Glass, cyw43439::Cyw43439, sdcard::SdCard};
+use rp2040_core::system::StopReason;
 use tartelette_runtime::{
     Session, Source,
     synth::{self, Synth},
@@ -16,8 +16,9 @@ use crate::cli::{Output, RunArgs};
 
 const CHUNK: u64 = 100_000;
 
-fn us(cycles: u64) -> f64 {
-    cycles as f64 / CYCLES_PER_US as f64
+/// Emulated microseconds at cycle `cycles` of `s`'s run.
+fn us(s: &Session, cycles: u64) -> f64 {
+    s.sys.seconds_at(cycles) * 1e6
 }
 
 pub fn run(args: &RunArgs) -> Result<(), String> {
@@ -64,7 +65,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     if let Some((name, _)) = h
         .dump_screen
         .iter()
-        .find(|(name, _)| board.device::<St7789>(name).is_none())
+        .find(|(name, _)| pcb_devices::glass(board, name).is_none())
     {
         return Err(format!(
             "--dump-screen: no display named {name:?} on the board"
@@ -126,12 +127,15 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let started = std::time::Instant::now();
     let reason = loop {
         if let Some(speed) = h.speed {
-            let due = std::time::Duration::from_secs_f64(us(s.sys.cycles()) / 1e6 / speed);
+            let due = std::time::Duration::from_secs_f64(s.seconds() / speed);
             if let Some(wait) = due.checked_sub(started.elapsed()) {
                 std::thread::sleep(wait);
             }
         }
-        while let Some(i) = pending.next_if(|i| i.cycle <= s.sys.cycles()) {
+        // Inputs are due at an emulated time: the cycle that is depends on
+        // clk_sys, which the firmware may change.
+        let due = |s: &Session, i: &crate::cli::Input| s.sys.clock().cycle(i.ns as f64 / 1e9);
+        while let Some(i) = pending.next_if(|i| due(&s, i) <= s.sys.cycles()) {
             if !s.input(&i.part, &i.action, i.value) {
                 return Err(format!(
                     "part {:?} does not understand {:?}",
@@ -141,7 +145,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         }
         let mut n = (end - s.sys.cycles().min(end)).min(CHUNK);
         if let Some(next) = pending.peek() {
-            n = n.min(next.cycle - s.sys.cycles());
+            n = n.min(due(&s, next).saturating_sub(s.sys.cycles()));
         }
         let reason = if n == 0 {
             StopReason::CycleLimit
@@ -170,8 +174,8 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         match reason {
             StopReason::CycleLimit if s.sys.cycles() < end => {}
             // Asleep with nothing to wake it, but an input is still coming.
-            StopReason::Sleeping if pending.peek().is_some_and(|i| i.cycle < end) => {
-                s.sys.idle_until(pending.peek().map_or(end, |i| i.cycle));
+            StopReason::Sleeping if pending.peek().is_some_and(|i| due(&s, i) < end) => {
+                s.sys.idle_until(pending.peek().map_or(end, |i| due(&s, i)));
             }
             // Bytes for a UART are on their way to it: they may wake the
             // firmware.
@@ -185,11 +189,11 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
                     || (stdin_open && stdin_uart.is_some())
                     || s.uarts.any_bridged() =>
             {
-                const MS: u64 = 1000 * CYCLES_PER_US;
+                let ms = s.sys.sys_hz() / 1000;
                 if h.speed.is_none() {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                s.sys.idle_until((s.sys.cycles() + MS).min(end));
+                s.sys.idle_until((s.sys.cycles() + ms).min(end));
             }
             r => break r,
         }
@@ -203,7 +207,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
     let mut err = std::io::stderr();
     let board = &mut s.sys.board;
     for (name, file) in &h.dump_screen {
-        if let Some(lcd) = board.device::<St7789>(name) {
+        if let Some(lcd) = pcb_devices::glass(board, name) {
             save_screen(lcd, file)?;
         }
     }
@@ -225,6 +229,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
         std::fs::write(file, &s.sys.bus.flash.data)
             .map_err(|e| format!("{}: {e}", file.display()))?;
     }
+    let clock = s.sys.clock();
     let board = &mut s.sys.board;
     for (name, file) in &args.sd {
         if let Some(card) = board.device::<SdCard>(name)
@@ -244,7 +249,7 @@ pub fn run(args: &RunArgs) -> Result<(), String> {
             let _ = writeln!(
                 err,
                 "[{:>10.1} us] wifi {dir} f{} {:#07x} len={} {:02x?}",
-                us(t.cycle),
+                clock.seconds(t.cycle) * 1e6,
                 t.func,
                 t.addr,
                 t.len,
@@ -281,8 +286,12 @@ fn print(
     usb_serial: Option<&mut std::io::Stdout>,
 ) {
     let mut err = std::io::stderr();
-    for e in &o.events {
-        let (name, t) = (&s.sys.board.parts[e.part].name, us(e.cycles));
+    for e in o
+        .events
+        .iter()
+        .filter(|e| !synth::is_sound(&s.sys.board, e))
+    {
+        let (name, t) = (&s.sys.board.parts[e.part].name, us(s, e.cycles));
         // Switch-like events say it all in the label; others carry a value.
         let _ = match e.label {
             "on" | "off" | "pressed" | "released" => {
@@ -291,7 +300,7 @@ fn print(
             _ => writeln!(err, "[{t:>10.1} us] {name} {}={}", e.label, e.value),
         };
     }
-    let now = us(s.sys.cycles());
+    let now = us(s, s.sys.cycles());
     for w in &o.warnings {
         let _ = writeln!(err, "[{now:>10.1} us] warning: {w}");
     }
@@ -349,15 +358,10 @@ fn read_stdin() -> std::sync::mpsc::Receiver<Vec<u8>> {
 }
 
 /// The display's picture, in the format the file's extension names.
-fn save_screen(lcd: &St7789, file: &Path) -> Result<(), String> {
+fn save_screen(lcd: &dyn Glass, file: &Path) -> Result<(), String> {
     let (w, h) = lcd.size();
-    let rgb: Vec<u8> = lcd
-        .rgba()
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| [p[0], p[1], p[2]])
-        .collect();
+    let mut rgb = Vec::with_capacity(w * h * 3);
+    lcd.for_each_pixel(&mut |_, p| rgb.extend_from_slice(&p[..3]));
     // `image` writes a PAM (P7) for `.ppm`, so binary PPM is done by hand.
     if file
         .extension()
