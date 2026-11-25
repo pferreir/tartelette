@@ -107,8 +107,8 @@
         "required": ["kind"],
         "properties": {
           "kind": {
-            "enum": ["led", "button", "mcp23008", "st7789", "ws2812", "dac8165", "encoder", "pot", "wav", "sdcard", "cyw43439"],
-            "description": "what the part is:\n- led: LED on a pin\n- button: momentary switch to GND or 3V3\n- mcp23008: 8-bit I2C port expander with interrupt output\n- st7789: SPI TFT display controller with frame RAM\n- ws2812: WS2812 / SK6812 LED chain decoded from the data line\n- dac8165: quad 14-bit DAC on a bit-banged serial link\n- encoder: rotary encoder (quadrature contacts)\n- pot: potentiometer: a voltage between GND and 3V3 for the ADC\n- wav: WAV file player: an audio signal on a pin for the ADC\n- sdcard: SDHC card in SPI mode over a disk image\n- cyw43439: Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link"
+            "enum": ["led", "button", "mcp23008", "st7789", "ws2812", "dac8165", "encoder", "pot", "wav", "speaker", "midi", "pcm5102", "ssd1306", "sdcard", "cyw43439"],
+            "description": "what the part is:\n- led: LED on a pin\n- button: momentary switch to GND or 3V3\n- mcp23008: 8-bit I2C port expander with interrupt output\n- st7789: SPI TFT display controller with frame RAM\n- ws2812: WS2812 / SK6812 LED chain decoded from the data line\n- dac8165: quad 14-bit DAC on a bit-banged serial link\n- encoder: rotary encoder (quadrature contacts)\n- pot: potentiometer: a voltage between GND and 3V3 for the ADC\n- wav: WAV file player: an audio signal on a pin for the ADC\n- speaker: speaker playing a DAC output or a GPIO's PWM as sound\n- midi: MIDI in jack: host MIDI on a UART's RX or as serial on a pin\n- pcm5102: PCM5102A stereo I2S audio DAC\n- ssd1306: SSD1306 monochrome OLED controller on I2C\n- sdcard: SDHC card in SPI mode over a disk image\n- cyw43439: Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link"
           }
         },
         "allOf": [
@@ -571,6 +571,165 @@
                 }
               },
               "required": ["gpio"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "speaker"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "speaker",
+                  "description": "speaker playing a DAC output or a GPIO's PWM as sound"
+                },
+                "dac": {
+                  "type": "string",
+                  "description": "the DAC it plays: a dac8165 channel (dac.A) or a pcm5102 (pcm, pcm.L, pcm.R); or gpio"
+                },
+                "gpio": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "the pin it plays, as PWM or PDM; or dac (other parts may use this GPIO too)"
+                },
+                "volume": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "description": "the starting volume, in percent (default 100)"
+                },
+                "rate": {
+                  "type": "integer",
+                  "minimum": 1000,
+                  "maximum": 192000,
+                  "description": "on a gpio: how often the pin's average level is taken, in Hz (default 48000)"
+                },
+                "mhz": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "description": "on a gpio: core clock, to turn time into cycles (default: the chip's clk_sys)"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "midi"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "midi",
+                  "description": "MIDI in jack: host MIDI on a UART's RX or as serial on a pin"
+                },
+                "uart": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "the UART whose RX the jack feeds; or gpio"
+                },
+                "gpio": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "the pin the jack feeds, as 31250-baud serial; or uart"
+                },
+                "mhz": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "description": "on a gpio: core clock, to time the bits (default: the chip's clk_sys)"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "pcm5102"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "pcm5102",
+                  "description": "PCM5102A stereo I2S audio DAC"
+                },
+                "bck": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "bit clock"
+                },
+                "lrck": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "word clock (LRCK, WS): low for the left channel"
+                },
+                "din": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "serial data"
+                }
+              },
+              "required": ["bck", "lrck", "din"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "ssd1306"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "ssd1306",
+                  "description": "SSD1306 monochrome OLED controller on I2C"
+                },
+                "bus": {
+                  "enum": ["i2c0", "i2c1"],
+                  "description": "the bus it sits on (declared under [buses])"
+                },
+                "addr": {
+                  "type": "integer",
+                  "minimum": 60,
+                  "maximum": 61,
+                  "description": "I2C address (SA0 low: 0x3C) (default 0x3c)"
+                },
+                "height": {
+                  "enum": ["32", "64"],
+                  "description": "rows of the panel (128 wide) (default \"64\")"
+                },
+                "color": {
+                  "enum": ["white", "blue", "yellow", "green"],
+                  "description": "the colour the pixels glow (default \"white\")"
+                }
+              },
               "additionalProperties": false
             }
           },

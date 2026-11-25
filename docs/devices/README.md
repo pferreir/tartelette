@@ -13,8 +13,12 @@ example, what its front-panel widget does, the events it logs, the actions
 | [`wav`](wav.md) | a WAV file player | a GPIO, read by the ADC |
 | [`mcp23008`](mcp23008.md) | Microchip MCP23008 8-bit port expander | I2C |
 | [`st7789`](st7789.md) | Sitronix ST7789 TFT controller | SPI |
+| [`ssd1306`](ssd1306.md) | Solomon Systech SSD1306 monochrome OLED | I2C |
 | [`ws2812`](ws2812.md) | WS2812 / SK6812 LED chain | one GPIO (usually PIO) |
 | [`dac8165`](dac8165.md) | TI DAC8165 quad 14-bit DAC | bit-banged serial (usually PIO) |
+| [`speaker`](speaker.md) | a speaker | a `dac8165` channel, or a GPIO (PWM) |
+| [`midi`](midi.md) | a MIDI in jack | a UART's RX, or a GPIO (serial) |
+| [`pcm5102`](pcm5102.md) | TI PCM5102A stereo audio DAC | I2S (usually PIO) |
 | [`sdcard`](sdcard.md) | SDHC card in SPI mode | SPI |
 | [`cyw43439`](cyw43439.md) | Infineon CYW43439 Wi-Fi + Bluetooth (Pico W) | gSPI over PIO |
 

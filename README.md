@@ -70,8 +70,12 @@ with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-ha
 | `encoder` | a rotary encoder | [encoder](docs/devices/encoder.md) |
 | `pot` | a potentiometer, for the ADC | [pot](docs/devices/pot.md) |
 | `wav` | a WAV file player, for the ADC | [wav](docs/devices/wav.md) |
+| `speaker` | a speaker, on a DAC channel or a GPIO (PWM) | [speaker](docs/devices/speaker.md) |
+| `midi` | a MIDI in jack, on a UART or a GPIO | [midi](docs/devices/midi.md) |
+| `pcm5102` | TI PCM5102A I2S audio DAC | [pcm5102](docs/devices/pcm5102.md) |
 | `mcp23008` | Microchip MCP23008 I2C port expander | [mcp23008](docs/devices/mcp23008.md) |
 | `st7789` | Sitronix ST7789 TFT display controller | [st7789](docs/devices/st7789.md) |
+| `ssd1306` | Solomon Systech SSD1306 monochrome OLED, on I2C | [ssd1306](docs/devices/ssd1306.md) |
 | `ws2812` | WS2812 / SK6812 addressable LEDs | [ws2812](docs/devices/ws2812.md) |
 | `dac8165` | TI DAC8165 quad 14-bit DAC | [dac8165](docs/devices/dac8165.md) |
 | `sdcard` | an SDHC card in SPI mode | [sdcard](docs/devices/sdcard.md) |

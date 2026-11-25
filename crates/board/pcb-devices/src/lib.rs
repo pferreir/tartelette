@@ -14,6 +14,10 @@
 //! | `encoder`  | rotary encoder (quadrature contacts)                   |
 //! | `pot`      | potentiometer: a voltage between GND and 3V3 for the ADC |
 //! | `wav`      | WAV file player: an audio signal on a pin for the ADC  |
+//! | `speaker`  | speaker playing a DAC output or a GPIO's PWM as sound  |
+//! | `midi`     | MIDI in jack: host MIDI on a UART's RX or a pin        |
+//! | `pcm5102`  | PCM5102A stereo I2S audio DAC                          |
+//! | `ssd1306`  | SSD1306 monochrome OLED controller on I2C              |
 //! | `sdcard`   | SDHC card in SPI mode over a disk image                |
 //! | `cyw43439` | Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link  |
 #![no_std]
@@ -31,14 +35,40 @@ pub mod encoder;
 pub mod hci;
 pub mod led;
 pub mod mcp23008;
+pub mod midi;
 pub mod net;
+pub mod pcm5102;
 pub mod pot;
 pub mod sdcard;
+pub mod speaker;
+pub mod ssd1306;
 pub mod st7789;
 pub mod wav;
 pub mod ws2812;
 
 pub use led::is_lit;
+
+/// A display's glass, as a host shows it.
+pub trait Glass {
+    /// Width and height in pixels.
+    fn size(&self) -> (usize, usize);
+    /// Changes whenever the picture may have: a host redraws when it does.
+    fn stamp(&self) -> (u64, bool);
+    /// Calls `f(index, [r, g, b, 255])` for every pixel, row by row.
+    fn for_each_pixel(&self, f: &mut dyn FnMut(usize, [u8; 4]));
+}
+
+/// The display named `name` on `board`, whatever its kind.
+pub fn glass<'a>(board: &'a pcb::Board, name: &str) -> Option<&'a dyn Glass> {
+    board
+        .device::<st7789::St7789>(name)
+        .map(|d| d as &dyn Glass)
+        .or_else(|| {
+            board
+                .device::<ssd1306::Ssd1306>(name)
+                .map(|d| d as &dyn Glass)
+        })
+}
 
 pub fn register_builtin(r: &mut Registry) {
     for kind in [
@@ -51,6 +81,10 @@ pub fn register_builtin(r: &mut Registry) {
         encoder::KIND,
         pot::KIND,
         wav::KIND,
+        speaker::KIND,
+        midi::KIND,
+        pcm5102::KIND,
+        ssd1306::KIND,
         sdcard::KIND,
         cyw43439::KIND,
     ] {
@@ -223,21 +257,24 @@ active = "high"
         // The board checks (in debug builds) that a device reads every key it was given.
         // Some kinds have keys that exclude each other (an expander pin's
         // `lit` is for LEDs, `contact` for switches): their own tests cover
-        // those keys, and here refusing the mix is fine.
+        // those keys, and here refusing the mix is fine; so do a speaker (on
+        // a DAC or a pin) and a MIDI jack (on a UART or a pin).
         let r = registry();
         let mut pin = 0;
         let mut text = String::new();
+        let mut refused = 0;
         for k in r.kinds() {
             let t = sample_table(k.params, &mut pin);
             let line = alloc::format!("parts.{} = {{ kind = {:?}, {}\n", k.name, k.name, &t[2..]);
             match Board::parse_with(&line, &r) {
-                Err(e) if e.msg.contains(" is only for ") => {}
+                Err(e) if e.msg.contains(" is only for ") => refused += 1,
                 Err(e) => panic!("{e}\n{line}"),
                 Ok(_) => text += &line,
             }
         }
         let b = Board::parse_with(&text, &r).unwrap_or_else(|e| panic!("{e}\n{text}"));
-        assert!(b.parts.len() >= r.kinds().count() - 1);
+        assert!(refused <= 3);
+        assert_eq!(b.parts.len(), r.kinds().count() - refused);
     }
 
     #[test]

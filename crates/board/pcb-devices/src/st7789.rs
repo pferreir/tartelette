@@ -105,6 +105,20 @@ pub const KIND: Kind = Kind {
     },
 };
 
+impl crate::Glass for St7789 {
+    fn size(&self) -> (usize, usize) {
+        St7789::size(self)
+    }
+
+    fn stamp(&self) -> (u64, bool) {
+        (self.total_pixels, self.is_showing())
+    }
+
+    fn for_each_pixel(&self, f: &mut dyn FnMut(usize, [u8; 4])) {
+        St7789::for_each_pixel(self, f)
+    }
+}
+
 impl St7789 {
     pub fn new(
         width: usize,
