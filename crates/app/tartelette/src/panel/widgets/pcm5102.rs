@@ -1,5 +1,5 @@
-//! `pcm5102`: the DAC's sample rate as it receives frames, and a level
-//! meter per channel.
+//! `pcm5102`: the DAC's sample rate as it receives frames, and a peak
+//! meter per channel in dBFS.
 use super::*;
 
 pub(in crate::panel) fn pcm5102(c: Ctx) {
@@ -20,9 +20,10 @@ pub(in crate::panel) fn pcm5102(c: Ctx) {
         FontId::monospace(12.0),
         v.text_color(),
     );
-    // The latest sample's size, a bar per channel.
+    // A peak meter per channel, from -60 to 0 dBFS.
     let w = c.body.width() - 30.0;
-    for (i, (name, s)) in [("L", d.left), ("R", d.right)].into_iter().enumerate() {
+    let now = c.s.sys.cycles();
+    for (i, name) in ["L", "R"].into_iter().enumerate() {
         let y = top + 20.0 + i as f32 * 12.0;
         p.text(
             pos2(c.body.left() + 6.0, y),
@@ -33,7 +34,8 @@ pub(in crate::panel) fn pcm5102(c: Ctx) {
         );
         let bar = Rect::from_min_size(pos2(c.body.left() + 20.0, y + 2.0), vec2(w, 6.0));
         p.rect_filled(bar, 2.0, v.extreme_bg_color);
-        let f = (s as f32).abs() / 32768.0;
+        let db = 20.0 * (d.level(i, now) as f32 / 32768.0).log10();
+        let f = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
         p.rect_filled(
             Rect::from_min_size(bar.min, vec2(w * f, 6.0)),
             2.0,

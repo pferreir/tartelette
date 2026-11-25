@@ -28,6 +28,9 @@ pub struct Pcm5102 {
     pub frame_cycles: u64,
     /// clk_sys, to tell the sample rate.
     pub hz: u64,
+    /// Each channel's peak, for a level meter: the size of the sample and
+    /// the cycle it came at (see [`Pcm5102::level`]).
+    peak: [(u16, u64); 2],
 }
 
 pub const KIND: Kind = Kind {
@@ -54,6 +57,7 @@ pub const KIND: Kind = Kind {
             last_frame: 0,
             frame_cycles: 0,
             hz: 125_000_000,
+            peak: [(0, 0); 2],
         }))
     },
 };
@@ -62,6 +66,25 @@ impl Pcm5102 {
     /// The sample rate, from the time between frames.
     pub fn rate(&self) -> Option<f64> {
         (self.frame_cycles > 0).then_some(self.hz as f64 / self.frame_cycles as f64)
+    }
+
+    /// Channel `ch`'s level at cycle `now` (0 left, 1 right), out of 32768:
+    /// the largest sample so far, falling back 6 dB every quarter second
+    /// after it.
+    pub fn level(&self, ch: usize, now: u64) -> u16 {
+        Self::decayed(self.peak[ch], now, self.hz)
+    }
+
+    /// A peak of size `p` at cycle `at`, at cycle `now`: halved every
+    /// quarter second, in a straight line between halvings.
+    fn decayed((p, at): (u16, u64), now: u64, hz: u64) -> u16 {
+        let half = (hz / 4).max(1);
+        let dt = now.saturating_sub(at);
+        if dt / half >= 16 {
+            return 0;
+        }
+        let p = (p >> (dt / half)) as u64;
+        (p - p * (dt % half) / (2 * half)) as u16
     }
 
     /// A finished word of `bits` bits, as its top 16.
@@ -107,6 +130,11 @@ impl Device for Pcm5102 {
                 self.frame_cycles = now - self.last_frame;
             }
             (self.frames, self.last_frame) = (self.frames + 1, now);
+            for (ch, s) in [self.left, self.right].into_iter().enumerate() {
+                if s.unsigned_abs() >= Self::decayed(self.peak[ch], now, self.hz) {
+                    self.peak[ch] = (s.unsigned_abs(), now);
+                }
+            }
             io.emit(
                 "sample",
                 (self.left as u16 as i64) << 16 | self.right as u16 as i64,
@@ -178,6 +206,7 @@ mod tests {
             last_frame: 0,
             frame_cycles: 0,
             hz: 1_000,
+            peak: [(0, 0); 2],
         }
     }
 
@@ -192,6 +221,23 @@ mod tests {
         assert_eq!(frames, [(0x1234, -2), (-32768, 32767)]);
         assert_eq!(d.frame_cycles, 320, "32 bits of 10 cycles");
         assert_eq!(d.rate(), Some(1_000.0 / 320.0));
+    }
+
+    #[test]
+    fn level_holds_the_peak_and_falls_back() {
+        let mut d = dac();
+        // An older, louder peak on both channels, from cycle 0.
+        d.peak = [(30000, 0); 2];
+        send(&mut d, &[(-16384, 100), (1000, 100)]);
+        // The first frame ends at 315, when the old peak has fallen to 13050:
+        // the left sample takes over, the right one is too small (as is
+        // everything at 635).
+        assert_eq!(d.peak, [(16384, 315), (30000, 0)]);
+        assert_eq!(d.level(0, 315), 16384);
+        // A quarter second (250 cycles at 1 kHz) halves it, half that is 3/4.
+        assert_eq!(d.level(0, 315 + 125), 12288);
+        assert_eq!(d.level(0, 315 + 250), 8192);
+        assert_eq!(d.level(0, 315 + 16 * 250), 0);
     }
 
     #[test]
