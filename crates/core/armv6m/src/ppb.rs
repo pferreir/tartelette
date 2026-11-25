@@ -144,6 +144,14 @@ impl Ppb {
     // ---- time ----------------------------------------------------------
 
     /// Advance SysTick by `cycles` core cycles.
+    /// The core clock changed: now `cycles_per_us` cycles a reference
+    /// tick. A tick under way keeps the part of it that has passed.
+    pub fn set_cycles_per_us(&mut self, cycles_per_us: u64) {
+        let new = cycles_per_us.max(1);
+        self.ref_acc = self.ref_acc * new / self.cycles_per_us;
+        self.cycles_per_us = new;
+    }
+
     pub fn advance(&mut self, cycles: u64) {
         if self.syst_csr & SYST_ENABLE == 0 {
             return;
