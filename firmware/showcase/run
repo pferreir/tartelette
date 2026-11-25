@@ -11,6 +11,7 @@ case $(basename "$elf") in
 picosh)    board=(pico) ;;
 lumen)     board=("$here/boards/lumen.toml") ;;
 groovebox) board=("$here/boards/groovebox.toml" --drums --osc saw:dac.A:expander.bass) ;;
+groovebox-audio) board=("$here/boards/groovebox-audio.toml" --shield pico-display-2) ;;
 stardust)  board=(pico --shield pico-display-2) ;;
 spectra)   board=("$here/boards/spectra.toml" --shield pico-display-2) ;;
 *)

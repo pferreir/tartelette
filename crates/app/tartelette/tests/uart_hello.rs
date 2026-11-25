@@ -518,6 +518,61 @@ fn pio_drives_the_dac_and_led_chain_and_reads_the_encoder() {
 }
 
 #[test]
+fn cli_records_a_speaker_on_the_dac_or_a_pin() {
+    let elf = build_named("pio-test");
+    let dir = std::env::temp_dir().join(format!("rp2040-speaker-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (board, wav) = (dir.join("test.toml"), dir.join("out.wav"));
+    let run = |text: &str, extra: &[&str]| {
+        std::fs::write(&board, text).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_tartelette"))
+            .arg(&elf)
+            .args(["--headless", "--max-cycles", "2500000", "--board"])
+            .arg(&board)
+            .arg("--wav")
+            .arg(&wav)
+            .args(extra)
+            .output()
+            .unwrap()
+    };
+    let peak = || {
+        let bytes = std::fs::read(&wav).unwrap();
+        bytes[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b).unsigned_abs())
+            .max()
+            .unwrap()
+    };
+    let speaker = format!("{PIO_BOARD}parts.spk = {{ kind = \"speaker\", dac = \"dac.A\" }}\n");
+    // Channel A steps from 0 to mid-scale: a thump of about half full scale.
+    assert!(run(&speaker, &[]).status.success());
+    assert!(peak() > 12_000, "{}", peak());
+    assert!(run(&speaker, &["--input", "spk:mute@0"]).status.success());
+    assert_eq!(peak(), 0);
+
+    // On the LED chain's data line, which PIO drives: the burst of pulses.
+    let on_pin = format!("{PIO_BOARD}parts.spk = {{ kind = \"speaker\", gpio = 14 }}\n");
+    let out = run(&on_pin, &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(peak() > 3_000, "{}", peak());
+
+    let bad = run(&speaker.replace("dac.A", "nope.A"), &[]);
+    assert!(!bad.status.success());
+    assert!(
+        String::from_utf8_lossy(&bad.stderr).contains("speaker spk: \"nope.A\": no such part"),
+        "{}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn spi_and_dma_talk_to_an_sd_card() {
     use pcb::Board;
     use pcb_devices::sdcard::{BLOCK, SdCard};

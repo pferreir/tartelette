@@ -1,0 +1,18 @@
+#:schema ../../../boards/board.schema.json
+# GROOVEBOX AUDIO: a Pico as a drum machine and bass synth with a speaker on
+# GPIO16. Run with the pico-display-2 shield for the screen and the A/B/X/Y
+# buttons. The firmware is src/bin/groovebox-audio.rs; the README in the
+# directory above says how to run it.
+name = "Groovebox Audio"
+
+# Behind GPIO16, an RC low-pass, a coupling capacitor and an amplifier. The
+# Pico's PWM runs at 25 kHz, a sample a period, so averaging the pin over
+# 1/25000 s takes exactly one period: the carrier leaves no trace.
+[parts.speaker]
+kind = "speaker"
+gpio = 16
+rate = 25000
+
+# Next to the shield's buttons.
+[panel]
+speaker = { at = [4, 4], span = [2, 1], label = "Speaker" }

@@ -1,0 +1,57 @@
+#:schema ../../../boards/board.schema.json
+# PICODEXED: picodexed (https://github.com/diyelectromusic/picodexed), a
+# Yamaha DX7-style FM synth for the Pico on the Dexed engine, wired as its
+# config.h says. It isn't built here: run its own prebuilt UF2 (the build/
+# folder of that repository) on this board:
+#
+#   tartelette picodexed-v0.03.uf2 --board picodexed.toml
+#
+# It overclocks to 250 MHz, sleeps for its logo and flashes the LED before it
+# listens to MIDI: give it about five seconds. Then play the keys, or a MIDI
+# input from the toolbar.
+name = "picodexed"
+
+[buses]
+i2c1 = { sda = 2, scl = 3 }
+
+# A 128x32 OLED: the bank, the voice and its name.
+[parts.oled]
+kind = "ssd1306"
+bus = "i2c1"
+height = "32"
+
+# Serial MIDI in on UART1 (RX on GPIO5).
+[parts.midi]
+kind = "midi"
+uart = 1
+
+# The audio: I2S from PIO0 into a PCM5102A, BCK on GPIO10, LRCK on 11.
+[parts.dac]
+kind = "pcm5102"
+din = 9
+bck = 10
+lrck = 11
+
+[parts.speaker]
+kind = "speaker"
+dac = "dac"
+
+# The voice knob, on PIO1: A on GPIO6, B on 7 (B leads when turned
+# clockwise, for picodexed's next voice).
+[parts.knob]
+kind = "encoder"
+clk = 6
+dt = 7
+cw = "dt"
+
+[parts.led]
+kind = "led"
+gpio = 25
+
+[panel]
+oled = { at = [0, 0], span = [6, 2], label = "Display" }
+knob = { at = [6, 0], span = [2, 2], label = "Voice", keys = ["Left", "Right"] }
+midi = { at = [0, 2], span = [8, 2], label = "MIDI in", keyboard = "C3" }
+dac = { at = [0, 4], span = [3, 1], label = "PCM5102" }
+speaker = { at = [3, 4], span = [2, 1], label = "Speaker" }
+led = { at = [5, 4], label = "LED", color = "green" }
