@@ -44,7 +44,10 @@ NAME:ACTION=VALUE@US` sends one at a given time, and `--press NAME@US+HOLD` is
 a shortcut for buttons.
 
 **`mhz`** appears on parts that measure time on their pins. It is the core
-clock, used to turn microseconds into cycles. Leave it at 125.
+clock, used to turn microseconds into cycles. Leave it out: the part then
+follows the chip's clk_sys, 125 MHz unless the firmware overclocks (see
+[rp2040.md](../rp2040.md#time)). Set, it fixes the rate whatever the chip
+does.
 
 ## Writing a new one
 

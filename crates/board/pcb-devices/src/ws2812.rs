@@ -18,6 +18,10 @@ pub struct Ws2812 {
     /// Colour byte order on the wire.
     grb: bool,
     /// Cycles of low level that latch a frame, and the 0/1 pulse boundary.
+    /// The latch time, the `mhz` key if set, and in cycles at the clock:
+    /// the latch time and the half microsecond that tells a 1 from a 0.
+    reset_us: u64,
+    mhz: Option<u64>,
     reset_cycles: u64,
     threshold: u64,
     /// Bits received since the last latch.
@@ -45,7 +49,13 @@ pub const KIND: Kind = Kind {
             "low time that latches the colours, in microseconds",
         )
         .default_int(50),
-        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+        Param::int(
+            "mhz",
+            1,
+            1000,
+            "core clock, to turn time into cycles (default: the chip's clk_sys)",
+        )
+        .optional(),
     ],
     build: |p| {
         Ok(Box::new(Ws2812::new(
@@ -53,18 +63,21 @@ pub const KIND: Kind = Kind {
             p.int("count") as usize,
             p.str("order") == "grb",
             p.int("reset_us") as u64,
-            p.int("mhz") as u64,
+            p.opt_int("mhz").map(|m| m as u64),
         )))
     },
 };
 
 impl Ws2812 {
-    fn new(pin: usize, count: usize, grb: bool, reset_us: u64, mhz: u64) -> Self {
+    fn new(pin: usize, count: usize, grb: bool, reset_us: u64, mhz: Option<u64>) -> Self {
+        let cycles_per_us = mhz.unwrap_or(125);
         Ws2812 {
             pin,
             grb,
-            reset_cycles: reset_us * mhz,
-            threshold: mhz / 2,
+            reset_us,
+            mhz,
+            reset_cycles: reset_us * cycles_per_us,
+            threshold: cycles_per_us / 2,
             bits: Vec::new(),
             rose_at: None,
             fell_at: 0,
@@ -97,6 +110,12 @@ impl Ws2812 {
 }
 
 impl Device for Ws2812 {
+    fn clock(&mut self, _at: u64, hz: u64) {
+        let cycles_per_us = self.mhz.unwrap_or(hz / 1_000_000);
+        self.reset_cycles = self.reset_us * cycles_per_us;
+        self.threshold = cycles_per_us / 2;
+    }
+
     fn watched_pins(&self) -> u32 {
         1 << self.pin
     }

@@ -78,12 +78,15 @@ pub struct PinWiring {
     pub name: Option<&'static str>,
     /// An external pull resistor: `Some(true)` up, `Some(false)` down.
     pub pull: Option<bool>,
-    /// How long the switch contact chatters after it moves, in cycles.
-    pub bounce: u64,
+    /// How long the switch contact chatters after it moves, in µs.
+    pub bounce_us: u64,
 }
 
 pub struct Mcp23008 {
     addr: u8,
+    /// The `mhz` key if set, and the cycles a µs takes at the clock.
+    mhz: Option<u64>,
+    cycles_per_us: u64,
     int_pin: Option<usize>,
     wiring: [PinWiring; 8],
     // Masks derived from `wiring` (bit n = GPn).
@@ -197,12 +200,18 @@ pub const KIND: Kind = Kind {
         )
         .optional(),
         Param::tables("pins", PIN_KEYS, "what is wired to each pin").optional(),
-        Param::int("mhz", 1, 1000, "core clock, to turn bounce_us into cycles").default_int(125),
+        Param::int(
+            "mhz",
+            1,
+            1000,
+            "core clock, to turn bounce_us into cycles (default: the chip's clk_sys)",
+        )
+        .optional(),
     ],
     build: |p| {
         let addr = p.int("addr") as u8;
         let int_pin = p.opt_pin("int");
-        let cycles_per_us = p.int("mhz") as u64;
+        let mhz = p.opt_int("mhz").map(|m| m as u64);
         let mut wiring: [PinWiring; 8] = Default::default();
         let mut initial = 0;
         let mut seen = 0u8;
@@ -212,8 +221,7 @@ pub const KIND: Kind = Kind {
                 return Err(format!("pins[{i}]: GP{n} is listed twice"));
             }
             seen |= 1 << n;
-            let (w, on) =
-                pin_wiring(&mut t, cycles_per_us).map_err(|e| format!("pins[{i}]: {e}"))?;
+            let (w, on) = pin_wiring(&mut t).map_err(|e| format!("pins[{i}]: {e}"))?;
             if let Some(name) = w.name
                 && wiring.iter().any(|o| o.name == Some(name))
             {
@@ -222,12 +230,14 @@ pub const KIND: Kind = Kind {
             initial |= (on as u8) << n;
             wiring[n] = w;
         }
-        Ok(Box::new(Mcp23008::new(addr, int_pin, wiring, initial)))
+        let mut m = Mcp23008::new(addr, int_pin, wiring, initial);
+        (m.mhz, m.cycles_per_us) = (mhz, mhz.unwrap_or(125));
+        Ok(Box::new(m))
     },
 };
 
 /// One `pins` entry, and whether its switch starts actuated.
-fn pin_wiring(t: &mut Params, cycles_per_us: u64) -> Result<(PinWiring, bool), String> {
+fn pin_wiring(t: &mut Params) -> Result<(PinWiring, bool), String> {
     let what = t.opt_str("as").map(str::to_string);
     let is = |k: &[&str]| what.as_deref().is_some_and(|w| k.contains(&w));
     // Keys that only make sense for some kinds of wiring.
@@ -279,14 +289,14 @@ fn pin_wiring(t: &mut Params, cycles_per_us: u64) -> Result<(PinWiring, bool), S
         }
     };
     let pull = t.opt_str("pull").map(|p| p == "up");
-    let bounce = t.opt_int("bounce_us").unwrap_or(0) as u64 * cycles_per_us;
+    let bounce_us = t.opt_int("bounce_us").unwrap_or(0) as u64;
     let on = t.opt_str("initial") == Some("on");
     Ok((
         PinWiring {
             wire,
             name,
             pull,
-            bounce,
+            bounce_us,
         },
         on,
     ))
@@ -312,6 +322,8 @@ impl Mcp23008 {
         let to_vcc = mask(&|w| sw(w).is_some_and(|s| s.to_vcc));
         Mcp23008 {
             addr,
+            mhz: None,
+            cycles_per_us: 125,
             int_pin,
             switches,
             nc,
@@ -449,7 +461,7 @@ impl Mcp23008 {
         // The contact moves at once; with bounce it then chatters until
         // `bounce` after the last movement.
         self.contact = self.contact & !bit | (self.actuated ^ self.nc) & bit;
-        let bounce = self.wiring[n].bounce;
+        let bounce = self.wiring[n].bounce_us * self.cycles_per_us;
         if bounce > 0 {
             self.settles_at[n] = io.cycles() + bounce;
             if self.next_flip[n].is_none() {
@@ -466,7 +478,7 @@ impl Mcp23008 {
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 17;
         self.rng ^= self.rng << 5;
-        let bounce = self.wiring[n].bounce;
+        let bounce = self.wiring[n].bounce_us * self.cycles_per_us;
         let span = (bounce / 4 - bounce / 16).max(1);
         let gap = (bounce / 16 + self.rng as u64 % span).max(1);
         let at = (io.cycles() + gap).min(self.settles_at[n]);
@@ -609,6 +621,10 @@ impl Mcp23008 {
 }
 
 impl Device for Mcp23008 {
+    fn clock(&mut self, _at: u64, hz: u64) {
+        self.cycles_per_us = self.mhz.unwrap_or(hz / 1_000_000);
+    }
+
     fn attach(&mut self, io: &mut Io) {
         self.prev = self.gpio_value();
         self.reported = self.pin_levels();

@@ -60,6 +60,11 @@ fn round4(n: u32) -> u32 {
 }
 
 impl Bt {
+    /// The core clock changed.
+    pub fn set_cycles_per_us(&mut self, cycles_per_us: u64) {
+        self.cycles_per_us = cycles_per_us;
+    }
+
     pub fn new(backend: Box<dyn HciBackend>, cycles_per_us: u64) -> Self {
         Self {
             cycles_per_us,

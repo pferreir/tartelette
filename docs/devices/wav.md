@@ -17,7 +17,7 @@ digital level stays whatever pulls or other parts make it.
 | `channel` | `left` \| `right` \| `mix` | `mix` | the channel of a stereo file to play |
 | `loop` | `off` \| `on` | `off` | start over at the end of the file |
 | `autoplay` | `off` \| `on` | `off` | play from power-up, and each file as it is loaded |
-| `mhz` | 1..1000 | `125` | core clock, to turn time into cycles |
+| `mhz` | 1..1000 | clk_sys | core clock, to turn time into cycles |
 
 ```toml
 [parts.mic]

@@ -154,6 +154,12 @@ pub trait Device: Any + Send {
     /// the cycle that was asked for.
     fn timer(&mut self, _io: &mut Io) {}
 
+    /// The chip's clock (clk_sys, which the cycles count) is `hz` from cycle
+    /// `at` on: a device that turns time into cycles follows it, unless its
+    /// board-file keys fix a rate (`mhz`). Called when the board is plugged
+    /// in, and on each change after.
+    fn clock(&mut self, _at: u64, _hz: u64) {}
+
     /// The voltage this device puts on `pin` at core cycle `cycles`, if it
     /// drives that pin with an analog signal. Asked by the chip's ADC when a
     /// conversion samples the pin; must not depend on how often it is asked.

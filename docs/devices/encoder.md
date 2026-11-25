@@ -22,7 +22,7 @@ Parts disagree on which contact leads clockwise; `cw = "dt"` swaps them.
 | `dt` | GPIO | required | contact B |
 | `cw` | `clk` \| `dt` | `clk` | the contact that leads when turning clockwise |
 | `step_us` | 1..1000000 | 300 | time between transitions, in µs |
-| `mhz` | 1..1000 | 125 | core clock |
+| `mhz` | 1..1000 | clk_sys | core clock |
 
 ```toml
 [parts.knob]

@@ -173,6 +173,11 @@ const QUIET_VARS: &[&str] = &[
 ];
 
 impl Whd {
+    /// The core clock changed.
+    pub fn set_cycles_per_us(&mut self, cycles_per_us: u64) {
+        self.cycles_per_us = cycles_per_us;
+    }
+
     pub fn new(mac: [u8; 6], aps: Vec<Ap>, cycles_per_us: u64) -> Self {
         Self {
             mac,

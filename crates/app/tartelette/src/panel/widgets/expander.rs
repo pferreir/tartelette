@@ -71,7 +71,7 @@ pub(in crate::panel) fn expander(
         match role {
             CellRole::Switch { latching } => {
                 hover += if latching { ": toggle" } else { ": switch" };
-                if wiring.bounce > 0 {
+                if wiring.bounce_us > 0 {
                     hover += " (bouncy)";
                 }
             }

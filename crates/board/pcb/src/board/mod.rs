@@ -697,6 +697,13 @@ impl Board {
         })
     }
 
+    /// The chip's clock is `hz` from cycle `at` on (see [`Device::clock`]).
+    pub fn set_clock(&mut self, at: u64, hz: u64) {
+        for p in &mut self.parts {
+            p.device.clock(at, hz);
+        }
+    }
+
     /// Plug the board into the pins: devices set the pins they drive, then
     /// everyone samples the resulting levels. No events are emitted.
     pub fn attach(&mut self, pins: &mut dyn Pins) {

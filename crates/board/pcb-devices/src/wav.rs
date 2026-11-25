@@ -39,6 +39,8 @@ pub struct Wav {
     pub looping: bool,
     /// Play from power-up, and each file as it is loaded.
     pub autoplay: bool,
+    /// Whether `mhz` fixes the clock, and its cycles a second.
+    fixed: bool,
     cycles_per_sec: u64,
     /// The loaded file's name, mono samples and rate.
     pub name: Option<String>,
@@ -85,7 +87,13 @@ pub const KIND: Kind = Kind {
             "play from power-up, and each file as it is loaded",
         )
         .default_str("off"),
-        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+        Param::int(
+            "mhz",
+            1,
+            1000,
+            "core clock, to turn time into cycles (default: the chip's clk_sys)",
+        )
+        .optional(),
     ],
     build: |p| {
         let channel = match p.str("channel") {
@@ -101,7 +109,8 @@ pub const KIND: Kind = Kind {
             channel,
             looping: p.str("loop") == "on",
             autoplay: p.str("autoplay") == "on",
-            cycles_per_sec: p.int("mhz") as u64 * 1_000_000,
+            fixed: p.opt_int("mhz").is_some(),
+            cycles_per_sec: p.opt_int("mhz").unwrap_or(125) as u64 * 1_000_000,
             name: None,
             samples: Vec::new(),
             rate: 1,
@@ -224,10 +233,29 @@ impl Device for Wav {
     }
 
     fn timer(&mut self, io: &mut Io) {
-        // Wake-ups from before a stop or a rewind find it still playing.
-        if self.playing() && !self.looping && self.elapsed(io.cycles()) >= self.length() {
-            self.set_playing(io, false);
+        // Wake-ups from before a stop or a rewind find it still playing; one
+        // from before a clock change may come early.
+        if self.playing() && !self.looping {
+            if self.elapsed(io.cycles()) >= self.length() {
+                self.set_playing(io, false);
+            } else {
+                self.schedule_end(io);
+            }
         }
+    }
+
+    fn clock(&mut self, at: u64, hz: u64) {
+        if self.fixed || hz == self.cycles_per_sec {
+            return;
+        }
+        // What has played so far, in cycles of the new clock; playing on
+        // from `at`.
+        let played = self.elapsed(at);
+        self.played = (played as u128 * hz as u128 / self.cycles_per_sec as u128) as u64;
+        if self.since.is_some() {
+            self.since = Some(at);
+        }
+        self.cycles_per_sec = hz;
     }
 
     fn analog(&self, pin: usize, cycles: u64) -> Option<f32> {
@@ -339,6 +367,7 @@ mod tests {
             channel: Channel::Mix,
             looping,
             autoplay: false,
+            fixed: true,
             cycles_per_sec: 1_000_000,
             name: None,
             samples: Vec::new(),

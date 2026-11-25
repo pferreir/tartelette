@@ -30,6 +30,10 @@ pub struct Encoder {
     dt: usize,
     /// DT, not CLK, leads when turning clockwise.
     dt_leads: bool,
+    /// Time between transitions, the `mhz` key if set, and the cycles the
+    /// former takes at the clock.
+    step_us: u64,
+    mhz: Option<u64>,
     step_cycles: u64,
     /// Current phase 0..4 and the phase steps still to make (+1 / -1 each).
     phase: usize,
@@ -61,16 +65,24 @@ pub const KIND: Kind = Kind {
             "time between transitions, in microseconds",
         )
         .default_int(300),
-        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+        Param::int(
+            "mhz",
+            1,
+            1000,
+            "core clock, to turn time into cycles (default: the chip's clk_sys)",
+        )
+        .optional(),
     ],
     build: |p| {
         let (clk, dt, dt_leads) = (p.pin("clk"), p.pin("dt"), p.str("cw") == "dt");
-        let step_cycles = p.int("step_us") as u64 * p.int("mhz") as u64;
+        let (step_us, mhz) = (p.int("step_us") as u64, p.opt_int("mhz").map(|m| m as u64));
         Ok(Box::new(Encoder {
             clk,
             dt,
             dt_leads,
-            step_cycles,
+            step_us,
+            mhz,
+            step_cycles: step_us * mhz.unwrap_or(125),
             phase: 0,
             queue: VecDeque::new(),
             steps: 0,
@@ -92,6 +104,11 @@ impl Encoder {
 }
 
 impl Device for Encoder {
+    fn clock(&mut self, _at: u64, hz: u64) {
+        let cycles_per_us = self.mhz.unwrap_or(hz / 1_000_000);
+        self.step_cycles = self.step_us * cycles_per_us;
+    }
+
     fn attach(&mut self, io: &mut Io) {
         self.drive(io);
     }

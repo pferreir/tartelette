@@ -92,6 +92,13 @@ pub struct Chip {
 }
 
 impl Chip {
+    /// The core clock changed.
+    pub fn set_cycles_per_us(&mut self, cycles_per_us: u64) {
+        self.cycles_per_ms = cycles_per_us * 1000;
+        self.whd.set_cycles_per_us(cycles_per_us);
+        self.bt.set_cycles_per_us(cycles_per_us);
+    }
+
     pub fn new(whd: Whd, bt: Bt, cycles_per_us: u64) -> Self {
         Self {
             trace: alloc::collections::VecDeque::new(),

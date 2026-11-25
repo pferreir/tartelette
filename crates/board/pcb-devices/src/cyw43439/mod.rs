@@ -61,6 +61,8 @@ pub struct Cyw43439 {
     dio: usize,
     cs: usize,
     clk: usize,
+    /// The `mhz` key if set, and the cycles a µs takes at the clock.
+    mhz: Option<u64>,
     cycles_per_us: u64,
     mac: [u8; 6],
     aps: Vec<Ap>,
@@ -126,7 +128,13 @@ pub const KIND: Kind = Kind {
         Param::pin("clk", "serial clock"),
         Param::str("mac", "MAC address, six hex bytes like 28:cd:c1:00:00:01")
             .default_str("28:cd:c1:00:00:01"),
-        Param::int("mhz", 1, 1000, "core clock, to turn time into cycles").default_int(125),
+        Param::int(
+            "mhz",
+            1,
+            1000,
+            "core clock, to turn time into cycles (default: the chip's clk_sys)",
+        )
+        .optional(),
         Param::tables(
             "aps",
             &[
@@ -144,7 +152,7 @@ pub const KIND: Kind = Kind {
     build: |p| {
         let (on, dio, cs, clk) = (p.pin("on"), p.pin("dio"), p.pin("cs"), p.pin("clk"));
         let mac = parse_mac(p.str("mac"))?;
-        let cycles_per_us = p.int("mhz") as u64;
+        let mhz = p.opt_int("mhz").map(|m| m as u64);
         let tables = p.tables("aps");
         if tables.len() > MAX_APS {
             return Err(alloc::format!("at most {MAX_APS} access points"));
@@ -160,15 +168,9 @@ pub const KIND: Kind = Kind {
             }
             aps.push(ap);
         }
-        Ok(Box::new(Cyw43439::new(
-            on,
-            dio,
-            cs,
-            clk,
-            mac,
-            aps,
-            cycles_per_us,
-        )))
+        let mut c = Cyw43439::new(on, dio, cs, clk, mac, aps, mhz.unwrap_or(125));
+        c.mhz = mhz;
+        Ok(Box::new(c))
     },
 };
 
@@ -188,6 +190,7 @@ impl Cyw43439 {
             dio,
             cs,
             clk,
+            mhz: None,
             cycles_per_us,
             mac,
             aps,
@@ -351,6 +354,11 @@ impl Cyw43439 {
 }
 
 impl Device for Cyw43439 {
+    fn clock(&mut self, _at: u64, hz: u64) {
+        self.cycles_per_us = self.mhz.unwrap_or(hz / 1_000_000);
+        self.chip.set_cycles_per_us(self.cycles_per_us);
+    }
+
     fn watched_pins(&self) -> u32 {
         1 << self.on | 1 << self.cs | 1 << self.clk
     }
