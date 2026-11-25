@@ -74,6 +74,11 @@ impl Sio {
         !self.rx[core].is_empty() || self.sticky[core] != 0
     }
 
+    /// The spinlocks held (bit n = lock n).
+    pub fn locks(&self) -> u32 {
+        self.locks
+    }
+
     /// Whether `off` (relative to the SIO base) is one of the registers here.
     pub fn handles(off: u32) -> bool {
         matches!(off, 0x000 | 0x050..=0x0FC | 0x100..=0x17C)

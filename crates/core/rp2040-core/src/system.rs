@@ -41,6 +41,10 @@ use crate::{
 /// While the core sleeps with DMA running, time advances in slices of this
 /// many cycles (the DMA moves one item per cycle).
 const DMA_SLICE: u64 = 32;
+/// The longest loop a core is fast-forwarded through, in cycles.
+const MAX_LAP: u64 = 5_000;
+/// Cycles a core waits before trying again after a loop didn't qualify.
+const SPIN_BACKOFF: u64 = 200_000;
 
 /// clk_sys is fixed at the SDK default of 125 MHz.
 pub const CYCLES_PER_US: u64 = 125;
@@ -1337,6 +1341,156 @@ pub struct System {
     /// Each clk_sys rate the run has had: the cycle it started at, the
     /// emulated seconds by then, and the rate.
     clock_log: Vec<(u64, f64, u64)>,
+    /// A core fast-forwarded through a loop, per core (see `try_spin`).
+    spins: [Option<Spin>; 2],
+    /// Where each core was at its recent batch ends, by PC, to spot a loop;
+    /// and the cycle before which it doesn't look for one again.
+    seen: [[Seen; SEEN]; 2],
+    spin_backoff: [u64; 2],
+}
+
+const SEEN: usize = 32;
+
+/// A core's state at a batch end: its PC, the cycle, and a hash of the
+/// rest once the PC came round again (it is hashed only then).
+#[derive(Clone, Copy, Default)]
+struct Seen {
+    pc: u32,
+    at: u64,
+    hash: Option<u64>,
+}
+
+/// A core going round a loop that leaves everything as it found it, while
+/// the other core sleeps: it is set aside as if asleep, and brought back
+/// (see `System::materialize`) to where it would be when anything could
+/// tell the difference.
+struct Spin {
+    /// The core as each lap starts, when the first skipped lap started, and
+    /// a lap's length in cycles.
+    start: Cpu,
+    at: u64,
+    lap: u64,
+    /// Whether interrupts stay masked all the way round.
+    primask: bool,
+    /// Where in the lap each instruction ends, in cycles from its start
+    /// (the last one is `lap`).
+    ends: Vec<u32>,
+    /// SRAM words the lap reads or writes (word addresses, sorted).
+    watch: Vec<u32>,
+}
+
+/// The core's architectural state, for comparing two points of a loop.
+fn same_state(a: &Cpu, b: &Cpu) -> bool {
+    a.r == b.r
+        && (a.lr, a.pc, a.msp, a.psp, a.vtor) == (b.lr, b.pc, b.msp, b.psp, b.vtor)
+        && (a.n, a.z, a.c, a.v, a.primask, a.spsel) == (b.n, b.z, b.c, b.v, b.primask, b.spsel)
+        && (a.ipsr, a.event) == (b.ipsr, b.event)
+}
+
+fn state_hash(c: &Cpu) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    let flags = (c.n as u32) | (c.z as u32) << 1 | (c.c as u32) << 2 | (c.v as u32) << 3;
+    for w in
+        c.r.iter()
+            .chain(&[c.lr, c.msp, c.psp, flags, c.ipsr as u32])
+    {
+        h = (h ^ *w as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// The bus a lap is tried on: memory reads come from the system, writes go
+/// to a shadow of the words written and the spinlocks, so nothing is
+/// changed; `ok` turns off at anything else (any other device than the
+/// SIO's spinlocks and CPUID).
+struct DryBus<'a> {
+    bus: &'a SystemBus,
+    core: usize,
+    ok: bool,
+    locks: u32,
+    /// SRAM words the lap reads or writes, and the ones it wrote, with
+    /// their values as of now.
+    watch: Vec<u32>,
+    shadow: Vec<(u32, u32)>,
+}
+
+impl DryBus<'_> {
+    fn word(&mut self, addr: u32) -> u32 {
+        let a = addr & !3;
+        match addr >> 24 {
+            0x00 if a < BOOTROM_SIZE => self.bus.bootrom.read32(a),
+            0x10..=0x13 => self.bus.flash.read32(a & 0xFF_FFFF),
+            0x20 | 0x21 if a & 0xFF_FFFF < SRAM_SIZE => {
+                self.watch.push(a);
+                match self.shadow.iter().find(|s| s.0 == a) {
+                    Some(s) => s.1,
+                    None => self.bus.sram.read32(a & 0xFF_FFFF),
+                }
+            }
+            0xD0 => match a - SIO_BASE {
+                0x000 => self.core as u32,
+                off @ 0x100..=0x17C => {
+                    let bit = 1 << ((off - 0x100) >> 2);
+                    let free = self.locks & bit == 0;
+                    self.locks |= bit;
+                    if free { bit } else { 0 }
+                }
+                _ => {
+                    self.ok = false;
+                    0
+                }
+            },
+            _ => {
+                self.ok = false;
+                0
+            }
+        }
+    }
+
+    /// Store `val`'s bytes selected by `mask` (in place) at `addr`'s word.
+    fn store(&mut self, addr: u32, val: u32, mask: u32) {
+        let a = addr & !3;
+        match addr >> 24 {
+            0x20 | 0x21 if a & 0xFF_FFFF < SRAM_SIZE => {
+                let old = self.word(a);
+                let new = old & !mask | val & mask;
+                match self.shadow.iter_mut().find(|s| s.0 == a) {
+                    Some(s) => s.1 = new,
+                    None => self.shadow.push((a, new)),
+                }
+            }
+            0xD0 if matches!(a - SIO_BASE, 0x100..=0x17C) => {
+                self.locks &= !(1 << ((a - SIO_BASE - 0x100) >> 2));
+            }
+            _ => self.ok = false,
+        }
+    }
+}
+
+impl Bus for DryBus<'_> {
+    fn read8(&mut self, addr: u32) -> u8 {
+        (self.word(addr) >> (8 * (addr & 3))) as u8
+    }
+    fn read16(&mut self, addr: u32) -> u16 {
+        (self.word(addr) >> (8 * (addr & 2))) as u16
+    }
+    fn read32(&mut self, addr: u32) -> u32 {
+        self.word(addr)
+    }
+    fn fetch16(&mut self, addr: u32) -> u16 {
+        (self.word(addr) >> (8 * (addr & 2))) as u16
+    }
+    fn write8(&mut self, addr: u32, val: u8) {
+        let sh = 8 * (addr & 3);
+        self.store(addr, (val as u32) << sh, 0xFF << sh)
+    }
+    fn write16(&mut self, addr: u32, val: u16) {
+        let sh = 8 * (addr & 2);
+        self.store(addr, (val as u32) << sh, 0xFFFF << sh)
+    }
+    fn write32(&mut self, addr: u32, val: u32) {
+        self.store(addr, val, !0)
+    }
 }
 
 /// clk_sys from some cycle on: its rate, the cycle it took it at, and the
@@ -1389,6 +1543,9 @@ impl System {
             usb_host: usbhost::Host::new(CYCLES_PER_US),
             usb_wake: None,
             clock_log: alloc::vec![(0, 0.0, CYCLES_PER_US * 1_000_000)],
+            spins: [None, None],
+            seen: [[Seen::default(); SEEN]; 2],
+            spin_backoff: [0; 2],
         };
         sys.reset_core1();
         sys
@@ -1701,6 +1858,10 @@ impl System {
             let Some(t) = self.bus.dma.pick(dreq) else {
                 break;
             };
+            if self.spins.iter().any(Option::is_some) {
+                self.dma_touches(t.read);
+                self.dma_touches(t.write);
+            }
             // A wrap is one request: the transfer it paces serves it.
             if let pwm @ 24..=31 = self.bus.dma.view(t.channel).treq {
                 self.bus.pwm.served(pwm as usize - 24);
@@ -1950,7 +2111,8 @@ impl System {
     /// current device time.
     fn try_wake(&mut self, core: usize) {
         let cpu = &mut self.cores[core];
-        if !cpu.sleeping || self.held[core] {
+        // A spinning core isn't asleep: `check_spins` brings it back.
+        if !cpu.sleeping || self.held[core] || self.spins[core].is_some() {
             return;
         }
         let by_irq = self.bus.ppb[core].wakes_core();
@@ -1965,11 +2127,233 @@ impl System {
         }
     }
 
+    // ---- spinning ----------------------------------------------------------
+    //
+    // Firmware often spends a core's time going round a loop that changes
+    // nothing (polling a queue, a flag, a spinlocked structure) while the
+    // other core sleeps. Such a core is set aside as if asleep, so the
+    // emulator skips ahead to the next event, and brought back exactly where
+    // it would be when anything could tell: the other core waking, an
+    // exception pending for it, the DMA about to touch what the loop reads
+    // or writes, the end of a run. Meanwhile the devices are brought up to
+    // date at its instruction boundaries, as they would be with it running.
+    // A loop qualifies when one lap, tried on a copy of the core, comes back
+    // to the same core state, leaves each SRAM word it wrote as it found it
+    // and the spinlocks as they were, and touches no device but the SIO's
+    // spinlocks and CPUID. Runs without batching never spin, so the tests
+    // that compare the two check that spinning can't be seen.
+
+    /// After a batch of `core`'s: if it is back in a state it was in a
+    /// moment ago, check the loop and set it spinning.
+    fn try_spin(&mut self, core: usize) {
+        let other = 1 - core;
+        let o = &self.cores[other];
+        // (The batch may have stopped to let it wake.)
+        let other_out = self.held[other]
+            || o.sleeping && !(self.bus.ppb[other].wakes_core() || o.wfe && o.event);
+        let cpu = &self.cores[core];
+        // Only where another batch could start: nothing waits for a sync.
+        if !self.can_batch()
+            || self.spins[core].is_some()
+            || self.spins[other].is_some()
+            || !other_out
+            || cpu.sleeping
+            || cpu.cycles < self.spin_backoff[core]
+            || self.bus.stream.is_some()
+            || self.bus.touched
+            || self.bus.lines_dirty
+        {
+            return;
+        }
+        let (pc, now) = (cpu.pc, cpu.cycles);
+        let slot = &mut self.seen[core][(pc as usize >> 1) % SEEN];
+        if slot.pc != pc || now - slot.at > MAX_LAP {
+            *slot = Seen {
+                pc,
+                at: now,
+                hash: None,
+            };
+            return;
+        }
+        let hash = state_hash(cpu);
+        let again = slot.hash == Some(hash);
+        *slot = Seen {
+            pc,
+            at: now,
+            hash: Some(hash),
+        };
+        if !again || self.bus.ppb[core].pick(cpu.ipsr, cpu.primask).is_some() {
+            return;
+        }
+        self.try_lap(core);
+    }
+
+    /// Try `core` one lap from where it is, on a copy, without changing
+    /// anything; set it spinning if the lap qualifies.
+    fn try_lap(&mut self, core: usize) {
+        let start = self.cores[core].clone();
+        let mut cpu = start.clone();
+        let mut bus = DryBus {
+            bus: &self.bus,
+            core,
+            ok: true,
+            locks: self.bus.sio.locks(),
+            watch: Vec::new(),
+            shadow: Vec::new(),
+        };
+        // Whether interrupts are let in somewhere in the lap.
+        let mut unmasked = !start.primask;
+        let mut ends = Vec::new();
+        let back = loop {
+            cpu.step(&mut bus);
+            unmasked |= !cpu.primask;
+            ends.push((cpu.cycles - start.cycles) as u32);
+            if !bus.ok
+                || cpu.cycles - start.cycles > MAX_LAP
+                || cpu.sleeping
+                || cpu.bkpt.is_some()
+                || cpu.fault.is_some()
+                || cpu.sev_sent
+                || cpu.ipsr != start.ipsr
+            {
+                break false;
+            }
+            if same_state(&cpu, &start) {
+                break true;
+            }
+        };
+        let DryBus {
+            locks,
+            mut watch,
+            shadow,
+            ..
+        } = bus;
+        let unchanged = shadow
+            .iter()
+            .all(|&(a, v)| self.bus.sram.read32(a & 0xFF_FFFF) == v);
+        if !(back && unchanged && locks == self.bus.sio.locks()) {
+            self.spin_backoff[core] = start.cycles + SPIN_BACKOFF;
+            return;
+        }
+        watch.sort_unstable();
+        watch.dedup();
+        self.spins[core] = Some(Spin {
+            lap: cpu.cycles - start.cycles,
+            at: start.cycles,
+            primask: !unmasked,
+            ends,
+            start,
+            watch,
+        });
+        // Set aside as if asleep: nothing schedules it, the other core
+        // doesn't wait for it, and its clock follows the system's.
+        self.cores[core].sleeping = true;
+    }
+
+    /// Bring spinning `core` to cycle `t`: back to the start of the lap
+    /// under way at `t`, then on to `t` without taking exceptions (one that
+    /// became pending at `t` is taken from there, as it would have been).
+    fn materialize(&mut self, core: usize, t: u64) {
+        let Some(spin) = self.spins[core].take() else {
+            return;
+        };
+        let laps = t.saturating_sub(spin.at) / spin.lap;
+        let mut cpu = spin.start;
+        cpu.cycles = spin.at + laps * spin.lap;
+        self.cores[core] = cpu;
+        self.bus.core = core;
+        while self.cores[core].cycles < t {
+            self.bus.instruction_start(self.cores[core].cycles);
+            self.cores[core].step(&mut self.bus);
+        }
+        self.bus.core = 0;
+        self.refresh_core_views();
+    }
+
+    /// Bring back a spinning core that anything could now tell from one
+    /// going round its loop: the other core is awake, or it has an
+    /// exception to take.
+    fn check_spins(&mut self) {
+        for core in 0..2 {
+            let Some(spin) = &self.spins[core] else {
+                continue;
+            };
+            let other = 1 - core;
+            let other_awake = !self.held[other] && !self.cores[other].sleeping;
+            // (Brought back where it would still have them masked, it takes
+            // them when it would.)
+            let pending = self.bus.ppb[core]
+                .pick(spin.start.ipsr, spin.primask)
+                .is_some();
+            if other_awake || pending {
+                self.materialize(core, self.bus.time.max(spin.at));
+            }
+        }
+    }
+
+    /// Where the system goes next while a core spins, if one does: devices
+    /// are brought up to the spinning core's instruction boundaries, as
+    /// they would be with it running. To the next one while the system
+    /// couldn't run a batch; else to the first at or after where a batch
+    /// would stop.
+    fn spin_step(&self, end: u64) -> Option<u64> {
+        let spin = self.spins.iter().flatten().next()?;
+        let to = match self.can_batch() {
+            true => self.batch_limit().min(end),
+            false => self.bus.time + 1,
+        };
+        // The first boundary at or after `to`.
+        let to = to.max(self.bus.time + 1).max(spin.at);
+        let (laps, into) = ((to - spin.at) / spin.lap, (to - spin.at) % spin.lap);
+        let off = match into {
+            0 => 0,
+            _ => *spin.ends.iter().find(|&&e| e as u64 >= into).unwrap() as u64,
+        };
+        Some(spin.at + laps * spin.lap + off)
+    }
+
+    /// Bring every spinning core to the present (a run ends), and the
+    /// devices to the earliest running core, as after a batch.
+    fn materialize_all(&mut self) {
+        if self.spins.iter().all(Option::is_none) {
+            return;
+        }
+        for core in 0..2 {
+            self.materialize(core, self.bus.time);
+        }
+        let running = (0..2)
+            .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
+            .map(|i| self.cores[i].cycles)
+            .min();
+        if let Some(t) = running {
+            self.advance_to(t.max(self.bus.time));
+        }
+    }
+
+    /// The DMA is about to read or write `addr`: a spinning core whose
+    /// loop reads or writes it comes back first.
+    fn dma_touches(&mut self, addr: u32) {
+        if addr >> 24 != 0x20 && addr >> 24 != 0x21 {
+            return;
+        }
+        for core in 0..2 {
+            if self.spins[core]
+                .as_ref()
+                .is_some_and(|s| s.watch.binary_search(&(addr & !3)).is_ok())
+            {
+                self.materialize(core, self.bus.time);
+            }
+        }
+    }
+
     /// The core that executes next: of the running cores, the one whose
     /// clock is earliest (core 0 on ties). None if every core is asleep or held.
     fn next_core(&mut self) -> Option<usize> {
         self.try_wake(0);
         self.try_wake(1);
+        if self.spins.iter().any(Option::is_some) {
+            self.check_spins();
+        }
         (0..2)
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .min_by_key(|&i| (self.cores[i].cycles, i))
@@ -2169,6 +2553,10 @@ impl System {
         self.fault_stop = None;
         while self.bus.time < end {
             let Some(core) = self.next_core() else {
+                if let Some(t) = self.spin_step(end) {
+                    self.advance_to(t);
+                    continue;
+                }
                 // Nothing to execute: skip ahead to the next device event,
                 // in short slices while the DMA controller or a PIO has work to do.
                 let timer = self
@@ -2203,17 +2591,21 @@ impl System {
             };
             if self.can_batch() {
                 self.run_batch(core, end);
+                self.try_spin(core);
             } else {
                 self.step_core(core);
             }
             if let Some(n) = self.cores[core].bkpt.take() {
                 self.bkpt_at = Some((core, self.cores[core].pc.wrapping_sub(2)));
+                self.materialize_all();
                 return StopReason::Breakpoint(n);
             }
             if let Some((pc, cause)) = self.fault_stop.take() {
+                self.materialize_all();
                 return StopReason::Fault { core, pc, cause };
             }
         }
+        self.materialize_all();
         StopReason::CycleLimit
     }
 
