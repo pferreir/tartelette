@@ -81,14 +81,15 @@ firmware's side; this is how it does it, in
 `System::run(max_cycles)` loops until device time reaches the end:
 
 1. `next_core` wakes sleeping cores that have an interrupt or event, and
-   picks the running core with the lowest cycle count (core 0 on a tie).
+   picks the running core whose clock is in the earliest turn slice
+   (`turn_shift`, 128 cycles; core 0 when both are in the same one).
 2. If `can_batch`, `run_batch` runs that core's instructions back to back
    (`Cpu::run_threaded`) until the next device event (`batch_limit`) or an
    access that needs the system. On the other core's turn, `run_turn`
    returns and the batch carries on with that core, without syncing the
    devices in between. Otherwise `step_core` runs one instruction, or takes
    a pending exception.
-3. `advance_to` brings the devices up to the earliest running core,
+3. `advance_to` brings the devices up to the running core ahead,
    stopping at each board part's timer and each USB host poll on the way.
    `advance_segment` does the work between those: the bus transfers the
    firmware queued, one DMA item a cycle, the PIO blocks, then
@@ -106,8 +107,8 @@ firmware's side; this is how it does it, in
       v
   next_core ---- no core running ----> skip ahead (advance_to) to the next
       |                                event, or stop with Sleeping
-      | the running core with the
-      | lowest cycle count
+      | the running core in the
+      | earliest turn slice
       v
   can_batch? --yes--> run_batch, then try_spin -----+
       |                                             |
@@ -116,7 +117,7 @@ firmware's side; this is how it does it, in
   step_core: one instruction or exception ----------+
                                                     |
                                                     v
-                          advance_to(earliest running core)
+                          advance_to(the running core ahead)
                               | stops at board timers and USB polls
                               v
                           advance_segment

@@ -245,8 +245,8 @@ pub struct SystemBus {
     sys_hz: u64,
     clock_changed: bool,
     /// Device time: the cycle up to which peripherals have been brought
-    /// current. Each core keeps its own clock; this one follows the earliest
-    /// core that is still running.
+    /// current. Each core keeps its own clock; this one follows the core
+    /// ahead of those still running (see [`System::turn_shift`]).
     pub(crate) time: u64,
     /// While a core runs a batch of instructions without syncing devices, the
     /// cycle its current instruction starts at (otherwise <= `time`).
@@ -1329,6 +1329,10 @@ pub struct System {
     /// Let `run` execute quiet stretches in batches (see `run_batch`). Only
     /// off to check that batching changes nothing.
     pub batching: bool,
+    /// The cores take turns in slices of `1 << turn_shift` cycles: core 0
+    /// runs the instructions that start in a slice, then core 1, and the
+    /// devices follow the core ahead. 0 is one instruction at a time.
+    pub turn_shift: u32,
     /// Problems spotted while running (a bus used with the board's pins not
     /// routed to it), for the host to show. Each is reported once.
     pub warnings: Vec<String>,
@@ -1362,6 +1366,9 @@ pub struct System {
 }
 
 const SEEN: usize = 32;
+
+/// See [`System::turn_shift`]: 128 cycles, about 1 µs at 125 MHz.
+pub const TURN_SHIFT: u32 = 7;
 
 /// A core's state at a batch end: its PC, the cycle, and a hash of the
 /// rest once the PC came round again (it is hashed only then).
@@ -1545,6 +1552,7 @@ impl System {
             held: [false; 2],
             quiet: false,
             batching: true,
+            turn_shift: TURN_SHIFT,
             warnings: Vec::new(),
             wiring_checked: [false; 4],
             stop_on_fault: false,
@@ -2334,7 +2342,7 @@ impl System {
     }
 
     /// Bring every spinning core to the present (a run ends), and the
-    /// devices to the earliest running core, as after a batch.
+    /// devices to the running core ahead, as after a batch.
     fn materialize_all(&mut self) {
         if self.spins.iter().all(Option::is_none) {
             return;
@@ -2345,7 +2353,7 @@ impl System {
         let running = (0..2)
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
-            .min();
+            .max();
         if let Some(t) = running {
             self.advance_to(t.max(self.bus.time));
         }
@@ -2368,7 +2376,8 @@ impl System {
     }
 
     /// The core that executes next: of the running cores, the one whose
-    /// clock is earliest (core 0 on ties). None if every core is asleep or held.
+    /// clock is in the earliest turn slice (core 0 on ties). None if every
+    /// core is asleep or held.
     fn next_core(&mut self) -> Option<usize> {
         self.try_wake(0);
         self.try_wake(1);
@@ -2377,7 +2386,7 @@ impl System {
         }
         (0..2)
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
-            .min_by_key(|&i| (self.cores[i].cycles, i))
+            .min_by_key(|&i| (self.cores[i].cycles >> self.turn_shift, i))
     }
 
     /// Execute one instruction on `core`, or take its pending exception
@@ -2402,12 +2411,12 @@ impl System {
         self.note_fault(core);
         self.bus.core = 0;
         self.apply_psm();
-        // Devices follow the earliest core that is still running (or, if the
+        // Devices follow the core ahead of those still running (or, if the
         // step put the last running core to sleep, that core's clock).
         let running = (0..2)
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
-            .min();
+            .max();
         self.advance_to(
             running
                 .unwrap_or(self.cores[core].cycles)
@@ -2457,7 +2466,7 @@ impl System {
         let running = (0..2)
             .filter(|&i| !self.held[i] && !self.cores[i].sleeping)
             .map(|i| self.cores[i].cycles)
-            .min();
+            .max();
         self.advance_to(
             running
                 .unwrap_or(self.cores[core].cycles)
@@ -2469,7 +2478,7 @@ impl System {
         core
     }
 
-    /// Run `core` in a batch while it stays the earliest core. Returns
+    /// Run `core` in a batch while its turn lasts. Returns
     /// whether it stopped only because the other core's turn came, before
     /// `limit` and `end`.
     #[inline]
@@ -2492,14 +2501,17 @@ impl System {
                 }
                 // Run until one of the checks below could come out
                 // differently: the limits (the other core's turn included:
-                // it goes first once it is behind, or level and lower
-                // numbered), an access that needs the system, or a change
+                // it goes first once it is in an earlier slice, or the same
+                // and lower numbered), an access that needs the system, or a change
                 // to the core's own state. Between those, no exception
                 // can become pending, so none is looked for.
                 None => {
                     let o = &self.cores[other];
                     let turn = match !self.held[other] && !o.sleeping {
-                        true => o.cycles + (other > core) as u64,
+                        true => {
+                            ((o.cycles >> self.turn_shift) + (other > core) as u64)
+                                << self.turn_shift
+                        }
                         false => u64::MAX,
                     };
                     let cpu = &mut self.cores[core];
@@ -2529,7 +2541,9 @@ impl System {
                 | self.bus.lines_dirty;
             if !rare {
                 let o = &self.cores[other];
-                let other_first = !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core);
+                let other_first = !self.held[other]
+                    && !o.sleeping
+                    && (o.cycles >> self.turn_shift, other) < (c >> self.turn_shift, core);
                 if c >= *limit || c >= end || other_first {
                     return other_first && c < *limit && c < end;
                 }
@@ -2556,7 +2570,10 @@ impl System {
                 return false;
             }
             let o = &self.cores[other];
-            if !self.held[other] && !o.sleeping && (o.cycles, other) < (c, core) {
+            if !self.held[other]
+                && !o.sleeping
+                && (o.cycles >> self.turn_shift, other) < (c >> self.turn_shift, core)
+            {
                 return true;
             }
         }
@@ -3760,21 +3777,60 @@ mod tests {
 
     #[test]
     fn running_cores_interleave_by_clock() {
-        let mut sys = boot_two(&[ADDS_R0_1, LOOP_BACK], &[ADDS_R1_1, LOOP_BACK]);
-        assert_eq!(sys.run(2_000), StopReason::CycleLimit);
-        let (a, b) = (sys.cores[0].r[0], sys.cores[1].r[1]);
-        assert!(a > 100 && b > 100, "both made progress: {a} {b}");
-        assert!(a.abs_diff(b) <= 2, "instruction-level lockstep: {a} vs {b}");
-        assert!(sys.cores[0].cycles.abs_diff(sys.cores[1].cycles) <= 4);
+        for (shift, batching) in [
+            (0, true),
+            (0, false),
+            (TURN_SHIFT, true),
+            (TURN_SHIFT, false),
+        ] {
+            let mut sys = boot_two(&[ADDS_R0_1, LOOP_BACK], &[ADDS_R1_1, LOOP_BACK]);
+            (sys.turn_shift, sys.batching) = (shift, batching);
+            assert_eq!(sys.run(2_000), StopReason::CycleLimit);
+            let (a, b) = (sys.cores[0].r[0], sys.cores[1].r[1]);
+            assert!(a > 100 && b > 100, "both made progress: {a} {b}");
+            // Within a slice of each other, give or take an instruction.
+            let slice = 1u64 << shift;
+            assert!(
+                sys.cores[0].cycles.abs_diff(sys.cores[1].cycles) <= slice + 3,
+                "shift {shift}: {} vs {}",
+                sys.cores[0].cycles,
+                sys.cores[1].cycles
+            );
+            if shift == 0 {
+                assert!(a.abs_diff(b) <= 2, "instruction-level lockstep: {a} vs {b}");
+            }
+        }
     }
 
     #[test]
     fn step_runs_whichever_core_is_earliest() {
         let mut sys = boot_two(&[ADDS_R0_1, LOOP_BACK], &[ADDS_R1_1, LOOP_BACK]);
+        sys.turn_shift = 0;
         sys.step(); // tie: core 0
         assert_eq!((sys.cores[0].r[0], sys.cores[1].r[1]), (1, 0));
         sys.step(); // core 1 is now behind
         assert_eq!((sys.cores[0].r[0], sys.cores[1].r[1]), (1, 1));
+    }
+
+    #[test]
+    fn cores_take_turns_by_slice() {
+        let mut sys = boot_two(&[ADDS_R0_1, LOOP_BACK], &[ADDS_R1_1, LOOP_BACK]);
+        let slice = 1u64 << sys.turn_shift;
+        // Core 0 runs every instruction that starts in the first slice...
+        while sys.cores[0].cycles < slice {
+            sys.step();
+            assert_eq!(sys.cores[1].r[1], 0, "core 1 waits for its turn");
+        }
+        // ...then core 1 catches up through it, with the devices ahead.
+        sys.step();
+        assert_eq!(sys.cores[1].r[1], 1);
+        assert!(sys.bus.time >= slice);
+        while sys.cores[1].cycles < slice {
+            sys.step();
+        }
+        let a = sys.cores[0].r[0];
+        sys.step();
+        assert_eq!(sys.cores[0].r[0], a + 1, "core 0's next slice");
     }
 
     #[test]
@@ -3790,6 +3846,7 @@ mod tests {
     fn sev_wakes_a_core_in_wfe_but_not_in_wfi() {
         // Core 1 is already asleep in WFE when core 0 signals.
         let mut sys = boot_two(&[NOP, NOP, NOP, NOP, SEV, SPIN], &[WFE, MOVS_R5_1, SPIN]);
+        sys.turn_shift = 0;
         sys.step();
         sys.step();
         assert!(sys.cores[1].sleeping && sys.cores[1].wfe);
@@ -3797,13 +3854,14 @@ mod tests {
         assert_eq!(sys.cores[1].r[5], 1, "event delivered across cores");
 
         // An event sent before the WFE is remembered: the WFE doesn't sleep.
+        // (Past core 0's first turn: core 1 starts once it ends.)
         let mut sys = boot_two(&[SEV, SPIN], &[NOP, NOP, NOP, WFE, MOVS_R5_1, SPIN]);
-        sys.run(100);
+        sys.run(400);
         assert_eq!(sys.cores[1].r[5], 1);
 
         // WFI is not woken by events.
         let mut sys = boot_two(&[SEV, SPIN], &[NOP, NOP, NOP, WFI, MOVS_R5_1, SPIN]);
-        sys.run(100);
+        sys.run(400);
         assert!(sys.cores[1].sleeping && sys.cores[1].r[5] == 0);
     }
 
