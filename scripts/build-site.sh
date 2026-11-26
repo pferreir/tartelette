@@ -22,8 +22,7 @@
 #
 # Needs: the nightly toolchain with thumbv6m-none-eabi and
 # wasm32-unknown-unknown, trunk, and llvm-objcopy (or a versioned
-# llvm-objcopy-N) to strip the firmware. VARVARA=fetch builds the native
-# tartelette as well, which needs ALSA's headers on Linux (libasound2-dev).
+# llvm-objcopy-N) to strip the firmware.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
