@@ -12,6 +12,7 @@
 //! | `ws2812`   | WS2812 / SK6812 LED chain decoded from the data line   |
 //! | `dac8165`  | quad 14-bit DAC on a bit-banged serial link            |
 //! | `encoder`  | rotary encoder (quadrature contacts)                   |
+//! | `ps2mouse` | PS/2 mouse on clock and data lines                     |
 //! | `pot`      | potentiometer: a voltage between GND and 3V3 for the ADC |
 //! | `wav`      | WAV file player: an audio signal on a pin for the ADC  |
 //! | `speaker`  | speaker playing a DAC output or a GPIO's PWM as sound  |
@@ -39,6 +40,7 @@ pub mod midi;
 pub mod net;
 pub mod pcm5102;
 pub mod pot;
+pub mod ps2mouse;
 pub mod sdcard;
 pub mod speaker;
 pub mod ssd1306;
@@ -79,6 +81,7 @@ pub fn register_builtin(r: &mut Registry) {
         ws2812::KIND,
         dac8165::KIND,
         encoder::KIND,
+        ps2mouse::KIND,
         pot::KIND,
         wav::KIND,
         speaker::KIND,

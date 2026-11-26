@@ -70,6 +70,7 @@ with [Embassy](https://embassy.dev), [rp2040-hal](https://github.com/rp-rs/rp-ha
 | `led` | an LED on a GPIO | [led](docs/devices/led.md) |
 | `button` | a push button | [button](docs/devices/button.md) |
 | `encoder` | a rotary encoder | [encoder](docs/devices/encoder.md) |
+| `ps2mouse` | a PS/2 mouse | [ps2mouse](docs/devices/ps2mouse.md) |
 | `pot` | a potentiometer, for the ADC | [pot](docs/devices/pot.md) |
 | `wav` | a WAV file player, for the ADC | [wav](docs/devices/wav.md) |
 | `speaker` | a speaker, on a DAC channel or a GPIO (PWM) | [speaker](docs/devices/speaker.md) |

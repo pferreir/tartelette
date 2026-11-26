@@ -107,8 +107,8 @@
         "required": ["kind"],
         "properties": {
           "kind": {
-            "enum": ["led", "button", "mcp23008", "st7789", "ws2812", "dac8165", "encoder", "pot", "wav", "speaker", "midi", "pcm5102", "ssd1306", "sdcard", "cyw43439"],
-            "description": "what the part is:\n- led: LED on a pin\n- button: momentary switch to GND or 3V3\n- mcp23008: 8-bit I2C port expander with interrupt output\n- st7789: SPI TFT display controller with frame RAM\n- ws2812: WS2812 / SK6812 LED chain decoded from the data line\n- dac8165: quad 14-bit DAC on a bit-banged serial link\n- encoder: rotary encoder (quadrature contacts)\n- pot: potentiometer: a voltage between GND and 3V3 for the ADC\n- wav: WAV file player: an audio signal on a pin for the ADC\n- speaker: speaker playing a DAC output or a GPIO's PWM as sound\n- midi: MIDI in jack: host MIDI on a UART's RX or as serial on a pin\n- pcm5102: PCM5102A stereo I2S audio DAC\n- ssd1306: SSD1306 monochrome OLED controller on I2C\n- sdcard: SDHC card in SPI mode over a disk image\n- cyw43439: Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link"
+            "enum": ["led", "button", "mcp23008", "st7789", "ws2812", "dac8165", "encoder", "ps2mouse", "pot", "wav", "speaker", "midi", "pcm5102", "ssd1306", "sdcard", "cyw43439"],
+            "description": "what the part is:\n- led: LED on a pin\n- button: momentary switch to GND or 3V3\n- mcp23008: 8-bit I2C port expander with interrupt output\n- st7789: SPI TFT display controller with frame RAM\n- ws2812: WS2812 / SK6812 LED chain decoded from the data line\n- dac8165: quad 14-bit DAC on a bit-banged serial link\n- encoder: rotary encoder (quadrature contacts)\n- ps2mouse: PS/2 mouse on clock and data lines\n- pot: potentiometer: a voltage between GND and 3V3 for the ADC\n- wav: WAV file player: an audio signal on a pin for the ADC\n- speaker: speaker playing a DAC output or a GPIO's PWM as sound\n- midi: MIDI in jack: host MIDI on a UART's RX or as serial on a pin\n- pcm5102: PCM5102A stereo I2S audio DAC\n- ssd1306: SSD1306 monochrome OLED controller on I2C\n- sdcard: SDHC card in SPI mode over a disk image\n- cyw43439: Pico W Wi-Fi/Bluetooth chip on a bit-banged gSPI link"
           }
         },
         "allOf": [
@@ -479,6 +479,48 @@
                 }
               },
               "required": ["clk", "dt"],
+              "additionalProperties": false
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "ps2mouse"
+                }
+              }
+            },
+            "then": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "ps2mouse",
+                  "description": "PS/2 mouse on clock and data lines"
+                },
+                "clk": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "the clock line"
+                },
+                "data": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 29,
+                  "description": "the data line"
+                },
+                "model": {
+                  "enum": ["basic", "wheel", "explorer"],
+                  "description": "three buttons; a wheel (IntelliMouse); a wheel and five buttons (Explorer) (default \"wheel\")"
+                },
+                "mhz": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000,
+                  "description": "core clock, to turn time into cycles (default: the chip's clk_sys)"
+                }
+              },
+              "required": ["clk", "data"],
               "additionalProperties": false
             }
           },

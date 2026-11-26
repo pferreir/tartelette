@@ -58,7 +58,7 @@ If the firmware routes a bus to pins other than the declared ones, it still
 works, and tartelette prints a warning saying where the firmware put them.
 
 Parts that are bit-banged or driven from PIO (`ws2812`, `dac8165`, `encoder`,
-`cyw43439`) don't sit on a bus; they name their pins directly.
+`ps2mouse`, `cyw43439`) don't sit on a bus; they name their pins directly.
 
 ## `[parts.NAME]`
 
