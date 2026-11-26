@@ -21,7 +21,7 @@
 //! | `speaker`  | icon: click to mute, scroll for volume |                         |
 //! | `midi`     | where it goes, a light for bytes on its pin |                    |
 //! | `pcm5102`  | sample rate, a level per channel  |                               |
-//! | `ps2mouse` | pad: move across, click, scroll; shows reporting |                |
+//! | `ps2mouse` | pad: click to capture the pointer, Escape to let go |              |
 //!
 //! An `mcp23008` item shows a cell per pin. By default each cell follows what
 //! the board file wires to its pin: an LED is shown lit or dark, a switch is
@@ -56,6 +56,7 @@ use egui::{
 use pcb::BoardEvent;
 use tartelette_runtime::Session;
 
+mod grab;
 pub mod layout;
 mod widgets;
 
@@ -82,7 +83,7 @@ pub struct PanelState {
     /// (or, for a mouse pad, the scroll not yet a wheel notch).
     turned: HashMap<usize, (i64, f64)>,
     travel: HashMap<usize, f32>,
-    /// Pointer travel over each mouse pad not yet sent as counts.
+    /// Mouse motion captured by each pad not yet sent as counts.
     motion: HashMap<usize, Vec2>,
     /// Expander pins the panel is driving.
     driven: HashMap<usize, u8>,
@@ -212,6 +213,12 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
         }
     });
     out
+}
+
+/// After the panel is drawn, or wasn't: give back a captured pointer that no
+/// mouse pad holds any more.
+pub fn end_frame(ctx: &egui::Context) {
+    grab::end_frame(ctx);
 }
 
 /// What every widget gets: where to draw, which part, the run.

@@ -55,11 +55,14 @@ mouse = { at = [4, 0], span = [2, 2] }
 
 ## Panel
 
-A pad. Moving the pointer across it moves the mouse, a point per count;
-clicking on it presses the button you click with (left, middle and right, and
-back and forward on an `explorer`), which stays held until you let go, even
-off the pad; scrolling over it turns the wheel. Under the pad it says whether
-the firmware has turned reporting on, and the ID it has switched the mouse to.
+A pad. Click it to capture the pointer: the cursor is hidden and held in the
+window, and your mouse drives the emulated one, a count for each unit it moves
+(about a pixel), however far it goes. Its buttons (left, middle and right,
+and back and forward on an `explorer`) and its wheel work anywhere in the
+window meanwhile. Escape lets go, and so does leaving the window. In a browser
+this is the Pointer Lock API, which may ask you first; Escape is the
+browser's. Under the pad it says whether the firmware has turned reporting
+on, and the ID it has switched the mouse to.
 
 ## Events
 

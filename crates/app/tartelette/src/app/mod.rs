@@ -552,6 +552,7 @@ impl eframe::App for App {
                 }
             })
             .inner;
+        panel::end_frame(&ctx);
         self.apply(requests, &ctx, guard.as_deref_mut().map(|r| &mut r.session));
 
         let busy = guard

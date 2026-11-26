@@ -75,8 +75,8 @@ keys, A on X, B on Z, Select on Space and Start on Enter.
 
 The Mouse device is a PS/2 mouse on GPIO20 (CLK) and GPIO21 (DATA), with its
 wheel: on a real board, wire one through a level shifter, as PS/2 is 5 V. On
-the panel, move the pointer across the Mouse pad, and click and scroll on it;
-the pointer starts in the middle of the screen and stays on it. The firmware
+the panel, click the Mouse pad to capture the pointer, and Escape to let it
+go; the pointer starts in the middle of the screen and stays on it. The firmware
 sets the mouse up at boot and carries on without one if none answers. The emulator models no flash wait states, so on a real Pico, running
 from XIP flash, the VM may be slower than it is here.
 

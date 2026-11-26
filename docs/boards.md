@@ -113,7 +113,7 @@ Some widgets take options of their own:
 | `button` | a push button, held while the mouse is down | `key = "Space"` |
 | `encoder` | a knob: drag, scroll or use keys | `keys = ["Left", "Right"]` |
 | `pot` | a knob: drag or scroll, with the wiper's voltage | |
-| `ps2mouse` | a pad: move across it, click and scroll on it | |
+| `ps2mouse` | a pad: click it to capture the pointer, Escape to let go | |
 | `wav` | file name, position, rewind / play-stop / Load | |
 | `mcp23008` | a cell per pin | see below |
 | `dac8165` | four voltmeters, showing the voltage at the jacks | |
