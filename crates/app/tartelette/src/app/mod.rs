@@ -272,7 +272,10 @@ impl App {
                 let (layout, warnings) = Layout::new(&s.sys.board);
                 self.errors = warnings;
                 self.layout = Some(layout);
-                self.run = Some(run::start(s, running, speed));
+                let run = run::start(s, running, speed);
+                #[cfg(target_arch = "wasm32")]
+                crate::pump::start(&run);
+                self.run = Some(run);
             }
             Err(e) => self.errors.push(e),
         }
@@ -457,6 +460,8 @@ impl eframe::App for App {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(target_arch = "wasm32")]
+        crate::pump::frame_drawn();
         files::take_dropped(&ctx, &self.inbox);
         #[cfg(not(target_arch = "wasm32"))]
         if self.watch.changed(
@@ -471,10 +476,6 @@ impl eframe::App for App {
 
         let run = self.run.clone();
         let mut guard = run.as_ref().map(lock);
-        #[cfg(target_arch = "wasm32")]
-        if let Some(run::Run { session, clock }) = guard.as_deref_mut() {
-            clock.tick(session, run::FRAME_BUDGET);
-        }
         // Real MIDI goes to the firmware only while it runs; otherwise it is dropped.
         for m in &mut self.midi {
             let bytes = m.take();
@@ -563,10 +564,19 @@ impl eframe::App for App {
             self.restart();
         }
         if busy {
-            ctx.request_repaint();
+            next_frame(&ctx);
         } else {
             // Native: keep polling the files for changes.
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
+}
+
+/// Ask for the next frame, as soon as the running firmware leaves room for it:
+/// in a browser, frames take time from the run (see `pump`).
+pub fn next_frame(ctx: &egui::Context) {
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx.request_repaint();
+    #[cfg(target_arch = "wasm32")]
+    ctx.request_repaint_after(crate::pump::frame_interval());
 }

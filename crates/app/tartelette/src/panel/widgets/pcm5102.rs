@@ -43,6 +43,6 @@ pub(in crate::panel) fn pcm5102(c: Ctx) {
         );
     }
     if d.frames > 0 {
-        c.ui.ctx().request_repaint();
+        crate::app::next_frame(c.ui.ctx());
     }
 }

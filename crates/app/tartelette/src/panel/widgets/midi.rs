@@ -29,7 +29,7 @@ pub(in crate::panel) fn midi(c: Ctx, keyboard: Option<u8>, channel: u8, out: &mu
     c.ui.data_mut(|d| d.insert_temp(id, (m.sent, at)));
     let lit = now - at < LIGHT;
     if lit {
-        c.ui.ctx().request_repaint();
+        crate::app::next_frame(c.ui.ctx());
     }
     let line_h = if keyboard.is_some() {
         18.0

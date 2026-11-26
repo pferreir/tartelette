@@ -66,6 +66,10 @@ in real time. After a stall (the window dragged, the tab in the background) it
 makes up at most a tenth of a second of real time, and lets the rest go,
 so the run doesn't race ahead to make up for it.
 
+In a browser the run and the front panel share one thread. While the run
+can't keep up, the panel draws fewer frames, so that they take at most about
+a third of the time, and the run waits while the tab is hidden.
+
 ## Headless
 
 `--headless` runs without a window, as fast as it can unless `--speed` paces

@@ -19,13 +19,9 @@ pub struct Clock {
     window: (Instant, f64),
 }
 
-/// Host time the emulator may take per UI frame, so the UI stays smooth.
-#[cfg(target_arch = "wasm32")]
-pub const FRAME_BUDGET: Duration = Duration::from_millis(14);
-/// Host time per slice on the emulator thread: short, so the UI can take the
-/// lock between slices.
-#[cfg(not(target_arch = "wasm32"))]
-const THREAD_SLICE: Duration = Duration::from_millis(2);
+/// Host time per slice of a run: short, so the UI gets its turn between
+/// slices (natively it takes the lock, in a browser it draws a frame).
+pub const SLICE: Duration = Duration::from_millis(2);
 /// Don't try to catch up more than this after a stall (window dragged, tab hidden).
 const MAX_OWED_SECS: f64 = 0.1;
 
@@ -85,8 +81,9 @@ impl Clock {
     }
 }
 
-/// A session with its pacing clock. Natively a thread steps it in the
-/// background (the UI only locks it to draw); on the web the UI ticks it.
+/// A session with its pacing clock. Something other than the UI steps it
+/// (natively a thread, in a browser tasks between frames), and the UI only
+/// locks it to draw.
 pub struct Run {
     pub session: Session,
     pub clock: Clock,
@@ -129,7 +126,7 @@ pub fn start(session: Session, running: bool, speed: f64) -> Shared {
                 let done = {
                     let mut g = run.lock().unwrap_or_else(|e| e.into_inner());
                     let Run { session, clock } = &mut *g;
-                    clock.tick(session, THREAD_SLICE)
+                    clock.tick(session, SLICE)
                 };
                 drop(run);
                 // Leave the UI a window to take the lock, only when it wants it.

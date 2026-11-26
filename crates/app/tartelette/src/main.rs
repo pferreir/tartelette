@@ -20,6 +20,8 @@ mod panel;
 mod parts;
 #[cfg(target_arch = "wasm32")]
 mod preload;
+#[cfg(target_arch = "wasm32")]
+mod pump;
 #[cfg(not(target_arch = "wasm32"))]
 mod schema;
 mod sdbrowse;

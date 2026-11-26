@@ -39,13 +39,14 @@ tests share (a `Session` and its clock, board loading, the far ends of the
 USB cable and UART lines) lives there, and `tartelette` adds the command
 line, the window and the sound card. Front ends drive a `Session` with
 `step` (up to a number of cycles, in `System::run` chunks of 250 000, until
-a wall-clock deadline: the window paces it with `run::Clock`) or `advance`
-(one `System::run`, as headless does). A `Session` hands what the firmware
-produced (serial bytes, board events, the defmt log, warnings) to its front
-end as an `Output` after each step: the front panel keeps a capped history
-of it for the dock, headless prints it. Anything that must hear board events
-as they happen, like the live synth, registers a listener on the session
-instead.
+a wall-clock deadline: the window paces it with `run::Clock`, from a thread
+of its own natively and from tasks between frames in a browser,
+`tartelette/src/pump.rs`) or `advance` (one `System::run`, as headless
+does). A `Session` hands what the firmware produced (serial bytes, board
+events, the defmt log, warnings) to its front end as an `Output` after each
+step: the front panel keeps a capped history of it for the dock, headless
+prints it. Anything that must hear board events as they happen, like the
+live synth, registers a listener on the session instead.
 
 `pcb` talks to the chip only through the `Pins` trait, which `rp2040-core`
 implements for its GPIO block. Peripherals stay inside `rp2040-core`: they are
