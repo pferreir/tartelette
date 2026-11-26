@@ -79,7 +79,7 @@ asm catclock src/catclock.tal catclock.rom
 cp "$work/src/catclock/LICENSE" "$card/licences/catclock.txt"
 cp "$work/src/uxn/LICENSE" "$card/licences/uxn.txt"
 
-# uxn's examples, by directory. Those that need a mouse are left out.
+# uxn's examples, by directory.
 examples() {
     local dir=$1
     shift
@@ -87,14 +87,15 @@ examples() {
         asm uxn "projects/$dir/$name.tal" "${dir#examples/}/$name.rom"
     done
 }
-examples examples/demos amiga bunnymark circles cube3d drool dvd hilbert life \
-    mandelbrot move snake
+examples examples/demos amiga bifurcan bitwise bunnymark circles cube3d drool \
+    dvd hilbert life mandelbrot move polycat pond snake
 examples examples/devices audio audio.channels audio-tests console \
-    console.read console.write controller datetime file file.cat screen \
-    screen.auto screen.blending screen.pixel system.expansion
+    console.read console.write controller datetime file file.cat mouse screen \
+    screen.auto screen.blending screen.bounds screen.pixel system.expansion
 examples examples/exercises ack brainfuck fib fizzbuzz primes quine \
     sierpinski subleq tak
-examples examples/gui label monospace picture shapes terminal timer
+examples examples/gui button hover label monospace picture shapes terminal \
+    timer
 examples software clock piano
 # file.cat prints the file called cat.tal: its own source.
 cp "$work/src/uxn/projects/examples/devices/file.cat.tal" "$card/cat.tal"

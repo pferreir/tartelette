@@ -14,7 +14,7 @@ as the board file says.
 | `lumen`     | [`boards/lumen.toml`](boards/lumen.toml): 64 WS2812 in an 8x8 grid, encoder, two buttons | Generative light: plasma, fire, rain, life, ripples, fireflies. PIO WS2812 with DMA, a PIO encoder |
 | `spectra`   | [`boards/spectra.toml`](boards/spectra.toml) + `pico-display-2`: a WAV player (line in) and a pot (gain) on the ADC | A scope, spectrum analyser and waterfall of a song. ADC round robin with DMA, a fixed-point FFT, strip rendering |
 | `picosh`    | `pico` | A shell on UART0: an ASCII Mandelbrot on one core and on both, `peek` at the bootrom, primes, the LED |
-| `varvara`   | [`boards/varvara.toml`](boards/varvara.toml): ST7789 screen, D-pad, A, B, Select, Start, a speaker on GPIO16, an SD card on SPI1 | A [Uxn/Varvara](https://wiki.xxiivv.com/site/varvara.html) virtual machine running a ROM built in or one from the card, picked from a menu: screen, controller, console on UART0, four-voice audio, files on the card. At 200 MHz, as the interpreter needs the cycles |
+| `varvara`   | [`boards/varvara.toml`](boards/varvara.toml): ST7789 screen, D-pad, A, B, Select, Start, a speaker on GPIO16, an SD card on SPI1, a PS/2 mouse | A [Uxn/Varvara](https://wiki.xxiivv.com/site/varvara.html) virtual machine running a ROM built in or one from the card, picked from a menu: screen, controller, mouse, console on UART0, four-voice audio, files on the card. At 200 MHz, as the interpreter needs the cycles |
 
 Each binary's `src/bin/*.rs` starts with its controls. `src/lib.rs` has
 what the screen demos share: a strip renderer for a 320x240 ST7789 that
@@ -48,8 +48,7 @@ uxn's with `cc`): fourtette,
 [donsol](https://git.sr.ht/~rabbits/donsol) (a card game) and
 [catclock](https://git.sr.ht/~rabbits/catclock) at the top, by Hundred
 Rabbits (MIT), and [uxn](https://git.sr.ht/~rabbits/uxn)'s examples (MIT)
-in `demos/`, `devices/`, `exercises/`, `gui/` and `software/`, leaving out
-those that need a mouse. Their licences are in `licences/` on the card. The
+in `demos/`, `devices/`, `exercises/`, `gui/` and `software/`. Their licences are in `licences/` on the card. The
 console ones (`exercises/`, most of `devices/`) print to UART0, which is the
 terminal headless.
 
@@ -70,11 +69,15 @@ makes a file whose name isn't 8.3 gets an 8.3 one made from it
 and deleting a file leaves its clusters allocated (`fsck.fat` gets them
 back).
 
-It suits ROMs played with the controller (or typed to on the console) whose
-screen fits 320x256: the panel shows 320x240 of it, centred, and cuts off
-what is below. There is no mouse yet. On the panel the
-D-pad is on the arrow keys, A on X, B on Z, Select on Space and Start on
-Enter. The emulator models no flash wait states, so on a real Pico, running
+It suits ROMs whose screen fits 320x256: the panel shows 320x240 of it,
+centred, and cuts off what is below. On the panel the D-pad is on the arrow
+keys, A on X, B on Z, Select on Space and Start on Enter.
+
+The Mouse device is a PS/2 mouse on GPIO20 (CLK) and GPIO21 (DATA), with its
+wheel: on a real board, wire one through a level shifter, as PS/2 is 5 V. On
+the panel, move the pointer across the Mouse pad, and click and scroll on it;
+the pointer starts in the middle of the screen and stays on it. The firmware
+sets the mouse up at boot and carries on without one if none answers. The emulator models no flash wait states, so on a real Pico, running
 from XIP flash, the VM may be slower than it is here.
 
 ## Running

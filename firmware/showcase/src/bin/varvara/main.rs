@@ -15,6 +15,8 @@
 //!   past the panel's 240 are cut off at the bottom. Only the strips of
 //!   rows whose pixels changed are sent.
 //! - The controller: the eight buttons, read once a frame.
+//! - The mouse: a PS/2 mouse on GPIO20 (CLK) and 21 (DATA), if there is
+//!   one (`mouse.rs`), with its wheel; a packet a frame.
 //! - The console: writes go to UART0, and bytes typed into it come back to
 //!   the console's vector, or as keys to the controller's when the program
 //!   has no console vector.
@@ -33,6 +35,7 @@
 mod audio;
 mod file;
 mod menu;
+mod mouse;
 mod screen;
 mod uxn;
 
@@ -50,7 +53,8 @@ use embassy_rp::{
     interrupt::{InterruptExt, Priority},
     mode::{Async, Blocking},
     pac,
-    peripherals::DMA_CH0,
+    peripherals::{DMA_CH0, PIO0},
+    pio::{self as rp_pio, Pio},
     pwm::{self, Pwm},
     spi::{self, Spi},
     uart::{self, Uart},
@@ -65,12 +69,14 @@ use crate::{
     audio::{Audio, VOICES},
     file::Disk,
     menu::{Action, Kind, Menu},
+    mouse::{PACKETS, Packet},
     screen::Screen,
     uxn::{Devices, Uxn},
 };
 
 bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => embassy_rp::dma::InterruptHandler<DMA_CH0>;
+    PIO0_IRQ_0 => rp_pio::InterruptHandler<PIO0>;
 });
 
 static ROM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/varvara.rom"));
@@ -487,6 +493,20 @@ fn vector(u: &Uxn, port: usize) -> u16 {
     (u.dev[port] as u16) << 8 | u.dev[port + 1] as u16
 }
 
+/// The Mouse device: the pointer moves within the screen, and the vector
+/// runs with the buttons and the scroll, which is cleared after.
+fn mouse(vm: &mut Varvara, u: &mut Uxn, p: Packet) {
+    let (w, h) = (vm.screen.w as i32, vm.screen.h as i32);
+    let x = (peek2(&u.dev, 0x92) as i32 + p.dx as i32).clamp(0, w - 1);
+    let y = (peek2(&u.dev, 0x94) as i32 + p.dy as i32).clamp(0, h - 1);
+    u.dev[0x92..0x94].copy_from_slice(&(x as u16).to_be_bytes());
+    u.dev[0x94..0x96].copy_from_slice(&(y as u16).to_be_bytes());
+    u.dev[0x96] = p.buttons;
+    u.dev[0x9c..0x9e].copy_from_slice(&p.scroll.to_be_bytes());
+    u.eval(vm, vector(u, 0x90));
+    u.dev[0x9c..0x9e].fill(0);
+}
+
 // ---------------------------------------------------------------- main ----
 
 const FRAME: Duration = Duration::from_micros(16_667);
@@ -682,6 +702,12 @@ async fn run(panel: &mut Panel, buttons: &Buttons, vm: &mut Varvara, u: &mut Uxn
     AUDIO.lock(|a| *a.borrow_mut() = Audio::new(RATE));
     vm.screen.reset();
     vm.screen.boot(&mut u.dev, PW, PH);
+    // The pointer starts in the middle, and the mouse's moves from before
+    // (in the menu) are dropped.
+    while PACKETS.try_receive().is_ok() {}
+    let (x, y) = (vm.screen.w as u16 / 2, vm.screen.h as u16 / 2);
+    u.dev[0x92..0x94].copy_from_slice(&x.to_be_bytes());
+    u.dev[0x94..0x96].copy_from_slice(&y.to_be_bytes());
     // A blank screen meanwhile, as some programs draw a while before
     // their first frame (mandelbrot takes seconds).
     panel.flush(vm.screen).await;
@@ -701,6 +727,9 @@ async fn run(panel: &mut Panel, buttons: &Buttons, vm: &mut Varvara, u: &mut Uxn
         if held != u.dev[0x82] {
             u.dev[0x82] = held;
             u.eval(vm, vector(u, 0x80));
+        }
+        while let Ok(p) = PACKETS.try_receive() {
+            mouse(vm, u, p);
         }
         while vm.uart.read_ready() {
             let mut c = [0u8];
@@ -748,7 +777,7 @@ async fn run(panel: &mut Panel, buttons: &Buttons, vm: &mut Varvara, u: &mut Uxn
 }
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let mut config = embassy_rp::config::Config::default();
     config.clocks = ClockConfig::system_freq(SYS_HZ).unwrap();
     let p = embassy_rp::init(config);
@@ -774,6 +803,8 @@ async fn main(_spawner: Spawner) {
     };
     let _bl = Output::new(p.PIN_17, Level::High);
     panel.init().await;
+
+    spawner.spawn(mouse::task(Pio::new(p.PIO0, Irqs), p.PIN_20, p.PIN_21, SYS_HZ).unwrap());
 
     let buttons = Buttons([
         Input::new(p.PIN_6, Pull::Up),
