@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "armv6m"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "pcb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "toml",
 ]
@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "rp2040-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "armv6m",
  "pcb",
@@ -118,7 +118,7 @@ checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
 
 [[package]]
 name = "usbhost"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "web-bench"
