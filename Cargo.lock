@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "armv6m"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "arrayvec"
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-hci"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "pcb-devices",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pcb-devices",
  "smoltcp",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-usb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "usbhost",
@@ -764,7 +764,7 @@ dependencies = [
 
 [[package]]
 name = "cpu-difftest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "armv6m",
  "fastrand",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "mkdisk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "sdimage",
@@ -2708,14 +2708,14 @@ dependencies = [
 
 [[package]]
 name = "pcb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "toml",
 ]
 
 [[package]]
 name = "pcb-devices"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "embedded-hal",
  "embedded-sdmmc",
@@ -3124,7 +3124,7 @@ dependencies = [
 
 [[package]]
 name = "rp2040-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "armv6m",
  "pcb",
@@ -3134,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "rtt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "defmt-decoder",
  "object",
@@ -3234,7 +3234,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "sdimage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fatfs",
 ]
@@ -3356,7 +3356,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "sitedocs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "pulldown-cmark",
 ]
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "tartelette"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "cpal",
@@ -3517,7 +3517,7 @@ dependencies = [
 
 [[package]]
 name = "tartelette-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bridge-hci",
  "bridge-net",
@@ -3792,7 +3792,7 @@ dependencies = [
 
 [[package]]
 name = "usbhost"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "utf8parse"
