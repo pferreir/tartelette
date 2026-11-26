@@ -16,7 +16,8 @@ The demo site's landing page. tools/sitedocs turns it into index.html
 - Any other `##` section has its text on the left and its code on the
   right. A quote in it is shown as small print.
 - What follows the closing horizontal rule is the footer.
-- `{{NAME}}` is replaced by the build (REPO_URL, MICROPYTHON_VERSION), and
+- `{{NAME}}` is replaced by the build (REPO_URL, MICROPYTHON_VERSION,
+  VARVARA_SD: the varvara link's `&sd=`, or nothing without a card), and
   an entry between the micropython (or picodexed, varvara) comments is
   dropped when the build has no MicroPython (or picodexed, a Varvara ROM).
 
@@ -126,16 +127,20 @@ on two (compare the times), dump the bootrom, find primes and blink the LED.
 ![The Varvara demo: fourtette's title screen on the emulated screen, between a D-pad and A and B buttons](img/varvara.png)
 
 A [Uxn/Varvara](https://wiki.xxiivv.com/site/varvara.html) virtual machine
-running [fourtette](https://github.com/nf/fourtette), a block game by nf
-(Apache-2.0), from its release ROM. The interpreter, the two-layer screen and
-the four-voice audio run on the Pico at 200 MHz, 60 frames a second. Switch
-**Sound** on in the toolbar for the music.
+with [fourtette](https://github.com/nf/fourtette), a block game by nf
+(Apache-2.0), built in. Its SD card adds Hundred Rabbits' donsol and
+catclock and uxn's examples, picked from a menu, and programs read and write
+files on it. The interpreter, the two-layer screen and the four-voice audio
+run on the Pico at 200 MHz, 60 frames a second. Switch **Sound** on in the
+toolbar for the music.
 
-- Board: custom: ST7789, D-pad, A, B, Select, Start, speaker
-- Uses: overclocking · SPI+DMA · PWM audio+DMA · UART console
-- Keys: arrows move, `X` `Z` rotate, `Space` hold, `Enter` start
+- Board: custom: ST7789, D-pad, A, B, Select, Start, speaker, SD card
+- Uses: overclocking · SPI+DMA · PWM audio+DMA · SPI SD card (FAT) · UART console
+- Keys: arrows and `X` pick a ROM, `Z` goes back up; hold `Shift`+`Enter`
+  (Select+Start) to return to the menu. In fourtette: arrows move, `X` `Z`
+  rotate, `Space` hold, `Enter` start
 
-[Run](emu/?firmware=../demos/varvara.elf&board=../demos/varvara.toml)
+[Run](emu/?firmware=../demos/varvara.elf&board=../demos/varvara.toml{{VARVARA_SD}})
 [varvara/](../firmware/showcase/src/bin/varvara/main.rs)
 [varvara.toml](../firmware/showcase/boards/varvara.toml)
 [fourtette's licence](demos/fourtette.LICENSE.txt)

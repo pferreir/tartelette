@@ -14,9 +14,11 @@
 # downloads it (RPI_PICO, the version below) instead. Without either, the
 # page leaves the MicroPython card out. PICODEXED_UF2 and PICODEXED=fetch do
 # the same for picodexed (its prebuilt UF2, at the commit below). VARVARA=fetch
-# runs firmware/showcase/roms/fetch.sh first, for the varvara demo's ROM;
-# without a ROM there (or VARVARA_ROM), the page leaves that card out. REPO_URL is where the page's source
-# links go (in GitHub Actions, the repository the workflow runs in).
+# runs firmware/showcase/roms/card.sh first, for the varvara demo's ROM and
+# its SD card image; without a ROM there (or VARVARA_ROM), the page leaves
+# that demo out, and without roms/card.img it runs with no card. REPO_URL is
+# where the page's source links go (in GitHub Actions, the repository the
+# workflow runs in).
 #
 # Needs: the nightly toolchain with thumbv6m-none-eabi and
 # wasm32-unknown-unknown, trunk, and llvm-objcopy (or a versioned
@@ -46,7 +48,7 @@ rm -f "$out/emu/.trunk-lock"
 
 varvara=
 if [[ ${VARVARA:-} == fetch ]]; then
-    "$root/firmware/showcase/roms/fetch.sh"
+    "$root/firmware/showcase/roms/card.sh"
 fi
 if [[ -n ${VARVARA_ROM:-} || -f $root/firmware/showcase/roms/fourtette.rom ]]; then
     varvara=1
@@ -65,6 +67,12 @@ cp "$root"/firmware/showcase/boards/*.{toml,wav} "$out/demos/"
 # fourtette is Apache-2.0: its licence goes with the copy the page serves.
 if [[ -n $varvara && -f $root/firmware/showcase/roms/fourtette.LICENSE.txt ]]; then
     cp "$root/firmware/showcase/roms/fourtette.LICENSE.txt" "$out/demos/"
+fi
+# The card for its menu, with the licences of what is on it in licences/.
+varvara_sd=
+if [[ -n $varvara && -f $root/firmware/showcase/roms/card.img ]]; then
+    cp "$root/firmware/showcase/roms/card.img" "$out/demos/varvara.img"
+    varvara_sd='&sd=../demos/varvara.img'
 fi
 # The boards point their editors at the schema; it doesn't matter on the web.
 sed -i '1{/^#:schema/d}' "$out"/demos/*.toml
@@ -97,7 +105,7 @@ echo "build-site: the landing page and the documentation" >&2
 cp -r "$root/site/." "$out/"
 rm -f "$out"/*.md
 cp "$root/assets/tartelette.png" "$out/img/logo.png"
-sitedocs=(--var "MICROPYTHON_VERSION=${MICROPYTHON_VERSION#*-}")
+sitedocs=(--var "MICROPYTHON_VERSION=${MICROPYTHON_VERSION#*-}" --var "VARVARA_SD=$varvara_sd")
 # Without MicroPython, drop its entry from the page.
 [[ -n $micropython ]] || sitedocs+=(--drop micropython)
 [[ -n $picodexed ]] || sitedocs+=(--drop picodexed)
