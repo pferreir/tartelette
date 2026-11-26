@@ -1,0 +1,8 @@
+[package]
+name = "ps2-test"
+version.workspace = true
+edition.workspace = true
+build = "../build.rs"
+
+[dependencies]
+testrt.workspace = true

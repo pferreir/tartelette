@@ -125,6 +125,7 @@ unexpected exceptions, register and UART0 helpers), `tests/link.ld` and
 | `sd-test`         | an SD card on SPI1 with DMA and CRCs | `tests/uart_hello.rs` |
 | `pio-test`        | PIO driving a DAC8165 (heard through a `speaker`) and WS2812s and reading an encoder | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `adc-test`        | the ADC against a `pot` and a `wav` player: one-shot, temperature sensor, round robin with the FIFO interrupt, DMA paced by the divider | `tests/adc_firmware.rs`, `tests/batch_equivalence.rs` |
+| `ps2-test`        | a PS/2 host for a `ps2mouse`: PIO receiving, the CPU sending, open-drain; reset, the wheel knock, reporting, inhibiting | `tests/ps2_firmware.rs` |
 | `multicore-test`  | core 1 launch, spinlocks, dividers, the inter-core FIFOs | `tests/uart_hello.rs`, `tests/batch_equivalence.rs` |
 | `cpu-bench`       | nothing: CPU-bound work (CRC, sort, multiplies, copies, a bytecode loop, 64-bit division) ending in a checksum, to time the core | `scripts/web-check.sh`, `scripts/web-bench.sh`, `scripts/pgo-build.sh` |
 

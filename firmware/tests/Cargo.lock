@@ -4,102 +4,109 @@ version = 4
 
 [[package]]
 name = "adc-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "batch-timer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "button-led"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "cpu-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "i2c-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "io-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "irq-timer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "multicore-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "pio-test"
-version = "0.1.0"
+version = "0.2.0"
+dependencies = [
+ "testrt",
+]
+
+[[package]]
+name = "ps2-test"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "sd-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "spi-dma-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "spin-test"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "testrt"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "uart-echo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
 
 [[package]]
 name = "uart-hello"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "testrt",
 ]
