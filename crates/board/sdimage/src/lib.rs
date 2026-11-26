@@ -1,9 +1,9 @@
-//! A formatter for blank SD card images: an MBR with one FAT32 or FAT16
-//! partition and an empty file system in it, which is what `embedded-sdmmc`
-//! mounts as volume 0, optionally with some empty
-//! top-level directories. A formatted disk is almost all zeros, so
-//! [`format()`] returns only the few regions that are not. [`read`] reads
-//! what is on one.
+//! A formatter for SD card images: an MBR with one FAT32 or FAT16 partition
+//! and a file system in it, which is what `embedded-sdmmc` mounts as volume
+//! 0, either empty (optionally with some empty top-level directories) or
+//! with files and directories put on it ([`format_with`]). A formatted disk
+//! is mostly zeros, so the formatter returns only the regions that are not.
+//! [`read`] reads what is on one.
 //!
 //! Readers tell FAT16 from FAT32 by the cluster count alone (FAT32 has at
 //! least 65525), so FAT32 needs a disk of at least [`Fat::Fat32`]'s
@@ -109,6 +109,24 @@ const NO_LABEL: &str = "NO NAME";
 /// 1 January 1980, the earliest date a FAT entry can have.
 const FAT_EPOCH: u16 = 1 << 5 | 1;
 
+/// A file or directory to put on a new disk ([`format_with`]), by its name
+/// in the directory that holds it. A name that isn't an 8.3 one (in one
+/// case, of the characters short names allow) gets a long name, with a
+/// short alias made as Windows makes them (`LONGNA~1.TXT`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    File { name: String, data: Vec<u8> },
+    Dir { name: String, items: Vec<Item> },
+}
+
+impl Item {
+    pub fn name(&self) -> &str {
+        match self {
+            Item::File { name, .. } | Item::Dir { name, .. } => name,
+        }
+    }
+}
+
 /// A 32-byte directory entry (`attr` 0x10 for a directory, 0x08 for a label).
 fn dir_entry(name: &[u8; 11], attr: u8, cluster: u32) -> Vec<u8> {
     let mut e = vec![0u8; 32];
@@ -122,8 +140,8 @@ fn dir_entry(name: &[u8; 11], attr: u8, cluster: u32) -> Vec<u8> {
     e
 }
 
-/// `name` as an 8.3 short name: upper case, padded with spaces.
-fn short_name(name: &str) -> Result<[u8; 11], String> {
+/// A `--dir` name: 1 to 8 letters, digits or underscores, made upper case.
+fn check_dir(name: &str) -> Result<Item, String> {
     let ok = !name.is_empty()
         && name.len() <= 8
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
@@ -132,19 +150,199 @@ fn short_name(name: &str) -> Result<[u8; 11], String> {
             "directory {name:?}: use 1 to 8 letters, digits or underscores"
         ));
     }
-    let mut short = [b' '; 11];
-    short[..name.len()].copy_from_slice(name.to_ascii_uppercase().as_bytes());
-    Ok(short)
+    Ok(Item::Dir {
+        name: name.to_ascii_uppercase(),
+        items: Vec::new(),
+    })
 }
 
-/// Check the size, label and directory names; returns the label to write in
-/// the boot sector and the directories' short names.
+/// A name a file or directory can have: not empty, `.` or `..`, without the
+/// characters Windows refuses or a trailing dot or space, and at most the
+/// 255 UTF-16 units a long name holds.
+fn check_name(name: &str) -> Result<(), String> {
+    let bad = name.is_empty()
+        || name.ends_with(['.', ' '])
+        || name.chars().any(|c| c < ' ' || "\"*/:<>?\\|".contains(c))
+        || name.encode_utf16().count() > 255;
+    if bad {
+        return Err(format!("{name:?}: not a name a FAT file system can hold"));
+    }
+    Ok(())
+}
+
+/// How an item is named in its directory: its 8.3 entry's name, with the
+/// case flags of byte 12 (base and extension in lower case), and its long
+/// name if it needs one.
+struct Name {
+    short: [u8; 11],
+    case: u8,
+    long: Option<Vec<u16>>,
+}
+
+impl Name {
+    /// The directory entries it takes: 13 UTF-16 units per long-name entry.
+    fn entries(&self) -> usize {
+        1 + self.long.as_ref().map_or(0, |l| l.len().div_ceil(13))
+    }
+}
+
+/// What a short name may hold besides upper-case letters and digits.
+fn short_char(b: u8) -> bool {
+    b.is_ascii_uppercase() || b.is_ascii_digit() || b"!#$%&'()-@^_`{}~".contains(&b)
+}
+
+/// `name` as an 8.3 name with its case flags, if it is one: a base of 1 to
+/// 8 characters, an extension of up to 3, each all in upper or lower case.
+fn plain_short(name: &str) -> Option<([u8; 11], u8)> {
+    let (base, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    if base.is_empty() || name.ends_with('.') {
+        return None;
+    }
+    let mut short = [b' '; 11];
+    let mut case = 0;
+    for (part, max, at, flag) in [(base, 8, 0, 0x08), (ext, 3, 8, 0x10)] {
+        let upper = part.to_ascii_uppercase();
+        if part.len() > max || !upper.bytes().all(short_char) {
+            return None;
+        }
+        let lower = part.bytes().any(|b| b.is_ascii_lowercase());
+        if lower && part.bytes().any(|b| b.is_ascii_uppercase()) {
+            return None;
+        }
+        if lower {
+            case |= flag;
+        }
+        short[at..at + part.len()].copy_from_slice(upper.as_bytes());
+    }
+    Some((short, case))
+}
+
+/// A short alias for a long name, not in `taken`: the name upper cased,
+/// without spaces or leading dots, other characters short names can't hold
+/// as `_`; then as much of its base as fits before `~N`, and the first 3
+/// characters of its extension.
+fn alias(name: &str, taken: &[[u8; 11]]) -> [u8; 11] {
+    let clean = |s: &str| -> Vec<u8> {
+        s.chars()
+            .filter(|&c| c != ' ' && c != '.')
+            .map(|c| {
+                let c = c.to_ascii_uppercase();
+                if c.is_ascii() && short_char(c as u8) {
+                    c as u8
+                } else {
+                    b'_'
+                }
+            })
+            .collect()
+    };
+    let name = name.trim_start_matches('.');
+    let (base, ext) = name.rsplit_once('.').unwrap_or((name, ""));
+    let (mut base, ext) = (clean(base), clean(ext));
+    if base.is_empty() {
+        base.push(b'_');
+    }
+    let mut short = [b' '; 11];
+    let ext = &ext[..ext.len().min(3)];
+    short[8..8 + ext.len()].copy_from_slice(ext);
+    for n in 1.. {
+        let tail = format!("~{n}");
+        let keep = base.len().min(8 - tail.len());
+        short[..8].fill(b' ');
+        short[..keep].copy_from_slice(&base[..keep]);
+        short[keep..keep + tail.len()].copy_from_slice(tail.as_bytes());
+        if !taken.contains(&short) {
+            break;
+        }
+    }
+    short
+}
+
+/// The names of a directory's items: checked, told apart regardless of
+/// case, the 8.3 ones first so that no alias takes their short name.
+fn name_items(items: &[Item]) -> Result<Vec<Name>, String> {
+    let mut seen = Vec::new();
+    let mut taken = Vec::new();
+    let mut names: Vec<Option<Name>> = Vec::new();
+    for item in items {
+        let name = item.name();
+        check_name(name)?;
+        let folded = name.to_lowercase();
+        if seen.contains(&folded) {
+            return Err(format!("{name:?}: two items with that name"));
+        }
+        seen.push(folded);
+        names.push(plain_short(name).map(|(short, case)| {
+            taken.push(short);
+            Name {
+                short,
+                case,
+                long: None,
+            }
+        }));
+    }
+    Ok(items
+        .iter()
+        .zip(names)
+        .map(|(item, name)| {
+            name.unwrap_or_else(|| {
+                let short = alias(item.name(), &taken);
+                taken.push(short);
+                Name {
+                    short,
+                    case: 0,
+                    long: Some(item.name().encode_utf16().collect()),
+                }
+            })
+        })
+        .collect())
+}
+
+/// The long-name entries before short entry `short`, last piece first, as
+/// they are on disk: 13 units each, ended by a 0 and padded with 0xFFFF.
+fn long_entries(long: &[u16], short: &[u8; 11]) -> Vec<u8> {
+    let sum = short
+        .iter()
+        .fold(0u8, |s, &c| s.rotate_right(1).wrapping_add(c));
+    let pieces = long.len().div_ceil(13);
+    let mut out = Vec::new();
+    for n in (1..=pieces).rev() {
+        let mut e = [0u8; 32];
+        e[0] = n as u8 | if n == pieces { 0x40 } else { 0 };
+        e[11] = 0x0F;
+        e[13] = sum;
+        let offsets = (1..11)
+            .step_by(2)
+            .chain((14..26).step_by(2))
+            .chain([28, 30]);
+        for (i, at) in offsets.enumerate() {
+            let k = (n - 1) * 13 + i;
+            let unit = match k.cmp(&long.len()) {
+                core::cmp::Ordering::Less => long[k],
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 0xFFFF,
+            };
+            le16(&mut e, at, unit);
+        }
+        out.extend(e);
+    }
+    out
+}
+
+/// The bytes of a directory's entries: `head` of them, then its items'.
+fn dir_bytes(head: usize, names: &[Name]) -> usize {
+    (head + names.iter().map(Name::entries).sum::<usize>()) * 32
+}
+
+/// Check the size and label, and the `--dir` names; returns the label to
+/// write in the boot sector and the items to put in the root: the
+/// directories, then `items`.
 fn check<'a>(
     fat: Fat,
     megabytes: usize,
     label: &'a str,
     dirs: &[&str],
-) -> Result<(&'a str, Vec<[u8; 11]>), String> {
+    items: &[Item],
+) -> Result<(&'a str, Vec<Item>), String> {
     if !(fat.min_mb()..=fat.max_mb()).contains(&megabytes) {
         let hint = match fat {
             Fat::Fat32 if megabytes < MIN_MB32 => " (FAT16 can do smaller disks)",
@@ -161,11 +359,12 @@ fn check<'a>(
         return Err("label must be at most 11 ASCII characters".into());
     }
     let label = if label.is_empty() { NO_LABEL } else { label };
-    let dirs = dirs
+    let mut root = dirs
         .iter()
-        .map(|d| short_name(d))
+        .map(|d| check_dir(d))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((label, dirs))
+    root.extend_from_slice(items);
+    Ok((label, root))
 }
 
 /// An MBR with one bootable partition of `kind` from `START` on, `sectors`
@@ -197,34 +396,149 @@ fn boot_common(spc: usize, reserved: usize) -> Vec<u8> {
     boot
 }
 
-/// The root directory's entries: the label's (a real label has one), then
-/// one per directory, whose clusters start at `first`.
-fn root_entries(label: &str, dirs: &[[u8; 11]], first: u32) -> Vec<u8> {
-    let mut entries = Vec::new();
-    if label != NO_LABEL {
-        let mut name = [b' '; 11];
-        name[..label.len()].copy_from_slice(label.as_bytes());
-        entries.extend(dir_entry(&name, 0x08, 0));
+/// The root directory's label entry, if the disk has a label.
+fn label_entry(label: &str) -> Vec<u8> {
+    if label == NO_LABEL {
+        return Vec::new();
     }
-    for (i, name) in dirs.iter().enumerate() {
-        entries.extend(dir_entry(name, 0x10, first + i as u32));
-    }
-    entries
+    let mut name = [b' '; 11];
+    name[..label.len()].copy_from_slice(label.as_bytes());
+    dir_entry(&name, 0x08, 0)
 }
 
-/// A new directory's first cluster: "." and ".." (0: the root).
-fn dot_entries(cluster: u32) -> Vec<u8> {
+/// A directory's first entries: "." (its own cluster) and ".." (its
+/// parent's, 0 for the root).
+fn dot_entries(cluster: u32, parent: u32) -> Vec<u8> {
     let mut bytes = dir_entry(b".          ", 0x10, cluster);
-    bytes.extend(dir_entry(b"..         ", 0x10, 0));
+    bytes.extend(dir_entry(b"..         ", 0x10, parent));
     bytes
+}
+
+/// Clusters handed out in order from cluster 2, each file and directory in
+/// one run of them, and what goes in them.
+struct Layout {
+    /// Byte offset of cluster 2.
+    data: usize,
+    cluster_bytes: usize,
+    /// How many clusters the volume has.
+    clusters: usize,
+    /// Each run: its first cluster and length.
+    runs: Vec<(u32, usize)>,
+    next: u32,
+    regions: Regions,
+}
+
+impl Layout {
+    fn new(data: usize, cluster_bytes: usize, clusters: usize) -> Self {
+        Self {
+            data,
+            cluster_bytes,
+            clusters,
+            runs: Vec::new(),
+            next: 2,
+            regions: Vec::new(),
+        }
+    }
+
+    /// The first of enough clusters in a row for `bytes`; 0 for none, as
+    /// an empty file has.
+    fn alloc(&mut self, bytes: usize) -> Result<u32, String> {
+        let n = bytes.div_ceil(self.cluster_bytes);
+        if n == 0 {
+            return Ok(0);
+        }
+        let first = self.next;
+        if first as usize - 2 + n > self.clusters {
+            return Err("the files don't fit on the disk".into());
+        }
+        self.runs.push((first, n));
+        self.next += n as u32;
+        Ok(first)
+    }
+
+    fn put(&mut self, cluster: u32, bytes: Vec<u8>) {
+        if !bytes.is_empty() {
+            let at = self.data + (cluster as usize - 2) * self.cluster_bytes;
+            self.regions.push((at, bytes));
+        }
+    }
+
+    /// A directory's entries: `head` (its label, or "." and ".."), then one
+    /// (or more, with a long name) per item, putting each item on the disk
+    /// as it goes. `me` is what the subdirectories' ".." point at.
+    fn dir(
+        &mut self,
+        items: &[Item],
+        names: &[Name],
+        me: u32,
+        mut head: Vec<u8>,
+    ) -> Result<Vec<u8>, String> {
+        for (item, name) in items.iter().zip(names) {
+            let (attr, cluster, size) = match item {
+                Item::File { data, name } => {
+                    let size = u32::try_from(data.len())
+                        .map_err(|_| format!("{name:?}: too big for FAT"))?;
+                    let c = self.alloc(data.len())?;
+                    self.put(c, data.clone());
+                    (0x20, c, size)
+                }
+                Item::Dir { items, .. } => {
+                    let names = name_items(items)?;
+                    let c = self.alloc(dir_bytes(2, &names))?;
+                    let bytes = self.dir(items, &names, c, dot_entries(c, me))?;
+                    self.put(c, bytes);
+                    (0x10, c, 0)
+                }
+            };
+            if let Some(long) = &name.long {
+                head.extend(long_entries(long, &name.short));
+            }
+            let mut e = dir_entry(&name.short, attr, cluster);
+            e[12] = name.case;
+            le32(&mut e, 28, size);
+            head.extend(e);
+        }
+        Ok(head)
+    }
+
+    /// The FAT, as entries of `width` bytes: the media descriptor and the
+    /// end-of-chain marker `end`, then each run's clusters chained, its
+    /// last ending the chain.
+    fn fat(&self, end: u32, width: usize) -> Vec<u8> {
+        let mut fat = vec![0u32; self.next as usize];
+        fat[0] = end & !7;
+        fat[1] = end;
+        for &(first, n) in &self.runs {
+            for c in first..first + n as u32 {
+                fat[c as usize] = c + 1;
+            }
+            fat[first as usize + n - 1] = end;
+        }
+        fat.iter()
+            .flat_map(|&v| v.to_le_bytes().into_iter().take(width))
+            .collect()
+    }
 }
 
 /// The non-zero parts of a blank disk with the file system `fat`; see
 /// [`format_fat32`] and [`format_fat16`].
 pub fn format(fat: Fat, megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regions, String> {
+    format_with(fat, megabytes, label, dirs, &[])
+}
+
+/// As [`format`], with `items` in the root directory after `dirs`, laid
+/// out one after the other from the start of the data area.
+pub fn format_with(
+    fat: Fat,
+    megabytes: usize,
+    label: &str,
+    dirs: &[&str],
+    items: &[Item],
+) -> Result<Regions, String> {
+    let (label, root) = check(fat, megabytes, label, dirs, items)?;
     match fat {
-        Fat::Fat16 => format_fat16(megabytes, label, dirs),
-        Fat::Fat32 => format_fat32(megabytes, label, dirs),
+        Fat::Fat16 => fat16(megabytes, label, &root),
+        Fat::Fat32 => fat32(megabytes, label, &root),
     }
 }
 
@@ -235,7 +549,18 @@ pub fn blank_image(
     label: &str,
     dirs: &[&str],
 ) -> Result<Vec<u8>, String> {
-    let regions = format(fat, megabytes, label, dirs)?;
+    image_with(fat, megabytes, label, dirs, &[])
+}
+
+/// The whole disk of [`format_with`] in memory.
+pub fn image_with(
+    fat: Fat,
+    megabytes: usize,
+    label: &str,
+    dirs: &[&str],
+    items: &[Item],
+) -> Result<Vec<u8>, String> {
+    let regions = format_with(fat, megabytes, label, dirs, items)?;
     let mut image = vec![0u8; megabytes * 1024 * 1024];
     for (at, bytes) in regions {
         image[at..at + bytes.len()].copy_from_slice(&bytes);
@@ -273,21 +598,28 @@ fn geometry32(sectors: usize) -> Result<(usize, usize), String> {
 /// directory (cluster 2) with the label entry and `dirs`. As
 /// [`format_fat16`] for `label` and `dirs`.
 pub fn format_fat32(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regions, String> {
-    let (label, dirs) = check(Fat::Fat32, megabytes, label, dirs)?;
+    format_with(Fat::Fat32, megabytes, label, dirs, &[])
+}
+
+fn fat32(megabytes: usize, label: &str, root: &[Item]) -> Result<Regions, String> {
     let sectors = megabytes * 1024 * 1024 / BLOCK - START;
     let (spc, fat) = geometry32(sectors).map_err(|e| format!("{megabytes} MiB: {e}"))?;
     let clusters = (sectors - RESERVED32 - FATS * fat) / spc;
-    let entries = root_entries(label, &dirs, 3);
-    if entries.len() > spc * BLOCK {
-        return Err("too many directories".into());
-    }
+    let data = (START + RESERVED32 + FATS * fat) * BLOCK;
+    let mut layout = Layout::new(data, spc * BLOCK, clusters);
+    // The root directory comes first, at cluster 2, as long as it needs.
+    let names = name_items(root)?;
+    let head = label_entry(label);
+    let first = layout.alloc(dir_bytes(head.len() / 32, &names).max(1))?;
+    let entries = layout.dir(root, &names, 0, head)?;
+    layout.put(first, entries);
 
     let mut boot = boot_common(spc, RESERVED32);
     boot[..3].copy_from_slice(&[0xEB, 0x58, 0x90]);
     boot[3..11].copy_from_slice(b"MSWIN4.1");
     le32(&mut boot, 32, sectors as u32);
     le32(&mut boot, 36, fat as u32);
-    le32(&mut boot, 44, 2); // the root directory's cluster
+    le32(&mut boot, 44, first);
     le16(&mut boot, 48, FSINFO as u16);
     le16(&mut boot, 50, BACKUP_BOOT as u16);
     boot[64] = 0x80;
@@ -297,23 +629,14 @@ pub fn format_fat32(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
     boot[82..90].copy_from_slice(b"FAT32   ");
 
     // FSInfo: the free cluster count and where to look for one.
-    let used = 1 + dirs.len();
+    let used = layout.next as usize - 2;
     let mut info = vec![0u8; BLOCK];
     le32(&mut info, 0, 0x4161_5252);
     le32(&mut info, 484, 0x6141_7272);
     le32(&mut info, 488, (clusters - used) as u32);
-    le32(&mut info, 492, (2 + used) as u32);
+    le32(&mut info, 492, layout.next);
     le32(&mut info, 508, 0xAA55_0000);
 
-    // Both FATs: media descriptor, end-of-chain marker, then one
-    // end-of-chain entry for the root directory and each directory.
-    let mut fat_bytes = Vec::new();
-    for v in [0x0FFF_FFF8u32, 0x0FFF_FFFF]
-        .into_iter()
-        .chain((0..used).map(|_| 0x0FFF_FFFF))
-    {
-        fat_bytes.extend(v.to_le_bytes());
-    }
     let part = START * BLOCK;
     let mut regions = vec![
         (0, mbr(0x0C, sectors)),
@@ -322,17 +645,11 @@ pub fn format_fat32(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
         (part + BACKUP_BOOT * BLOCK, boot),
         (part + (BACKUP_BOOT + 1) * BLOCK, info),
     ];
+    let fat_bytes = layout.fat(0x0FFF_FFFF, 4);
     for f in 0..FATS {
         regions.push(((START + RESERVED32 + f * fat) * BLOCK, fat_bytes.clone()));
     }
-    let data = (START + RESERVED32 + FATS * fat) * BLOCK;
-    if !entries.is_empty() {
-        regions.push((data, entries));
-    }
-    for i in 0..dirs.len() {
-        let cluster = 3 + i as u32;
-        regions.push((data + (1 + i) * spc * BLOCK, dot_entries(cluster)));
-    }
+    regions.append(&mut layout.regions);
     Ok(regions)
 }
 
@@ -343,13 +660,14 @@ pub fn format_fat32(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
 /// to `embedded-sdmmc`, so a firmware using it lists it as an empty file named
 /// after it: leave it off unless the disk is meant for a PC too.
 pub fn format_fat16(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regions, String> {
-    let (label, dirs) = check(Fat::Fat16, megabytes, label, dirs)?;
-    if dirs.len() > ROOT_ENTRIES - 1 {
-        return Err("too many directories".into());
-    }
+    format_with(Fat::Fat16, megabytes, label, dirs, &[])
+}
+
+fn fat16(megabytes: usize, label: &str, root: &[Item]) -> Result<Regions, String> {
     let total = megabytes * 1024 * 1024 / BLOCK;
     let sectors = total - START;
     let (spc, fat) = geometry(sectors).map_err(|e| format!("{megabytes} MiB: {e}"))?;
+    let clusters = (sectors - RESERVED - ROOT_SECTORS - FATS * fat) / spc;
 
     // MBR: type 0x06 (FAT16).
     let mbr = mbr(0x06, sectors);
@@ -371,24 +689,28 @@ pub fn format_fat16(megabytes: usize, label: &str, dirs: &[&str]) -> Result<Regi
     boot[43..54].copy_from_slice(format!("{label:<11}").as_bytes());
     boot[54..62].copy_from_slice(b"FAT16   ");
 
-    // Both FATs start with the media descriptor and the end-of-chain marker,
-    // then hold one end-of-chain entry per directory (one cluster each, from 2).
-    let mut fat_bytes = vec![0xF8, 0xFF, 0xFF, 0xFF];
-    fat_bytes.extend(dirs.iter().flat_map(|_| [0xFF, 0xFF]));
+    // The root directory is a fixed area before the data clusters, which
+    // start at 2.
+    let root_at = (START + RESERVED + FATS * fat) * BLOCK;
+    let data = root_at + ROOT_SECTORS * BLOCK;
+    let mut layout = Layout::new(data, spc * BLOCK, clusters);
+    let names = name_items(root)?;
+    let head = label_entry(label);
+    if dir_bytes(head.len() / 32, &names) > ROOT_ENTRIES * 32 {
+        return Err(format!(
+            "too many items for the root directory ({ROOT_ENTRIES} entries)"
+        ));
+    }
+    let entries = layout.dir(root, &names, 0, head)?;
+
     let mut regions = vec![(0, mbr), (START * BLOCK, boot)];
+    let fat_bytes = layout.fat(0xFFFF, 2);
     for f in 0..FATS {
         regions.push(((START + RESERVED + f * fat) * BLOCK, fat_bytes.clone()));
     }
-    // The root directory: the label's entry (a real label has one), then the
-    // directories. Each directory's cluster starts with "." and "..".
-    let root = (START + RESERVED + FATS * fat) * BLOCK;
-    let data = root + ROOT_SECTORS * BLOCK;
-    let entries = root_entries(label, &dirs, 2);
-    for i in 0..dirs.len() {
-        regions.push((data + i * spc * BLOCK, dot_entries(2 + i as u32)));
-    }
+    regions.append(&mut layout.regions);
     if !entries.is_empty() {
-        regions.push((root, entries));
+        regions.push((root_at, entries));
     }
     Ok(regions)
 }
@@ -549,6 +871,152 @@ mod tests {
             clusters - 2,
             "free: all but the root's and data's clusters"
         );
+    }
+
+    fn file(name: &str, data: &[u8]) -> Item {
+        Item::File {
+            name: name.into(),
+            data: data.into(),
+        }
+    }
+
+    fn dir(name: &str, items: Vec<Item>) -> Item {
+        Item::Dir {
+            name: name.into(),
+            items,
+        }
+    }
+
+    fn pattern(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i * 13 + i / 509) as u8).collect()
+    }
+
+    /// Short and long names, an empty file, files over several clusters,
+    /// nested directories, and one with more entries than a cluster holds.
+    fn sample() -> Vec<Item> {
+        let many = (0..40)
+            .map(|i| file(&format!("a long name number {i}.txt"), &[i as u8]))
+            .collect();
+        vec![
+            file("README.TXT", b"hello\n"),
+            file("donsol.rom", &pattern(12_953)),
+            file("audio.channels.rom", &pattern(1227)),
+            file(".theme", b""),
+            dir(
+                "Demos",
+                vec![dir("deeper", vec![file("x.bin", &pattern(5000))])],
+            ),
+            dir("many", many),
+        ]
+    }
+
+    #[test]
+    fn items_read_back_here_and_in_fatfs() {
+        use std::io::{Cursor, Read};
+        for (fat, mb) in [(Fat::Fat16, 8), (Fat::Fat32, 40)] {
+            let mut d = image_with(fat, mb, "", &["data"], &sample()).unwrap();
+            let v = read::open(&d).unwrap();
+            let root = v.root().unwrap();
+            let names: Vec<_> = root.iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                names,
+                [
+                    "DATA",
+                    "README.TXT",
+                    "donsol.rom",
+                    "audio.channels.rom",
+                    ".theme",
+                    "Demos",
+                    "many"
+                ],
+                "{fat:?}"
+            );
+            assert_eq!(v.read(&root[2], usize::MAX).unwrap(), pattern(12_953));
+            assert_eq!((root[4].size, root[4].cluster), (0, 0));
+            let demos = v.dir(&root[5]).unwrap();
+            let deeper = v.dir(&demos[0]).unwrap();
+            assert_eq!(v.read(&deeper[0], usize::MAX).unwrap(), pattern(5000));
+            let many = v.dir(&root[6]).unwrap();
+            assert_eq!(many.len(), 40);
+            assert_eq!(many[39].name, "a long name number 39.txt");
+            assert_eq!(v.read(&many[39], 1).unwrap(), [39]);
+
+            let mut part = Cursor::new(d.split_off(1 << 20));
+            let fs = fatfs::FileSystem::new(&mut part, fatfs::FsOptions::new()).unwrap();
+            let mut back = Vec::new();
+            fs.root_dir()
+                .open_file("Demos/deeper/x.bin")
+                .unwrap()
+                .read_to_end(&mut back)
+                .unwrap();
+            assert_eq!(back, pattern(5000));
+            let short: Vec<_> = fs
+                .root_dir()
+                .iter()
+                .map(|e| e.unwrap().short_file_name())
+                .collect();
+            assert_eq!(
+                short,
+                [
+                    "DATA",
+                    "README.TXT",
+                    "DONSOL.ROM",
+                    "AUDIOC~1.ROM",
+                    "THEME~1",
+                    "DEMOS~1",
+                    "MANY"
+                ]
+            );
+            let many = fs.root_dir().open_dir("many").unwrap();
+            assert_eq!(many.iter().count(), 42, "40 and . and ..");
+            // The free count fatfs works out from the FAT matches FSInfo's.
+            let stats = fs.stats().unwrap();
+            assert!(stats.free_clusters() < stats.total_clusters());
+        }
+    }
+
+    #[test]
+    fn aliases_count_up_past_taken_short_names() {
+        let items = [
+            file("LONGNA~1.TXT", b""),
+            file("long name 1.txt", b""),
+            file("Long Name 2.txt", b""),
+            file("café", b""),
+        ];
+        let names = name_items(&items).unwrap();
+        let shorts: Vec<_> = names.iter().map(|n| &n.short).collect();
+        assert_eq!(
+            shorts,
+            [
+                b"LONGNA~1TXT",
+                b"LONGNA~2TXT",
+                b"LONGNA~3TXT",
+                b"CAF_~1     "
+            ]
+        );
+        assert!(names[0].long.is_none() && names[1].long.is_some());
+        let (short, case) = plain_short("donsol.Rom").map_or((None, 0), |(s, c)| (Some(s), c));
+        assert_eq!((short, case), (None, 0), "mixed case needs a long name");
+        assert_eq!(plain_short("abc.TXT").unwrap().1, 0x08);
+    }
+
+    #[test]
+    fn bad_names_and_full_disks_are_refused() {
+        for bad in ["", ".", "..", "a/b", "a:b", "trailing.", "x\u{1}"] {
+            let r = format_with(Fat::Fat16, 8, "", &[], &[file(bad, b"")]);
+            assert!(r.is_err(), "{bad:?}");
+        }
+        let twins = [file("A.TXT", b""), file("a.txt", b"")];
+        assert!(format_with(Fat::Fat16, 8, "", &[], &twins).is_err());
+        let big = [file("BIG", &vec![1; 5 * 1024 * 1024])];
+        assert!(
+            format_with(Fat::Fat16, 4, "", &[], &big)
+                .unwrap_err()
+                .contains("don't fit")
+        );
+        let crowd: Vec<_> = (0..600).map(|i| file(&format!("F{i}"), b"")).collect();
+        assert!(format_with(Fat::Fat16, 8, "", &[], &crowd).is_err());
+        assert!(format_with(Fat::Fat32, 40, "", &[], &crowd).is_ok());
     }
 
     #[test]
