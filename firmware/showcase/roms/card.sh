@@ -9,8 +9,9 @@
 #
 #   roms/card.sh [IMAGE]      default roms/card.img
 #
-# The emulator's `mkdisk` writes the image: the workspace's own, built as
-# needed, unless TARTELETTE names a binary.
+# The workspace's `mkdisk` writes the image (`tartelette mkdisk` on its own,
+# which builds without the emulator's system libraries), built as needed
+# unless MKDISK names a binary.
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -98,9 +99,9 @@ examples software clock piano
 # file.cat prints the file called cat.tal: its own source.
 cp "$work/src/uxn/projects/examples/devices/file.cat.tal" "$card/cat.tal"
 
-if [[ -z ${TARTELETTE:-} ]]; then
-    (cd "$root" && env -u DEFMT_LOG cargo build --release -p tartelette)
-    TARTELETTE=$root/target/release/tartelette
+if [[ -z ${MKDISK:-} ]]; then
+    (cd "$root" && env -u DEFMT_LOG cargo build --release -p mkdisk)
+    MKDISK=$root/target/release/mkdisk
 fi
 add=()
 for f in "$card"/*; do
@@ -108,4 +109,4 @@ for f in "$card"/*; do
 done
 # FAT16 and small, as the ROMs come to about 130 KiB: the image is quick to
 # load, in the browser too.
-"$TARTELETTE" mkdisk "$out" --force --fat 16 --size-mb 8 "${add[@]}"
+"$MKDISK" "$out" --force --fat 16 --size-mb 8 "${add[@]}"
