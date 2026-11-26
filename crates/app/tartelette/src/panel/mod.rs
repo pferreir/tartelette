@@ -21,6 +21,7 @@
 //! | `speaker`  | icon: click to mute, scroll for volume |                         |
 //! | `midi`     | where it goes, a light for bytes on its pin |                    |
 //! | `pcm5102`  | sample rate, a level per channel  |                               |
+//! | `ps2mouse` | pad: move across, click, scroll; shows reporting |                |
 //!
 //! An `mcp23008` item shows a cell per pin. By default each cell follows what
 //! the board file wires to its pin: an LED is shown lit or dark, a switch is
@@ -77,9 +78,12 @@ pub struct PanelState {
     /// Screen textures and the (pixels written, showing) they were made from.
     screens: HashMap<usize, (TextureHandle, (u64, bool))>,
     /// Direction of each encoder's last detent (+1 clockwise) and when it
-    /// came (UI time), and the pointer travel not yet turned into a detent.
+    /// came (UI time), and the pointer travel not yet turned into a detent
+    /// (or, for a mouse pad, the scroll not yet a wheel notch).
     turned: HashMap<usize, (i64, f64)>,
     travel: HashMap<usize, f32>,
+    /// Pointer travel over each mouse pad not yet sent as counts.
+    motion: HashMap<usize, Vec2>,
     /// Expander pins the panel is driving.
     driven: HashMap<usize, u8>,
     /// What each Wi-Fi chip last reported.
@@ -193,6 +197,7 @@ pub fn show(ui: &mut Ui, layout: &Layout, st: &mut PanelState, s: &Session) -> V
                 Widget::Speaker => speaker(ctx, &mut out),
                 &Widget::Midi { keyboard, channel } => midi(ctx, keyboard, channel, &mut out),
                 Widget::Pcm5102 => pcm5102(ctx),
+                Widget::Mouse => mouse(ctx, st, &mut out),
                 Widget::Other => {
                     let kind = &s.sys.board.parts[it.part].kind;
                     ctx.ui.painter_at(body).text(

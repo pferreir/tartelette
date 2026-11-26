@@ -51,6 +51,7 @@ pub enum Widget {
         channel: u8,
     },
     Pcm5102,
+    Mouse,
     /// A kind this app has no widget for.
     Other,
 }
@@ -155,7 +156,7 @@ fn auto_span(board: &Board, part: &pcb::Part) -> (u16, u16) {
             _ => (4, 2),
         },
         "ws2812" | "mcp23008" => (4, 1),
-        "dac8165" => (2, 2),
+        "dac8165" | "ps2mouse" => (2, 2),
         "sdcard" | "wav" | "midi" | "pcm5102" => (2, 1),
         "cyw43439" => (3, 2),
         _ => (1, 1),
@@ -204,6 +205,7 @@ fn widget_for<'a>(
             channel: 0,
         },
         "pcm5102" => Widget::Pcm5102,
+        "ps2mouse" => Widget::Mouse,
         _ => Widget::Other,
     };
     let key = |v: &str| Key::from_name(v).ok_or_else(|| format!("unknown key {v:?}"));
