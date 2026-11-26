@@ -50,6 +50,7 @@ jobs:
       - name: Build the site
         env:
           MICROPYTHON: fetch
+          VARVARA: fetch
         run: scripts/build-site.sh _site
 
       - uses: actions/upload-pages-artifact@v3

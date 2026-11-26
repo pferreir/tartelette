@@ -244,7 +244,8 @@ landing page, the web app under `emu/`, the `firmware/showcase` demos under
 official MicroPython build for the Pico, `MICROPYTHON_UF2=FILE` a local
 one; `PICODEXED=fetch` and `PICODEXED_UF2=FILE` do the same for
 [picodexed](https://github.com/diyelectromusic/picodexed)'s prebuilt UF2
-(on `firmware/showcase/boards/picodexed.toml`). Without them, the page leaves
+(on `firmware/showcase/boards/picodexed.toml`), and `VARVARA=fetch` the
+ROM of the `varvara` demo (`firmware/showcase/roms/fetch.sh`). Without them, the page leaves
 those cards out. Look at it with `python3 -m http.server -d target/site`.
 
 The landing page's text is `site/index.md`, and the documentation is the

@@ -13,7 +13,9 @@
 # MICROPYTHON_UF2 adds the MicroPython demo from that file; MICROPYTHON=fetch
 # downloads it (RPI_PICO, the version below) instead. Without either, the
 # page leaves the MicroPython card out. PICODEXED_UF2 and PICODEXED=fetch do
-# the same for picodexed (its prebuilt UF2, at the commit below). REPO_URL is where the page's source
+# the same for picodexed (its prebuilt UF2, at the commit below). VARVARA=fetch
+# runs firmware/showcase/roms/fetch.sh first, for the varvara demo's ROM;
+# without a ROM there (or VARVARA_ROM), the page leaves that card out. REPO_URL is where the page's source
 # links go (in GitHub Actions, the repository the workflow runs in).
 #
 # Needs: the nightly toolchain with thumbv6m-none-eabi and
@@ -42,14 +44,28 @@ echo "build-site: the web app" >&2
 (cd "$root/crates/app/tartelette" && trunk build --release --public-url ./ --dist "$out/emu")
 rm -f "$out/emu/.trunk-lock"
 
+varvara=
+if [[ ${VARVARA:-} == fetch ]]; then
+    "$root/firmware/showcase/roms/fetch.sh"
+fi
+if [[ -n ${VARVARA_ROM:-} || -f $root/firmware/showcase/roms/fourtette.rom ]]; then
+    varvara=1
+fi
+
 echo "build-site: the demo firmware" >&2
 (cd "$root/firmware/showcase" && env -u RUSTFLAGS cargo build --release --bins)
 bins=$root/target/firmware/showcase/thumbv6m-none-eabi/release
-for demo in picosh lumen groovebox groovebox-audio stardust spectra; do
+demos=(picosh lumen groovebox groovebox-audio stardust spectra)
+[[ -z $varvara ]] || demos+=(varvara)
+for demo in "${demos[@]}"; do
     # Debug info off, the defmt symbols kept: the log still decodes.
     "$objcopy" --strip-debug "$bins/$demo" "$out/demos/$demo.elf"
 done
 cp "$root"/firmware/showcase/boards/*.{toml,wav} "$out/demos/"
+# fourtette is Apache-2.0: its licence goes with the copy the page serves.
+if [[ -n $varvara && -f $root/firmware/showcase/roms/fourtette.LICENSE.txt ]]; then
+    cp "$root/firmware/showcase/roms/fourtette.LICENSE.txt" "$out/demos/"
+fi
 # The boards point their editors at the schema; it doesn't matter on the web.
 sed -i '1{/^#:schema/d}' "$out"/demos/*.toml
 
@@ -85,6 +101,7 @@ sitedocs=(--var "MICROPYTHON_VERSION=${MICROPYTHON_VERSION#*-}")
 # Without MicroPython, drop its entry from the page.
 [[ -n $micropython ]] || sitedocs+=(--drop micropython)
 [[ -n $picodexed ]] || sitedocs+=(--drop picodexed)
+[[ -n $varvara ]] || sitedocs+=(--drop varvara)
 (cd "$root" && env -u RUSTFLAGS cargo run -q -p sitedocs -- . "$out" "${REPO_URL%/}" "${sitedocs[@]}")
 
 touch "$out/.nojekyll"
