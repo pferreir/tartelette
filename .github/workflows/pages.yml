@@ -29,8 +29,10 @@ jobs:
       - name: Rust targets
         run: rustup target add wasm32-unknown-unknown thumbv6m-none-eabi
 
-      - name: llvm-objcopy
-        run: sudo apt-get update && sudo apt-get install -y llvm
+      # llvm-objcopy for the firmware; ALSA for the native tartelette that
+      # writes the varvara demo's SD card (firmware/showcase/roms/card.sh).
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y llvm libasound2-dev
 
       - name: trunk
         run: |
