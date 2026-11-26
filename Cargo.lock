@@ -2084,6 +2084,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mkdisk"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "sdimage",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3492,6 +3500,7 @@ dependencies = [
  "image",
  "js-sys",
  "midir",
+ "mkdisk",
  "pcb",
  "pcb-devices",
  "pollster 1.0.1",

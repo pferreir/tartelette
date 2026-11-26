@@ -192,6 +192,10 @@ get long names as well, as Windows writes them:
 tartelette mkdisk card.img --add songs --add README.txt
 ```
 
+The workspace's `mkdisk` crate is the same command on its own
+(`cargo run -p mkdisk -- card.img ...`), for scripts that only make disks: it
+builds without the emulator, and on Linux without ALSA.
+
 `--sd NAME=FILE` loads an image into the `sdcard` part called NAME; without
 it, the slot is empty (unless the board gives the part a `size_mb`). The image
 lives in memory while the firmware runs. Headless, it is written back at the

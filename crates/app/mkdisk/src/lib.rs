@@ -1,12 +1,40 @@
 //! `mkdisk`: an SD card image for `--sd`, blank or with files copied in.
+//! `tartelette mkdisk` runs it, and so does this crate's own binary.
 use std::{
     io::{Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
+use clap::Parser;
 use sdimage::{Fat, Item};
 
-use crate::cli::MkdiskArgs;
+/// Make a blank SD card image: an MBR with one empty FAT32 (or FAT16)
+/// partition, as `embedded-sdmmc` mounts it (the file is sparse).
+#[derive(Parser, Debug)]
+#[command(name = "mkdisk")]
+pub struct MkdiskArgs {
+    pub file: PathBuf,
+    /// Size in MiB: FAT32 34..32768, FAT16 4..2000
+    #[arg(long, default_value_t = 64)]
+    pub size_mb: u32,
+    /// File system: 32 (needs 34 MiB or more) or 16
+    #[arg(long, default_value = "32", value_parser = ["16", "32"])]
+    pub fat: String,
+    /// Make an empty top-level directory (the OS lists `data`, so its Load menu needs `--dir data`)
+    #[arg(long, value_name = "NAME")]
+    pub dir: Vec<String>,
+    /// Copy a file or a directory (with everything in it) into the top-level
+    /// directory, under its own name; names that aren't 8.3 get long names
+    #[arg(long, value_name = "PATH")]
+    pub add: Vec<PathBuf>,
+    /// Volume label; it shows up in the OS's file list as an empty file, so
+    /// it is best left off unless the disk is also meant for a PC
+    #[arg(long, default_value = "NO NAME")]
+    pub label: String,
+    /// Replace an existing file
+    #[arg(long)]
+    pub force: bool,
+}
 
 pub fn run(args: &MkdiskArgs) -> Result<(), String> {
     let MkdiskArgs {

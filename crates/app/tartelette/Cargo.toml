@@ -30,6 +30,7 @@ web-sys = { version = "0.3.106", features = ["Blob", "Url", "HtmlAnchorElement",
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = "1.0.1"
+mkdisk = { path = "../mkdisk" }
 tartelette-runtime = { path = "../tartelette-runtime", features = ["clap"] }
 clap = { version = "4.6.7", features = ["derive"] }
 

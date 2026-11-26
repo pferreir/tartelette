@@ -22,7 +22,9 @@ crates/
     tartelette-runtime/  Session (firmware + board, stepped), pacing, boards,     deps: rp2040-core, pcb-devices,
                          the host's side of USB/UART/radios, test synth           rtt, the bridges, midir
     tartelette/          front panel (native + web, eframe), headless runner,     deps: tartelette-runtime,
-                         `mkdisk`; end-to-end tests                               sdimage, eframe, cpal
+                         `tartelette mkdisk`; end-to-end tests                    mkdisk, sdimage, eframe, cpal
+    mkdisk/              SD card images from the host's files, and a binary that  deps: sdimage, clap
+                         builds without the emulator (firmware/showcase/roms)
 tools/
   cpu-difftest/          differential tests of the CPU against Unicorn            dev-deps: armv6m
   sitedocs/              renders docs/ as HTML for the demo site                  deps: pulldown-cmark

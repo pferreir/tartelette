@@ -13,8 +13,6 @@ mod files;
 #[cfg(not(target_arch = "wasm32"))]
 mod headless;
 mod midi_in;
-#[cfg(not(target_arch = "wasm32"))]
-mod mkdisk;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod parts;
