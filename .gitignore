@@ -2,3 +2,5 @@
 /firmware/*/*/target
 dist/
 vendor/test_firmware
+/firmware/showcase/roms/*.rom
+/firmware/showcase/roms/*.txt

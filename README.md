@@ -203,6 +203,9 @@ cargo run --release --bin stardust
 
 # A drum machine and bass sequencer: tick Sound in the toolbar to hear it
 cargo run --release --bin groovebox
+
+# A Uxn/Varvara virtual machine playing fourtette, a block game
+roms/fetch.sh && cargo run --release --bin varvara
 ```
 
 MicroPython runs as it is, from a
