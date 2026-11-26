@@ -175,12 +175,18 @@ tartelette mkdisk card.img --dir data
 tartelette fw.elf --board my-board.toml --sd sd=card.img
 ```
 
-`mkdisk` makes a sparse image with an MBR and one empty FAT32 partition
-starting at 1 MiB, the way `embedded-sdmmc` likes it. `--size-mb` sets the
-size (default 64 MiB). FAT32 needs at least 34 MiB, because readers tell it
-from FAT16 by the cluster count alone; `--fat 16` makes FAT16 instead, from
-4 MiB up to 2000. `--dir` adds empty top-level directories; `--label` sets
-the volume label.
+`mkdisk` makes a sparse image with an MBR and one FAT32 partition starting
+at 1 MiB, the way `embedded-sdmmc` likes it. `--size-mb` sets the size
+(default 64 MiB). FAT32 needs at least 34 MiB, because readers tell it from
+FAT16 by the cluster count alone; `--fat 16` makes FAT16 instead, from 4 MiB
+up to 2000. `--dir` adds empty top-level directories; `--label` sets the
+volume label. `--add PATH` (any number of times) copies a file, or a
+directory with everything in it, into the top level; names that aren't 8.3
+get long names as well, as Windows writes them:
+
+```sh
+tartelette mkdisk card.img --add songs --add README.txt
+```
 
 `--sd NAME=FILE` loads an image into the `sdcard` part called NAME; without
 it, the slot is empty (unless the board gives the part a `size_mb`). The image

@@ -320,6 +320,10 @@ pub struct MkdiskArgs {
     /// Make an empty top-level directory (the OS lists `data`, so its Load menu needs `--dir data`)
     #[arg(long, value_name = "NAME")]
     pub dir: Vec<String>,
+    /// Copy a file or a directory (with everything in it) into the top-level
+    /// directory, under its own name; names that aren't 8.3 get long names
+    #[arg(long, value_name = "PATH")]
+    pub add: Vec<PathBuf>,
     /// Volume label; it shows up in the OS's file list as an empty file, so
     /// it is best left off unless the disk is also meant for a PC
     #[arg(long, default_value = "NO NAME")]
