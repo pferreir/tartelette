@@ -292,8 +292,12 @@ fn stream<T: SizedSample + FromSample<f32>>(
             live.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .render(&mut mono);
+            // Front left and right only: the centre, LFE and surrounds
+            // after them would add up again in a downmix, and clip.
             for (frame, v) in data.chunks_mut(channels).zip(&mono) {
-                frame.fill(T::from_sample(*v));
+                let (front, rest) = frame.split_at_mut(channels.min(2));
+                front.fill(T::from_sample(*v));
+                rest.fill(T::EQUILIBRIUM);
             }
         },
         |e| eprintln!("sound output: {e}"),
