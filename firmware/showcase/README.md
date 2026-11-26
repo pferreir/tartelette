@@ -14,7 +14,7 @@ as the board file says.
 | `lumen`     | [`boards/lumen.toml`](boards/lumen.toml): 64 WS2812 in an 8x8 grid, encoder, two buttons | Generative light: plasma, fire, rain, life, ripples, fireflies. PIO WS2812 with DMA, a PIO encoder |
 | `spectra`   | [`boards/spectra.toml`](boards/spectra.toml) + `pico-display-2`: a WAV player (line in) and a pot (gain) on the ADC | A scope, spectrum analyser and waterfall of a song. ADC round robin with DMA, a fixed-point FFT, strip rendering |
 | `picosh`    | `pico` | A shell on UART0: an ASCII Mandelbrot on one core and on both, `peek` at the bootrom, primes, the LED |
-| `varvara`   | [`boards/varvara.toml`](boards/varvara.toml): ST7789 screen, D-pad, A, B, Select, Start, a speaker on GPIO16 | A [Uxn/Varvara](https://wiki.xxiivv.com/site/varvara.html) virtual machine running a ROM built in: screen, controller, console on UART0, four-voice audio. At 200 MHz, as the interpreter needs the cycles |
+| `varvara`   | [`boards/varvara.toml`](boards/varvara.toml): ST7789 screen, D-pad, A, B, Select, Start, a speaker on GPIO16, an SD card on SPI1 | A [Uxn/Varvara](https://wiki.xxiivv.com/site/varvara.html) virtual machine running a ROM built in or one from the card, picked from a menu: screen, controller, console on UART0, four-voice audio, files on the card. At 200 MHz, as the interpreter needs the cycles |
 
 Each binary's `src/bin/*.rs` starts with its controls. `src/lib.rs` has
 what the screen demos share: a strip renderer for a 320x240 ST7789 that
@@ -33,17 +33,46 @@ rest of the repository.
 
 ## Varvara ROMs
 
-`varvara` runs a Uxn ROM built into the firmware. ROMs aren't kept in the
-repository: `roms/fetch.sh` downloads
+`varvara` runs a Uxn ROM built into the firmware, or one from its SD card.
+ROMs aren't kept in the repository: `roms/fetch.sh` downloads
 [fourtette](https://github.com/nf/fourtette), a block game by nf
 (Apache-2.0), to `roms/fourtette.rom`, which the build picks up, with its
 licence. Another ROM
 can be built in with `VARVARA_ROM=path/to/game.rom cargo build ...`. Without
-a ROM the demo still builds, and says so when it starts.
+a ROM the demo still builds, and runs from a card alone.
+
+`roms/card.sh` makes `roms/card.img`, a card of 46 ROMs, which
+`./run` puts in the slot when it's there. They are assembled from their
+sources, downloaded at pinned commits (and an assembler, uxnasm, built from
+uxn's with `cc`): fourtette,
+[donsol](https://git.sr.ht/~rabbits/donsol) (a card game) and
+[catclock](https://git.sr.ht/~rabbits/catclock) at the top, by Hundred
+Rabbits (MIT), and [uxn](https://git.sr.ht/~rabbits/uxn)'s examples (MIT)
+in `demos/`, `devices/`, `exercises/`, `gui/` and `software/`, leaving out
+those that need a mouse. Their licences are in `licences/` on the card. The
+console ones (`exercises/`, most of `devices/`) print to UART0, which is the
+terminal headless.
+
+With a card in, the demo starts on a menu of the built-in ROM and the
+card's directories and `.rom` files: Up and Down to choose, A (or Start, or
+Right) to open, B (or Left) to go back up. Holding Select and Start for a
+second goes back to the menu from a ROM, and so does a ROM halting. Without
+a card, the built-in ROM starts straight away (after a second spent looking
+for one), and Select and Start start it again, or the menu if a card has
+been put in since.
+
+Both File devices work on the card's first FAT volume, with the card's root
+as the program's working directory. Files are found by their long or 8.3
+names, regardless of case, and directory listings give long names where
+there are any. `embedded-sdmmc` can't write long names, so a program that
+makes a file whose name isn't 8.3 gets an 8.3 one made from it
+(`file-output.txt` becomes `FILE~B7D.TXT`), which its own name still finds;
+and deleting a file leaves its clusters allocated (`fsck.fat` gets them
+back).
 
 It suits ROMs played with the controller (or typed to on the console) whose
 screen fits 320x256: the panel shows 320x240 of it, centred, and cuts off
-what is below. There is no mouse and no File device yet. On the panel the
+what is below. There is no mouse yet. On the panel the
 D-pad is on the arrow keys, A on X, B on Z, Select on Space and Start on
 Enter. The emulator models no flash wait states, so on a real Pico, running
 from XIP flash, the VM may be slower than it is here.

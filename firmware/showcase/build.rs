@@ -40,4 +40,7 @@ fn main() {
         rom.display()
     );
     fs::write(out.join("varvara.rom"), bytes).unwrap();
+    // Its name, for the menu.
+    let name = rom.file_stem().and_then(|n| n.to_str()).unwrap_or("rom");
+    println!("cargo:rustc-env=VARVARA_ROM_NAME={name}");
 }

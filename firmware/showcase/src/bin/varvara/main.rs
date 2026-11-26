@@ -4,9 +4,12 @@
 //! Varvara the computer built round it (screen, sound, controller, console),
 //! from Hundred Rabbits: <https://wiki.xxiivv.com/site/varvara.html>.
 //!
-//! The program is a ROM built into the firmware: `roms/fourtette.rom` by
-//! default (fetch it with `roms/fetch.sh`), or another one named by
-//! `VARVARA_ROM` at build time.
+//! The program is a ROM built into the firmware (`roms/fourtette.rom` by
+//! default, fetched by `roms/fetch.sh`, or another one named by
+//! `VARVARA_ROM` at build time), or one on the SD card. With a card in, a
+//! menu lists the built-in ROM and the card's directories and `.rom` files
+//! (`menu.rs`). Holding Select and Start for a second goes back to it, as
+//! does a ROM halting; without a card, it starts the built-in ROM again.
 //!
 //! - The screen, of up to 320x256, sits in the middle of the panel; rows
 //!   past the panel's 240 are cut off at the bottom. Only the strips of
@@ -17,14 +20,19 @@
 //!   has no console vector.
 //! - Audio: the four voices, mixed to 25 kHz PWM on GPIO16 (the sound path
 //!   of `groovebox-audio`).
+//! - File: both devices, on the card's first FAT volume (`file.rs`), an
+//!   SDHC card on SPI1: SCK 14, MOSI 15, MISO 12, CS 11.
 //! - The Pico runs at 200 MHz: the VM needs the cycles.
-//! - DateTime counts from 2026-01-01 at boot; there is no File device.
+//! - DateTime counts from 2026-01-01 at boot, and so do the card's file
+//!   times.
 //!
 //! The screen vector runs 60 times a second, after the input vectors.
 #![no_std]
 #![no_main]
 
 mod audio;
+mod file;
+mod menu;
 mod screen;
 mod uxn;
 
@@ -48,11 +56,15 @@ use embassy_rp::{
     uart::{self, Uart},
 };
 use embassy_sync::blocking_mutex::{Mutex, raw::CriticalSectionRawMutex};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Delay, Duration, Instant, Timer};
+use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
+use embedded_sdmmc::{SdCard, TimeSource, Timestamp, sdcard::spi::AcquireOpts};
 use panic_probe as _;
 
 use crate::{
     audio::{Audio, VOICES},
+    file::Disk,
+    menu::{Action, Kind, Menu},
     screen::Screen,
     uxn::{Devices, Uxn},
 };
@@ -62,6 +74,8 @@ bind_interrupts!(struct Irqs {
 });
 
 static ROM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/varvara.rom"));
+/// The built-in ROM's file name, without `.rom`.
+const ROM_NAME: &str = env!("VARVARA_ROM_NAME");
 
 static mut UXN: Uxn = Uxn::new();
 static mut SCREEN: Screen = Screen::new();
@@ -299,14 +313,38 @@ impl Panel {
 
 // ------------------------------------------------------------- devices ----
 
+/// The SD card on SPI1, and the File devices on it.
+type Card = Disk<ExclusiveDevice<Spi<'static, Blocking>, Output<'static>, NoDelay>, Delay, Clock>;
+
 /// Varvara's devices round the VM.
 struct Varvara {
     screen: &'static mut Screen,
     uart: Uart<'static, Blocking>,
+    disk: Card,
 }
 
 fn peek2(m: &[u8], a: usize) -> usize {
     (m[a & 0xffff] as usize) << 8 | m[(a + 1) & 0xffff] as usize
+}
+
+/// 2026-01-01 00:00:00, a Thursday, plus the time since boot: days since
+/// 1970-01-01, and the seconds into the day.
+fn now() -> (i64, u64) {
+    let secs = Instant::now().as_secs();
+    ((secs / 86400) as i64 + 20454, secs % 86400)
+}
+
+/// The card's file times.
+struct Clock;
+
+impl TimeSource for Clock {
+    fn get_timestamp(&self) -> Timestamp {
+        let (days, t) = now();
+        let (year, month, day) = civil(days);
+        let (h, m, s) = ((t / 3600) as u8, (t / 60 % 60) as u8, (t % 60) as u8);
+        Timestamp::from_calendar(year as u16, month as u8, day as u8, h, m, s)
+            .unwrap_or(Timestamp::from_fat(0x21, 0))
+    }
 }
 
 impl Varvara {
@@ -334,10 +372,7 @@ impl Varvara {
     }
 
     fn datetime(&mut self, u: &mut Uxn, port: u8) -> u8 {
-        // 2026-01-01 00:00:00, a Thursday, plus the time since boot.
-        let secs = Instant::now().as_secs();
-        let days = (secs / 86400) as i64 + 20454;
-        let t = secs % 86400;
+        let (days, t) = now();
         let (year, month, day) = civil(days);
         let doty = days - days_from_civil(year, 1, 1);
         let v: u16 = match port {
@@ -437,6 +472,12 @@ impl Devices for Varvara {
                 let d = &u.dev[(n + 3) * 16..(n + 4) * 16];
                 AUDIO.lock(|a| a.borrow_mut().start(n, d));
             }
+            0xa0..=0xbf => {
+                let base = (port & 0xf0) as usize;
+                let d = &mut u.dev[base..base + 16];
+                self.disk
+                    .deo((port >> 4) as usize - 0xa, &mut u.ram, d, port & 0xf);
+            }
             _ => {}
         }
     }
@@ -447,6 +488,264 @@ fn vector(u: &Uxn, port: usize) -> u16 {
 }
 
 // ---------------------------------------------------------------- main ----
+
+const FRAME: Duration = Duration::from_micros(16_667);
+/// The card's clock once it is up (it starts at 400 kHz, as SD cards must).
+const SD_HZ: u32 = 20_000_000;
+
+/// The eight buttons, in the order of the controller's bits: A, B, Select,
+/// Start, Up, Down, Left, Right.
+struct Buttons([Input<'static>; 8]);
+
+impl Buttons {
+    fn held(&self) -> u8 {
+        self.0
+            .iter()
+            .enumerate()
+            .fold(0u8, |b, (i, k)| b | (k.is_low() as u8) << i)
+    }
+}
+
+/// Select and Start held together for a second: back to the menu.
+struct Back(Option<Instant>);
+
+impl Back {
+    const BOTH: u8 = 0x04 | menu::START;
+
+    fn check(&mut self, held: u8) -> bool {
+        if held & Self::BOTH != Self::BOTH {
+            self.0 = None;
+            return false;
+        }
+        let since = *self.0.get_or_insert_with(Instant::now);
+        Instant::now() - since >= Duration::from_secs(1)
+    }
+}
+
+/// Where the ROM to run comes from.
+enum Source {
+    Builtin,
+    /// The card: it is in memory already.
+    Card,
+}
+
+/// Lists the menu's directory: its subdirectories and `.rom` files. False
+/// if it isn't there (any more).
+fn list(menu: &mut Menu, disk: &Card, builtin: Option<&str>) -> bool {
+    menu.clear(builtin);
+    let dir = menu.dir.clone();
+    let ok = disk.list(dir.as_bytes(), |e, name| {
+        let rom = name.len() > 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".rom");
+        let hidden = e.attributes.is_hidden() || name.first() == Some(&b'.');
+        if let Ok(name) = core::str::from_utf8(name)
+            && !hidden
+        {
+            if e.attributes.is_directory() {
+                menu.add(Kind::Dir, name);
+            } else if rom {
+                menu.add(Kind::Rom, name);
+            }
+        }
+        core::ops::ControlFlow::Continue(())
+    });
+    menu.sort();
+    ok
+}
+
+/// Shows the menu until a ROM is picked; a card's is loaded into memory.
+async fn choose(
+    menu: &mut Menu,
+    panel: &mut Panel,
+    buttons: &Buttons,
+    vm: &mut Varvara,
+    u: &mut Uxn,
+    builtin: Option<&str>,
+) -> Source {
+    u.reset();
+    vm.screen.reset();
+    vm.screen.boot(&mut u.dev, PW, PH);
+    // Its own palette: dark blue, white, light blue and grey.
+    for (port, v) in [(0x08, 0x1e37u16), (0x0a, 0x1eb7), (0x0c, 0x2ef7)] {
+        u.dev[port..port + 2].copy_from_slice(&v.to_be_bytes());
+    }
+    vm.screen.colorize(&u.dev);
+    // Back on the ROM that ran last, unless the card changed so much that
+    // the directory the menu was in is gone.
+    let last: Option<heapless::String<{ menu::NAME }>> =
+        menu.entries.get(menu.sel).map(|e| e.name.clone());
+    if !list(menu, &vm.disk, builtin) {
+        menu.dir.clear();
+        list(menu, &vm.disk, builtin);
+    }
+    if let Some(name) = last {
+        menu.select(&name);
+    }
+
+    let mut note: heapless::String<64> = heapless::String::new();
+    // Buttons still held from before (A, or Select and Start) do nothing
+    // until let go.
+    let mut prev = buttons.held();
+    let mut repeat_at = Instant::now();
+    let mut redraw = true;
+    loop {
+        let held = buttons.held();
+        let pressed = held & !prev;
+        prev = held;
+        // Up and Down repeat after 400 ms held, every 80 ms.
+        let updown = held & (menu::UP | menu::DOWN);
+        let mut repeat = 0;
+        if pressed & updown != 0 {
+            repeat_at = Instant::now() + Duration::from_millis(400);
+        } else if updown != 0 && Instant::now() >= repeat_at {
+            repeat_at = Instant::now() + Duration::from_millis(80);
+            repeat = updown;
+        }
+        if pressed | repeat != 0 {
+            redraw = true;
+            note.clear();
+        }
+        let mut up = false;
+        match menu.input(pressed, repeat) {
+            Action::None => {}
+            Action::Back => up = true,
+            Action::Open(i) => {
+                let e = &menu.entries[i];
+                match e.kind {
+                    Kind::Builtin => return Source::Builtin,
+                    Kind::Up => up = true,
+                    Kind::Dir => {
+                        let name = e.name.clone();
+                        let len = menu.dir.len();
+                        let ok = (len == 0 || menu.dir.push('/').is_ok())
+                            && menu.dir.push_str(&name).is_ok();
+                        if !ok || !list(menu, &vm.disk, builtin) {
+                            menu.dir.truncate(len);
+                            list(menu, &vm.disk, builtin);
+                            let _ = note.push_str("Can't open that directory");
+                        }
+                    }
+                    Kind::Rom => {
+                        let mut path: heapless::String<320> = heapless::String::new();
+                        if !menu.dir.is_empty() {
+                            let _ = path.push_str(&menu.dir);
+                            let _ = path.push('/');
+                        }
+                        let _ = path.push_str(&e.name);
+                        u.reset();
+                        match vm.disk.load(path.as_bytes(), &mut u.ram[0x100..]) {
+                            Some(n) if n > 0 => {
+                                info!("varvara: {=str}, {=usize} bytes", path.as_str(), n);
+                                return Source::Card;
+                            }
+                            _ => {
+                                let _ = note.push_str("Can't read ");
+                                for c in e.name.chars() {
+                                    if note.push(c).is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if up {
+            // Back to the parent, on the directory just left.
+            let cut = menu.dir.rfind('/').unwrap_or(0);
+            let skip = (cut > 0) as usize;
+            let left: heapless::String<{ menu::NAME }> =
+                menu.dir[cut + skip..].chars().take(menu::NAME).collect();
+            menu.dir.truncate(cut);
+            list(menu, &vm.disk, builtin);
+            menu.select(&left);
+            redraw = true;
+        }
+        if redraw {
+            menu.draw(vm.screen, &note);
+            redraw = false;
+        }
+        panel.flush(vm.screen).await;
+        Timer::after(FRAME).await;
+    }
+}
+
+/// What `run` stopped for.
+enum Stop {
+    Halted,
+    Back,
+}
+
+/// Runs the program in memory from its start, 60 frames a second, until it
+/// halts or Select and Start are held.
+async fn run(panel: &mut Panel, buttons: &Buttons, vm: &mut Varvara, u: &mut Uxn) -> Stop {
+    AUDIO.lock(|a| *a.borrow_mut() = Audio::new(RATE));
+    vm.screen.reset();
+    vm.screen.boot(&mut u.dev, PW, PH);
+    // A blank screen meanwhile, as some programs draw a while before
+    // their first frame (mandelbrot takes seconds).
+    panel.flush(vm.screen).await;
+    u.eval(vm, 0x100);
+
+    /// How often the time a frame takes is logged.
+    const FRAMES: u32 = 600;
+    let mut back = Back(None);
+    let mut next = Instant::now();
+    let (mut vm_time, mut draw_time, mut frames) = (0u64, 0u64, 0u32);
+    loop {
+        let t0 = Instant::now();
+        let held = buttons.held();
+        if back.check(held) {
+            return Stop::Back;
+        }
+        if held != u.dev[0x82] {
+            u.dev[0x82] = held;
+            u.eval(vm, vector(u, 0x80));
+        }
+        while vm.uart.read_ready() {
+            let mut c = [0u8];
+            if vm.uart.blocking_read(&mut c).is_err() {
+                break;
+            }
+            if vector(u, 0x10) != 0 {
+                (u.dev[0x12], u.dev[0x17]) = (c[0], 1);
+                u.eval(vm, vector(u, 0x10));
+            } else {
+                u.dev[0x83] = c[0];
+                u.eval(vm, vector(u, 0x80));
+                u.dev[0x83] = 0;
+            }
+        }
+        let done = AUDIO.lock(|a| a.borrow_mut().take_done());
+        for n in 0..VOICES {
+            if done & 1 << n != 0 {
+                u.eval(vm, vector(u, 0x30 + 0x10 * n));
+            }
+        }
+        u.eval(vm, vector(u, 0x20));
+        let t1 = Instant::now();
+        panel.flush(vm.screen).await;
+        vm_time += (t1 - t0).as_micros();
+        draw_time += (Instant::now() - t1).as_micros();
+
+        if u.halted() {
+            return Stop::Halted;
+        }
+
+        frames += 1;
+        if frames == FRAMES {
+            info!(
+                "varvara: a frame in {=u64} us running, {=u64} us drawing",
+                vm_time / FRAMES as u64,
+                draw_time / FRAMES as u64
+            );
+            (vm_time, draw_time, frames) = (0, 0, 0);
+        }
+        // Behind, give up the frames missed instead of rushing through them.
+        next = (next + FRAME).max(Instant::now());
+        Timer::at(next).await;
+    }
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -476,9 +775,7 @@ async fn main(_spawner: Spawner) {
     let _bl = Output::new(p.PIN_17, Level::High);
     panel.init().await;
 
-    // In the order of the controller's bits: A, B, Select, Start, Up, Down,
-    // Left, Right.
-    let buttons = [
+    let buttons = Buttons([
         Input::new(p.PIN_6, Pull::Up),
         Input::new(p.PIN_7, Pull::Up),
         Input::new(p.PIN_8, Pull::Up),
@@ -487,82 +784,78 @@ async fn main(_spawner: Spawner) {
         Input::new(p.PIN_3, Pull::Up),
         Input::new(p.PIN_4, Pull::Up),
         Input::new(p.PIN_5, Pull::Up),
-    ];
+    ]);
+
+    let mut sd_cfg = spi::Config::default();
+    sd_cfg.frequency = embassy_rp::time::Hertz(400_000);
+    let sd_spi = Spi::new_blocking(p.SPI1, p.PIN_14, p.PIN_15, p.PIN_12, sd_cfg).unwrap();
+    let sd = ExclusiveDevice::new_no_delay(sd_spi, Output::new(p.PIN_11, Level::High)).unwrap();
+    // A card answers within a try or two; each takes about 300 ms, so an
+    // empty slot holds the built-in ROM back for a second, not 15 (the
+    // default 50 tries).
+    let opts = AcquireOpts {
+        acquire_retries: 3,
+        ..AcquireOpts::default()
+    };
+    let disk = Disk::new(SdCard::new_with_options(sd, Delay, opts), Clock);
 
     let uart = Uart::new_blocking(p.UART0, p.PIN_0, p.PIN_1, uart::Config::default());
     // SAFETY: main is the only one to take these; the sound interrupt reads
     // memory through a raw pointer.
     let (u, screen) = unsafe { (&mut *addr_of_mut!(UXN), &mut *addr_of_mut!(SCREEN)) };
-    let mut vm = Varvara { screen, uart };
-
-    if ROM.is_empty() {
-        warn!("varvara: no ROM built in: run roms/fetch.sh, or set VARVARA_ROM");
-        let _ = vm.uart.blocking_write(b"varvara: no ROM built in\r\n");
-        return;
+    let mut vm = Varvara { screen, uart, disk };
+    let mut menu = Menu::new();
+    let builtin = (!ROM.is_empty()).then_some(ROM_NAME);
+    if let Some(name) = builtin {
+        info!(
+            "VARVARA: {=str}, a {=usize}-byte ROM, built in",
+            name,
+            ROM.len()
+        );
     }
-    info!("VARVARA: a {=usize}-byte ROM", ROM.len());
-    u.load(ROM);
-    vm.screen.boot(&mut u.dev, PW, PH);
-    u.eval(&mut vm, 0x100);
 
-    const FRAME: Duration = Duration::from_micros(16_667);
-    /// How often the time a frame takes is logged.
-    const FRAMES: u32 = 600;
-    let mut next = Instant::now();
-    let (mut vm_time, mut draw_time, mut frames) = (0u64, 0u64, 0u32);
+    let mut told = false;
     loop {
-        let t0 = Instant::now();
-        let held = buttons
-            .iter()
-            .enumerate()
-            .fold(0u8, |b, (i, k)| b | (k.is_low() as u8) << i);
-        if held != u.dev[0x82] {
-            u.dev[0x82] = held;
-            u.eval(&mut vm, vector(u, 0x80));
-        }
-        while vm.uart.read_ready() {
-            let mut c = [0u8];
-            if vm.uart.blocking_read(&mut c).is_err() {
-                break;
+        let set_hz = |vm: &Varvara, hz| {
+            let _ = vm
+                .disk
+                .with_spi(|d| d.bus_mut().set_frequency(embassy_rp::time::Hertz(hz)));
+        };
+        set_hz(&vm, 400_000);
+        let source = if vm.disk.mount() {
+            set_hz(&vm, SD_HZ);
+            choose(&mut menu, &mut panel, &buttons, &mut vm, u, builtin).await
+        } else if builtin.is_some() {
+            Source::Builtin
+        } else {
+            // Nothing to run: look for a card again in a second.
+            if !told {
+                warn!(
+                    "varvara: no ROM built in (run roms/fetch.sh, or set VARVARA_ROM) and no card"
+                );
+                let _ = vm
+                    .uart
+                    .blocking_write(b"varvara: no ROM built in, and no card\r\n");
+                told = true;
             }
-            if vector(u, 0x10) != 0 {
-                (u.dev[0x12], u.dev[0x17]) = (c[0], 1);
-                u.eval(&mut vm, vector(u, 0x10));
-            } else {
-                u.dev[0x83] = c[0];
-                u.eval(&mut vm, vector(u, 0x80));
-                u.dev[0x83] = 0;
-            }
+            Timer::after_secs(1).await;
+            continue;
+        };
+        if let Source::Builtin = source {
+            u.reset();
+            u.load(ROM);
         }
-        let done = AUDIO.lock(|a| a.borrow_mut().take_done());
-        for n in 0..VOICES {
-            if done & 1 << n != 0 {
-                u.eval(&mut vm, vector(u, 0x30 + 0x10 * n));
-            }
-        }
-        u.eval(&mut vm, vector(u, 0x20));
-        let t1 = Instant::now();
-        panel.flush(vm.screen).await;
-        vm_time += (t1 - t0).as_micros();
-        draw_time += (Instant::now() - t1).as_micros();
-
-        if u.halted() {
+        if let Stop::Halted = run(&mut panel, &buttons, &mut vm, u).await {
             info!("varvara: halted ({=u8:02x})", u.dev[0x0f]);
             let _ = vm.uart.blocking_write(b"varvara: halted\r\n");
-            return;
+            // With no menu to go back to, it stays as it ended until asked
+            // to start again.
+            if !vm.disk.mounted() {
+                let mut back = Back(None);
+                while !back.check(buttons.held()) {
+                    Timer::after(FRAME).await;
+                }
+            }
         }
-
-        frames += 1;
-        if frames == FRAMES {
-            info!(
-                "varvara: a frame in {=u64} us running, {=u64} us drawing",
-                vm_time / FRAMES as u64,
-                draw_time / FRAMES as u64
-            );
-            (vm_time, draw_time, frames) = (0, 0, 0);
-        }
-        // Behind, give up the frames missed instead of rushing through them.
-        next = (next + FRAME).max(Instant::now());
-        Timer::at(next).await;
     }
 }

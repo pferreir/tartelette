@@ -13,8 +13,9 @@
 
 /// What sits behind the device ports. `dei` reads port `port` (the second
 /// byte of a short read is taken from `dev` as it is after that), `deo` is
-/// told after `dev[port]` was written (for a short write, only the second
-/// port is told, after both bytes were written).
+/// told after `dev[port]` was written. A short write tells both ports in
+/// turn, each after its own byte, as uxn does: File/delete, at an even port,
+/// is written as a short.
 pub trait Devices {
     fn dei(&mut self, u: &mut Uxn, port: u8) -> u8;
     fn deo(&mut self, u: &mut Uxn, port: u8);
@@ -89,6 +90,16 @@ impl Uxn {
             dev: [0; 0x100],
             wst: Stack::new(),
             rst: Stack::new(),
+        }
+    }
+
+    /// Back to as `new` left it, in place, for another program.
+    pub fn reset(&mut self) {
+        self.ram.fill(0);
+        self.dev.fill(0);
+        for s in [&mut self.wst, &mut self.rst] {
+            s.dat.fill(0);
+            s.ptr = 0;
         }
     }
 
@@ -390,6 +401,10 @@ impl Uxn {
         } else {
             let port = if S {
                 self.dev[port as usize] = (v >> 8) as u8;
+                d.deo(self, port);
+                if self.halted() {
+                    return None;
+                }
                 port.wrapping_add(1)
             } else {
                 port

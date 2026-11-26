@@ -200,8 +200,8 @@ cargo test --workspace
 
 `cpu-difftest` is the slow one, at around a minute. The end-to-end tests in
 `crates/app/tartelette/tests` build the firmware in `firmware/tests` and
-`firmware/examples` (and the `groovebox-audio` showcase demo) and run it
-headless; `firmware/README.md` lists what each
+`firmware/examples` (and the `groovebox-audio` and `varvara` showcase
+demos) and run it headless; `firmware/README.md` lists what each
 one checks. The Wi-Fi and Bluetooth tests need the CYW43439 firmware blobs,
 from `CYW43_FIRMWARE_DIR` or the newest Embassy checkout in Cargo's git cache.
 

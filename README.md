@@ -206,6 +206,8 @@ cargo run --release --bin groovebox
 
 # A Uxn/Varvara virtual machine playing fourtette, a block game
 roms/fetch.sh && cargo run --release --bin varvara
+# ... or picking from 46 ROMs on an SD card: games, demos, uxn's examples
+roms/card.sh && cargo run --release --bin varvara
 ```
 
 MicroPython runs as it is, from a

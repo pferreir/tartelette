@@ -14,7 +14,13 @@ groovebox) board=("$here/boards/groovebox.toml" --drums --osc saw:dac.A:expander
 groovebox-audio) board=("$here/boards/groovebox-audio.toml" --shield pico-display-2) ;;
 stardust)  board=(pico --shield pico-display-2) ;;
 spectra)   board=("$here/boards/spectra.toml" --shield pico-display-2) ;;
-varvara)   board=("$here/boards/varvara.toml") ;;
+varvara)
+    board=("$here/boards/varvara.toml")
+    # The card roms/card.sh makes, if there is one.
+    if [[ -f $here/roms/card.img ]]; then
+        board+=(--sd "sd=$here/roms/card.img")
+    fi
+    ;;
 *)
     echo "showcase/run: no board for $(basename "$elf") in $0, using pico" >&2
     board=(pico)

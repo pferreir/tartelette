@@ -4,3 +4,5 @@ dist/
 vendor/test_firmware
 /firmware/showcase/roms/*.rom
 /firmware/showcase/roms/*.txt
+/firmware/showcase/roms/*.img
+/firmware/showcase/roms/build/

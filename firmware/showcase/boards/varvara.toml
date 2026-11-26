@@ -1,13 +1,14 @@
 #:schema ../../../boards/board.schema.json
 # VARVARA: a Pico as a Varvara computer, for Uxn programs. A 320x240 ST7789
 # wired as on the Pico Display Pack 2.0, the eight buttons of the Varvara
-# controller (to GND, read with the RP2040's pull-ups) and a speaker on
-# GPIO16. The firmware is src/bin/varvara/; the README in the directory
-# above says how to run it.
+# controller (to GND, read with the RP2040's pull-ups), a speaker on GPIO16
+# and an SD card slot for ROMs and the File device. The firmware is
+# src/bin/varvara/; the README in the directory above says how to run it.
 name = "Varvara"
 
 [buses]
 spi0 = { sck = 18, mosi = 19 }
+spi1 = { sck = 14, mosi = 15, miso = 12 }
 
 [parts.screen]
 kind = "st7789"
@@ -55,6 +56,13 @@ kind = "speaker"
 gpio = 16
 rate = 25000
 
+# Empty until a card is put in (`--sd sd=card.img`, or Load…); roms/card.sh
+# makes one with ROMs on it.
+[parts.sd]
+kind = "sdcard"
+bus = "spi1"
+cs = 11
+
 # Laid out as a handheld: the D-pad left of the screen, A and B right of it.
 [panel]
 screen = { at = [3, 0], span = [6, 4], rotate = 270 }
@@ -67,3 +75,4 @@ a = { at = [10, 1], label = "A", key = "X" }
 select = { at = [4, 4], label = "Select", key = "Space" }
 start = { at = [5, 4], label = "Start", key = "Enter" }
 speaker = { at = [7, 4], label = "Speaker" }
+sd = { at = [9, 3], span = [2, 1], label = "SD card" }

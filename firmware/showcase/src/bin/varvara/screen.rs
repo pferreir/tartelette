@@ -93,6 +93,27 @@ impl Screen {
         self.resize(dev, w, h);
     }
 
+    /// Back to as `new` left it, field by field (a new one is too big to
+    /// build on the stack), for another program: `boot` then sizes it.
+    pub fn reset(&mut self) {
+        self.px.fill(0);
+        (self.w, self.h) = (0, 0);
+        self.colors = [0; 4];
+        self.dirty = [0; MAX_H / 32];
+        self.all_dirty = true;
+        (self.x, self.y, self.addr) = (0, 0, 0);
+        (self.auto_x, self.auto_y, self.auto_addr, self.repeat) = (false, false, 0, 0);
+    }
+
+    /// Sets background pixel (x, y) to colour `c`, for the firmware's own
+    /// drawing (the menu).
+    pub fn put(&mut self, x: usize, y: usize, c: u8) {
+        if x < self.w && y < self.h {
+            self.px[y * self.w + x] = c & 3;
+            self.mark(y, y + 1);
+        }
+    }
+
     /// Sets the size ports to the screen's size.
     fn ports(&self, dev: &mut [u8; 256]) {
         dev[0x22..0x24].copy_from_slice(&(self.w as u16).to_be_bytes());
