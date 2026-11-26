@@ -112,7 +112,10 @@ impl Spi {
     /// Entries in the TX FIFO: those not handed out yet, and those handed
     /// out that haven't started on the wire.
     fn tx_level(&self) -> usize {
-        self.tx.len() + self.wire.iter().filter(|f| f.0 > self.cycles).count()
+        // Frames start in the order they are queued, so the ones that
+        // haven't started are at the back.
+        let started = self.wire.iter().take_while(|f| f.0 <= self.cycles).count();
+        self.tx.len() + self.wire.len() - started
     }
 
     /// Frames are waiting to go out on the wire.

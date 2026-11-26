@@ -785,38 +785,42 @@ impl SystemBus {
 
     /// Current level of every DMA request in `needed` (bit n = TREQ n).
     /// Requests from blocks that aren't modelled stay low.
+    ///
+    /// The DMA asks this between most instructions while it moves data, so
+    /// it only looks at the blocks a channel waits on.
     fn dreq_mask(&self, needed: u64) -> u64 {
-        let level = |n: u32| match n {
-            0..=3 => self.pio[0].dreq_tx(n as usize),
-            4..=7 => self.pio[0].dreq_rx(n as usize - 4),
-            8..=11 => self.pio[1].dreq_tx(n as usize - 8),
-            12..=15 => self.pio[1].dreq_rx(n as usize - 12),
-            16 => self.spi[0].dreq_tx(),
-            17 => self.spi[0].dreq_rx(),
-            18 => self.spi[1].dreq_tx(),
-            19 => self.spi[1].dreq_rx(),
-            20 => self.uart[0].dreq_tx(),
-            21 => self.uart[0].dreq_rx(),
-            22 => self.uart[1].dreq_tx(),
-            23 => self.uart[1].dreq_rx(),
-            24..=31 => self.pwm.dreq(n as usize - 24),
-            32 => self.i2c[0].dreq_tx(),
-            33 => self.i2c[0].dreq_rx(),
-            34 => self.i2c[1].dreq_tx(),
-            35 => self.i2c[1].dreq_rx(),
-            36 => self.adc.dreq(),
-            _ => false,
-        };
+        let wants = |first: u32, n: u32| needed >> first & ((1 << n) - 1) != 0;
+        let pair = |tx: bool, rx: bool| tx as u64 | (rx as u64) << 1;
         let mut mask = 0;
-        let mut rest = needed;
-        while rest != 0 {
-            let n = rest.trailing_zeros();
-            rest &= rest - 1;
-            if level(n) {
-                mask |= 1 << n;
+        for (b, pio) in self.pio.iter().enumerate() {
+            if wants(8 * b as u32, 8) {
+                for sm in 0..4 {
+                    mask |= (pio.dreq_tx(sm) as u64) << (8 * b + sm);
+                    mask |= (pio.dreq_rx(sm) as u64) << (8 * b + 4 + sm);
+                }
             }
         }
-        mask
+        for n in 0..2 {
+            let at = 2 * n as u32;
+            if wants(16 + at, 2) {
+                mask |= pair(self.spi[n].dreq_tx(), self.spi[n].dreq_rx()) << (16 + at);
+            }
+            if wants(20 + at, 2) {
+                mask |= pair(self.uart[n].dreq_tx(), self.uart[n].dreq_rx()) << (20 + at);
+            }
+            if wants(32 + at, 2) {
+                mask |= pair(self.i2c[n].dreq_tx(), self.i2c[n].dreq_rx()) << (32 + at);
+            }
+        }
+        if wants(24, 8) {
+            for slice in 0..8 {
+                mask |= (self.pwm.dreq(slice) as u64) << (24 + slice);
+            }
+        }
+        if wants(36, 1) {
+            mask |= (self.adc.dreq() as u64) << 36;
+        }
+        mask & needed
     }
 
     /// Core cycles until a device will next change state on its own.
